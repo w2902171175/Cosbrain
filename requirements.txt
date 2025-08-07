@@ -1,0 +1,56 @@
+# Web框架和API
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# 数据库相关
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+pgvector==0.2.4
+alembic==1.12.1
+
+# 环境配置
+python-dotenv==1.0.0
+
+# 认证和安全
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+bcrypt==4.1.2
+
+# 数据处理和科学计算
+pandas==2.1.4
+numpy==1.24.4
+scikit-learn==1.3.2
+
+# AI和机器学习
+sentence-transformers==2.2.2
+transformers==4.36.2
+torch==2.1.1
+openai==1.3.8
+
+# 文档处理
+python-docx==1.1.0
+PyPDF2==3.0.1
+openpyxl==3.1.2
+xlrd==2.0.1
+python-pptx==0.6.23
+
+# 文本转语音
+gTTS==2.4.0
+
+# HTTP请求
+requests==2.31.0
+httpx==0.25.2
+
+# 数据验证
+pydantic==2.5.2
+pydantic-settings==2.1.0
+
+# 工具库
+python-dateutil==2.8.2
+pytz==2023.3
+uuid==1.30
+
+# 开发和调试
+pytest==7.4.3
+pytest-asyncio==0.21.1
