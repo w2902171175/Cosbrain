@@ -1,21 +1,90 @@
-MIT License
+鸿庆书云创新协作平台开源许可证 v1.0
 
-Copyright (c) 2025 鸿庆书云创新协作平台
+版权所有 (c) 2025 鸿庆书云创新协作平台
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+本许可证适用于本软件及其相关文档文件（以下称"软件"）。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+许可条件：
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. 使用权限：
+   - 允许个人、教育机构和非营利组织免费使用、复制、修改和分发本软件
+   - 禁止任何形式的商业使用，包括但不限于：
+     * 直接销售本软件
+     * 将本软件集成到商业产品中
+     * 使用本软件提供付费服务
+     * 基于本软件进行盈利性活动
+
+2. 开源要求：
+   - 任何基于本软件的衍生作品必须以相同或兼容的开源许可证发布
+   - 衍生作品的源代码必须公开可获取
+   - 不得将衍生作品转为闭源或专有软件
+
+3. 署名要求：
+   - 在软件的所有副本或重要部分中保留本版权声明
+   - 在衍生作品中明确标注原始来源为"鸿庆书云创新协作平台"
+   - 提供指向原始项目的链接或引用
+
+4. 分发条件：
+   - 分发时必须包含完整的许可证文本
+   - 不得移除或修改版权声明和许可证信息
+   - 必须以相同条件分发衍生作品
+
+5. 免责声明：
+   本软件按"原样"提供，不提供任何明示或暗示的保证，包括但不限于适销性、
+   特定用途适用性和非侵权性的保证。在任何情况下，作者或版权持有者均不对
+   任何索赔、损害或其他责任负责，无论这些追责来自合同、侵权或其他行为中，
+   还是产生于、源于或有关于本软件以及本软件的使用或其他处置。
+
+6. 终止条款：
+   如违反本许可证的任何条款，您的使用权将自动终止。
+
+联系方式：
+如需商业使用许可，请联系版权持有者协商商业授权协议。
+
+---
+
+Hongqing Shuyun Innovation Collaboration Platform Open Source License v1.0
+
+Copyright (c) 2025 Hongqing Shuyun Innovation Collaboration Platform
+
+This license applies to this software and its associated documentation files (the "Software").
+
+License Terms:
+
+1. Usage Rights:
+   - Free use, copying, modification, and distribution for individuals, educational institutions, and non-profit organizations
+   - Commercial use is strictly prohibited, including but not limited to:
+     * Direct sale of the Software
+     * Integration into commercial products
+     * Providing paid services using the Software
+     * Any profit-making activities based on the Software
+
+2. Open Source Requirements:
+   - Any derivative works must be released under the same or compatible open source license
+   - Source code of derivative works must be publicly available
+   - Derivative works cannot be converted to closed source or proprietary software
+
+3. Attribution Requirements:
+   - Retain this copyright notice in all copies or substantial portions of the Software
+   - Clearly indicate the original source as "Hongqing Shuyun Innovation Collaboration Platform" in derivative works
+   - Provide a link or reference to the original project
+
+4. Distribution Terms:
+   - Must include the complete license text when distributing
+   - Cannot remove or modify copyright notices and license information
+   - Must distribute derivative works under the same terms
+
+5. Disclaimer:
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+6. Termination:
+   Your rights under this license terminate automatically if you violate any of its terms.
+
+Contact:
+For commercial licensing, please contact the copyright holder to negotiate a commercial license agreement.
