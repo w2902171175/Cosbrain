@@ -697,8 +697,16 @@ class MatchedStudent(BaseModel):
 
 # --- 用户登录模型 ---
 class UserLogin(BaseModel):
+    """用户登录时的数据模型，只包含邮箱和密码"""
     email: EmailStr
     password: str
+
+# --- JWT 令牌响应模型 ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer" # JWT 令牌类型，通常是 "bearer"
+    # 可以添加过期时间等其他信息
+    expires_in_minutes: int = 0 # 令牌过期时间，单位分钟 (可选)
 
 
 # --- UserLLMConfigUpdate ---

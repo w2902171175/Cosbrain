@@ -1,6 +1,7 @@
 # project/main.py
+from fastapi.responses import PlainTextResponse
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -9,10 +10,13 @@ import numpy as np
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import timedelta, datetime, timezone
 from sqlalchemy.sql import func
 import uuid
 import asyncio
+from jose import JWTError, jwt  # <-- 用于JWT的编码和解码
+from fastapi.security import OAuth2PasswordBearer # <-- 用于HTTPBearer认证方案
+
 
 # 密码哈希
 from passlib.context import CryptContext
@@ -34,6 +38,17 @@ app = FastAPI(
 )
 
 
+# --- JWT 认证配置 ---
+SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-that-should-be-in-env") # 从环境变量获取，或使用默认值 (生产环境务必修改)
+ALGORITHM = "HS256" # JWT签名算法
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 访问令牌过期时间（例如7天）
+
+# 令牌认证方案
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
+# HTTPBearer 用于从 Authorization 头解析 token
+bearer_scheme = HTTPBearer(auto_error=False) # auto_error=False 避免在依赖注入层直接抛出401，而是让我们手动处理
+
+
 # --- 密码哈希上下文 ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -46,18 +61,58 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-# --- 认证依赖 (简化版，未来替换为JWT) ---
-async def get_current_user_id(db: Session = Depends(get_db)):
-    # ！！！请确保这里的 user_id 是你希望测试的用户的实际ID！！！
-    user_id = 1  # 例如，你之前注册的“创想小助手”的ID
-    user = db.query(Student).filter(Student.id == user_id).first()
-    if not user:
+# --- 依赖项：获取当前登录用户ID ---
+async def get_current_user_id(
+        # 依赖于 bearer_scheme 来获取 Authorization: Bearer <token>
+        credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+        db: Session = Depends(get_db)
+) -> int:
+    """
+    从 JWT 令牌中提取并验证用户ID。
+    如果令牌无效或缺失，抛出 HTTPException。
+    """
+    # 注意：这里 user_id 硬编码为 1 的行将被删除或替换
+    # user_id = 1 # <-- **删除或注释掉这行硬编码**
+
+    # 如果没有提供 credentials (例如：bearer token 缺失)
+    if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated or user not found (Hardcoded ID used for testing)",
+            detail="未提供认证凭据",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return user_id
+
+    token = credentials.credentials  # 获取实际的 token 字符串 (credentials.credentials 是 OAuth2Scheme 返回的 token)
+
+    try:
+        # 使用 SECRET_KEY 和 ALGORITHM 解码 JWT 令牌
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = payload.get("sub")  # JWT payload 中的 'sub' (subject) 字段通常存放用户ID
+
+        if user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT 令牌中缺少用户ID信息")
+
+        # 验证用户是否存在 (可选，但推荐，确保 token 对应的用户是有效的)
+        user = db.query(Student).filter(Student.id == user_id).first()
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT 令牌指向的用户不存在")
+
+        print(f"DEBUG_AUTH: 已认证用户 ID: {user_id}")
+        return user_id
+
+    except JWTError:  # 如果 JWT 验证失败 (如签名错误, 过期等)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或过期的 JWT 令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        print(f"ERROR_AUTH: 认证过程中发生未知错误: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="认证过程中发生服务器错误"
+        )
+
 
 
 # --- WebSocket 连接管理：为每个聊天室分配一个管理器 ---
@@ -94,6 +149,20 @@ class ConnectionManager:
                     print(f"ERROR_WS: 广播消息时发生未知错误: {e}")
 
 manager = ConnectionManager() # 创建一个全局的连接管理器实例
+
+# --- 辅助函数：创建 JWT 访问令牌 ---
+def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None):
+    """
+    根据提供的用户信息创建 JWT 访问令牌。
+    """
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta # 使用 UTC 时间，更严谨
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire}) # 将过期时间添加到payload
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM) # 使用定义的秘密密钥和算法编码
+    return encoded_jwt
 
 
 # --- CORS 中间件 (跨域资源共享) ---
@@ -637,41 +706,76 @@ async def process_document_in_background(
 
 
 # --- 用户认证与管理接口 ---
-@app.post("/auth/register", response_model=schemas.StudentResponse, summary="用户注册")
-async def register_user(student_data: schemas.StudentCreate, db: Session = Depends(get_db)):
-    """
-    新用户注册，邮箱必须唯一，密码会被哈希存储。
-    """
-    print(f"DEBUG: 尝试注册用户: {student_data.email}")
-    db_student = db.query(Student).filter(Student.email == student_data.email).first()
-    if db_student:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+@app.post("/register", response_model=schemas.StudentResponse, summary="用户注册")
+async def register_user(
+        user_data: schemas.StudentCreate,  # 此时 StudentCreate 用于注册
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 尝试注册用户: {user_data.email}")
+    # 检查邮箱是否已存在
+    existing_user = db.query(Student).filter(Student.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="邮箱已被注册。")
 
-    hashed_password = get_password_hash(student_data.password)
+    # 哈希密码
+    hashed_password = pwd_context.hash(user_data.password)
 
-    new_student = Student(
-        email=student_data.email,
+    db_user = Student(
+        email=user_data.email,
         password_hash=hashed_password,
-        name=student_data.name,
-        major=student_data.major,
-        skills=student_data.skills,
-        interests=student_data.interests,
-        bio=student_data.bio,
-        awards_competitions=student_data.awards_competitions,
-        academic_achievements=student_data.academic_achievements,
-        soft_skills=student_data.soft_skills,
-        portfolio_link=student_data.portfolio_link,
-        preferred_role=student_data.preferred_role,
-        availability=student_data.availability,
-        combined_text="",
-        embedding=[0.0] * 1024
+        # 可以初始化一些默认的用户信息
+        name="新用户",
+        major="未填写",
+        skills="未填写",
+        interests="未填写",
+        bio="欢迎使用本平台！",
+        llm_api_type=None,  # 注册时不设置LLM配置
+        llm_api_key_encrypted=None,
+        llm_api_base_url=None,
+        llm_model_id=None
     )
 
-    db.add(new_student)
+    db.add(db_user)
     db.commit()
-    db.refresh(new_student)
-    print(f"DEBUG: 用户 {new_student.email} 注册成功，ID: {new_student.id}")
-    return new_student
+    db.refresh(db_user)
+    print(f"DEBUG: 用户 {db_user.email} (ID: {db_user.id}) 注册成功。")
+    return db_user
+
+
+@app.post("/token", response_model=schemas.Token, summary="用户登录并获取JWT令牌")
+async def login_for_access_token(
+        form_data: OAuth2PasswordRequestForm = Depends(),  # 使用 OAuth2PasswordRequestForm 适应标准登录表单
+        db: Session = Depends(get_db)
+):
+    """
+    通过邮箱和密码获取 JWT 访问令牌。
+    - username (实际上是邮箱): 用户邮箱
+    - password: 用户密码
+    """
+    print(f"DEBUG_AUTH: 尝试用户登录: {form_data.username}")  # OAuth2PasswordRequestForm 使用 username 字段
+
+    user = db.query(Student).filter(Student.email == form_data.username).first()
+    if not user or not pwd_context.verify(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="不正确的邮箱或密码",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 登录成功，创建访问令牌
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    # 将用户ID作为 subject 编码到 token 中
+    access_token = create_access_token(
+        data={"sub": str(user.id)},  # 必须是字符串
+        expires_delta=access_token_expires
+    )
+
+    print(f"DEBUG_AUTH: 用户 {user.email} (ID: {user.id}) 登录成功，颁发JWT令牌。")
+    return schemas.Token(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in_minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
 
 
 @app.post("/auth/login", summary="用户登录")
