@@ -1,6 +1,6 @@
 # 鸿庆书云创新协作平台
 
-> 🎓 一个为学生提供智能匹配、知识管理、课程学习和协作支持的综合性教育平台
+> 🎓 一个为师生提供智能匹配、知识管理、课程学习和协作支持的综合性教育平台
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
@@ -408,7 +408,7 @@ flake8 .
 
 - **项目主页**: [GitHub Repository](https://github.com/your-username/hongqing-platform)
 - **问题反馈**: [GitHub Issues](https://github.com/your-username/hongqing-platform/issues)
-- **邮箱支持**: support@hongqing-platform.com
+- **邮箱支持**: wxh1331@foxmail.com
 - **社区讨论**: [Discord服务器](https://discord.gg/your-invite)
 
 ## 🗺️ 发展路线图
