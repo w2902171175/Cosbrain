@@ -1,9 +1,9 @@
 # project/models.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean,text, Index
 from sqlalchemy.orm import relationship, remote
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
-
+from sqlalchemy.schema import UniqueConstraint
 from base import Base
 
 
@@ -36,6 +36,13 @@ class Student(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
+    is_admin = Column(Boolean, default=False, nullable=False)
+    created_chat_rooms = relationship("ChatRoom", back_populates="creator")
+    chat_room_memberships = relationship("ChatRoomMember", back_populates="member")
+    sent_join_requests = relationship("ChatRoomJoinRequest", foreign_keys="[ChatRoomJoinRequest.requester_id]",
+                                      back_populates="requester")
+    processed_join_requests = relationship("ChatRoomJoinRequest", foreign_keys="[ChatRoomJoinRequest.processed_by_id]",
+                                           back_populates="processor")
 
     notes = relationship("Note", back_populates="owner")
     knowledge_bases = relationship("KnowledgeBase", back_populates="owner")
@@ -197,14 +204,13 @@ class ChatRoom(Base):
     __tablename__ = "chat_rooms"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-
+    name = Column(String, nullable=False,unique=True)
     type = Column(String, nullable=False, default="general")
 
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, unique=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=True, unique=True)
 
-    creator_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    creator_id = Column(Integer, ForeignKey("students.id"), nullable=False)  # 群主字段
 
     color = Column(String, nullable=True)
 
@@ -215,6 +221,8 @@ class ChatRoom(Base):
     project = relationship("Project", back_populates="chat_room")
     course = relationship("Course", back_populates="chat_room")
     creator = relationship("Student", back_populates="created_chat_rooms")
+    memberships = relationship("ChatRoomMember", back_populates="room", cascade="all, delete-orphan")
+    join_requests = relationship("ChatRoomJoinRequest", back_populates="room", cascade="all, delete-orphan")
 
 
 class ChatMessage(Base):
@@ -233,6 +241,61 @@ class ChatMessage(Base):
 
     room = relationship("ChatRoom", back_populates="messages")
     sender = relationship("Student", back_populates="sent_messages")
+
+
+# --- 聊天室成员模型 ---
+class ChatRoomMember(Base):
+    __tablename__ = "chat_room_members"
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("chat_rooms.id"), nullable=False, index=True)
+    member_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+
+    # 角色类型： 'admin' (管理员), 'member' (普通成员)
+    # 'creator' 角色将通过 ChatRoom.creator_id 直接关联。
+    role = Column(String, default="member", nullable=False)
+
+    # 成员状态： 'active' (活跃), 'banned' (被踢出/禁用), 'left' (已离开)
+    status = Column(String, default="active", nullable=False)
+
+    joined_at = Column(DateTime, default=func.now(), nullable=False)
+    # last_read_at = Column(DateTime, nullable=True) # 可选：用于跟踪未读消息，如果需要可以添加
+
+    # Relationships
+    room = relationship("ChatRoom", back_populates="memberships")
+    member = relationship("Student", back_populates="chat_room_memberships")
+
+    __table_args__ = (
+        # 确保一个用户在一个聊天室中只有一条成员记录
+        UniqueConstraint('room_id', 'member_id', name='_room_member_uc'),
+    )
+
+
+# --- 聊天室加入请求模型 ---
+class ChatRoomJoinRequest(Base):
+    __tablename__ = "chat_room_join_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("chat_rooms.id"), nullable=False, index=True)
+    requester_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    reason = Column(String, nullable=True)  # 用户申请的理由
+
+    # 状态：'pending' (待处理), 'approved' (已批准), 'rejected' (已拒绝)
+    status = Column(String, default="pending", nullable=False)
+
+    requested_at = Column(DateTime, default=func.now(), nullable=False)
+    processed_by_id = Column(Integer, ForeignKey("students.id"), nullable=True)  # 谁处理的这个请求
+    processed_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    room = relationship("ChatRoom", back_populates="join_requests")  # 新增 back_populates
+    requester = relationship("Student", foreign_keys=[requester_id], back_populates="sent_join_requests")
+    processor = relationship("Student", foreign_keys=[processed_by_id], back_populates="processed_join_requests")
+
+    __table_args__ = (
+        # 确保一个用户在一个聊天室中最多只有一个 'pending' 状态的申请
+        # 这是 PostgreSQL 特性，对于 SQLite 可能需要弱化此约束或手动管理
+        Index('_room_requester_pending_uc', 'room_id', 'requester_id', unique=True,
+              postgresql_where=text("status = 'pending'")),
+    )
 
 
 class ForumTopic(Base):

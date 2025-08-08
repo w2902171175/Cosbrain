@@ -1,7 +1,7 @@
 # project/schemas.py (完整代码，更新 AIQARequest 和 AIQAResponse)
 
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
 
 
@@ -38,9 +38,9 @@ class StudentResponse(StudentBase):
 
     created_at: datetime
     updated_at: Optional[datetime] = None
+    is_admin: bool
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -211,15 +211,75 @@ class CollectedContentResponse(CollectedContentBase):
 class ChatRoomBase(BaseModel):
     """聊天室基础信息模型，用于创建或更新时接收数据"""
     name: str
-    type: Literal["project_group", "course_group", "private_chat", "general"] = "general"
+    type: Literal["project_group", "course_group", "private", "general"] = "general"
     project_id: Optional[int] = None
     course_id: Optional[int] = None
     color: Optional[str] = None
 
 
+# 聊天室成员基础信息 (用于请求和响应)
+class ChatRoomMemberBase(BaseModel):
+    room_id: int
+    member_id: int
+    role: str = Field("member", description="成员角色：'admin'或'member'")
+    status: str = Field("active", description="成员状态：'active', 'banned', 'left'")
+    # last_read_at: Optional[datetime] = None # 如果在 models.py 中添加了此字段
+
+# 聊天室成员响应信息 (包含 ID 和时间戳)
+class ChatRoomMemberResponse(ChatRoomMemberBase):
+    id: int
+    joined_at: datetime
+    member_name: Optional[str] = Field(None, description="成员的姓名")
+    class Config:
+        from_attributes = True # Pydantic V2
+        # orm_mode = True # Pydantic V1
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None} # 保持一致
+
+
+# ** 用于更新成员角色的请求体**
+class ChatRoomMemberRoleUpdate(BaseModel):
+    role: str = Field(..., description="要设置的新角色：'admin' 或 'member'")
+
+
+# 入群申请请求体
+class ChatRoomJoinRequestCreate(BaseModel):
+    room_id: int = Field(..., description="目标聊天室ID")
+    reason: Optional[str] = Field(None, description="入群申请理由")
+
+# 入群申请处理请求体 (用于管理员/群主批准或拒绝)
+class ChatRoomJoinRequestProcess(BaseModel):
+    status: str = Field(..., description="处理结果状态：'approved' 或 'rejected'") # 只能是这两个字符串
+    # 备注：processed_by_id 和 processed_at 将由后端自动填充
+
+# 入群申请响应信息 (包含所有详情)
+class ChatRoomJoinRequestResponse(BaseModel):
+    id: int
+    room_id: int
+    requester_id: int
+    reason: Optional[str] = None
+    status: str
+    requested_at: datetime
+    processed_by_id: Optional[int] = None
+    processed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+class UserAdminStatusUpdate(BaseModel):
+    is_admin: bool = Field(..., description="是否设置为系统管理员 (True) 或取消管理员权限 (False)")
+
 class ChatRoomCreate(ChatRoomBase):
     """创建聊天室时的数据模型"""
     pass
+
+# ** 聊天室更新请求体，所有字段均为可选**
+class ChatRoomUpdate(ChatRoomBase):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    project_id: Optional[int] = None
+    course_id: Optional[int] = None
+    color: Optional[str] = None
 
 
 class ChatRoomResponse(ChatRoomBase):
