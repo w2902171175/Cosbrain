@@ -1,5 +1,5 @@
 # project/main.py
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query
 from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -2896,19 +2896,22 @@ async def set_chat_room_member_role(
 
 
 # (聊天室管理接口部分 - 删除成员)
-@app.delete("/chat-rooms/{room_id}/members/{member_id}", response_model=Dict[str, str],
+@app.delete("/chat-rooms/{room_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT, # 改为 204 No Content
             summary="从聊天室移除成员（踢出或离开）")
 async def remove_chat_room_member(
         room_id: int,
         member_id: int,  # 目标成员的用户ID
-        current_user_id: int = Depends(get_current_user_id),  # 操作者用户ID
+        current_user_id: str = Depends(get_current_user_id),  # 操作者用户ID (现在明确是 str 类型)
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 用户 {current_user_id} 尝试从聊天室 {room_id} 移除成员 {member_id}。")
+    current_user_id_int = int(current_user_id) # **<<<<< 关键修复：将字符串ID转换为整数 >>>>>**
+
+    print(f"DEBUG: 用户 {current_user_id_int} 尝试从聊天室 {room_id} 移除成员 {member_id}。")
 
     try:
         # 1. 获取当前操作用户、目标聊天室和目标成员的 ChatRoomMember 记录
-        acting_user = db.query(Student).filter(Student.id == current_user_id).first()
+        # **使用转换后的 current_user_id_int 进行数据库查询**
+        acting_user = db.query(Student).filter(Student.id == current_user_id_int).first()
         if not acting_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
@@ -2916,20 +2919,28 @@ async def remove_chat_room_member(
         if not chat_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
+
         # 获取目标成员在群里的成员记录，且必须是活跃成员才能被操作
         target_membership = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
-            ChatRoomMember.member_id == member_id,
+            ChatRoomMember.member_id == member_id, # member_id 已经是 int
             ChatRoomMember.status == "active"
         ).first()
 
         if not target_membership:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户不是该聊天室的活跃成员。")
 
-        # 2. **处理用户自己离开群聊的情况** (`member_id` == `current_user_id`)
-        if current_user_id == member_id:
+        # **新增调试打印：查看权限相关的原始值和比较结果**
+        print(f"DEBUG_PERM_REMOVE: current_user_id_int={current_user_id_int} (type={type(current_user_id_int)})")
+        print(f"DEBUG_PERM_REMOVE: chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)})")
+        print(f"DEBUG_PERM_REMOVE: acting_user.is_admin={acting_user.is_admin}")
+
+
+        # 2. **处理用户自己离开群聊的情况** (`member_id` == `current_user_id_int`)
+        if current_user_id_int == member_id: # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
+            print(f"DEBUG_PERM_REMOVE: 判定为用户 {current_user_id_int} 尝试自己离开。")
             # 群主不能通过此接口离开群聊（他们应该使用解散群聊功能）
-            if chat_room.creator_id == current_user_id:
+            if chat_room.creator_id == current_user_id_int: # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="群主不能通过此接口离开群聊。要解散聊天室请使用解散功能。")
 
@@ -2937,25 +2948,28 @@ async def remove_chat_room_member(
             target_membership.status = "left"  # 标记为“已离开”
             db.add(target_membership)
             db.commit()
-            print(f"DEBUG: 用户 {current_user_id} 已成功离开聊天室 {room_id}。")
-            return {"message": "您已成功离开聊天室。"}
+            print(f"DEBUG: 用户 {current_user_id_int} 已成功离开聊天室 {room_id}。")
+            return Response(status_code=status.HTTP_204_NO_CONTENT) # 成功离开，返回 204
 
-        # 3. **处理踢出他人成员的情况** (`member_id` != `current_user_id`)
-
+        # 3. **处理踢出他人成员的情况** (`member_id` != `current_user_id_int`)
+        print(f"DEBUG_PERM_REMOVE: 判定为用户 {current_user_id_int} 尝试移除他人 {member_id}。")
         # 确定操作者的角色
-        is_creator = (chat_room.creator_id == current_user_id)
+        is_creator = (chat_room.creator_id == current_user_id_int) # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
         is_system_admin = acting_user.is_admin
 
         # 如果操作者不是群主也不是系统管理员，则去查询他是否是聊天室管理员
         acting_user_membership = None
         if not is_creator and not is_system_admin:
+            print(f"DEBUG_PERM_REMOVE: 操作者不是群主也不是系统管理员，检查是否是聊天室管理员。")
             acting_user_membership = db.query(ChatRoomMember).filter(
                 ChatRoomMember.room_id == room_id,
-                ChatRoomMember.member_id == current_user_id,
+                ChatRoomMember.member_id == current_user_id_int, # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>
                 ChatRoomMember.status == "active"
             ).first()
 
         is_room_admin = (acting_user_membership and acting_user_membership.role == "admin")
+
+        print(f"DEBUG_PERM_REMOVE: is_creator={is_creator}, is_system_admin={is_system_admin}, is_room_admin={is_room_admin}")
 
         # 确定被操作成员的角色
         target_member_is_creator = (member_id == chat_room.creator_id)
@@ -2967,27 +2981,35 @@ async def remove_chat_room_member(
 
         if is_system_admin:
             can_kick = True  # 系统管理员可以踢出任何人
+            print(f"DEBUG_PERM_REMOVE: 系统管理员 {current_user_id_int} 允许踢出。")
         elif is_creator:
-            can_kick = True  # 群主可以踢出任何人 (被移除的成员不是群主自己，这在上面已分别处理)
+            can_kick = True  # 群主可以踢出任何人
+            print(f"DEBUG_PERM_REMOVE: 群主 {current_user_id_int} 允许踢出。")
         elif is_room_admin:
             # 聊天室管理员只能在特定条件下踢人
             if target_member_is_creator:
                 reason_detail = "聊天室管理员无权移除群主。"
+                print(f"DEBUG_PERM_REMOVE: 聊天室管理员 {current_user_id_int} 试图移除群主，拒绝。")
             elif target_member_role_in_room == "admin":
                 reason_detail = "聊天室管理员无权移除其他管理员。"
+                print(f"DEBUG_PERM_REMOVE: 聊天室管理员 {current_user_id_int} 试图移除其他管理员，拒绝。")
             else:  # 目标成员是普通成员
                 can_kick = True
+                print(f"DEBUG_PERM_REMOVE: 聊天室管理员 {current_user_id_int} 允许踢出普通成员 {member_id}。")
 
         if not can_kick:
+            print(f"DEBUG_PERM_REMOVE: 最终权限判定为拒绝，原因：{reason_detail}")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason_detail)
 
         # 4. 执行移除操作：更新目标成员状态为 'banned' (被踢出)
         target_membership.status = "banned"
+        # 聊天室管理员被踢出后，其角色仍然保持 'admin' 历史记录，只是状态变 'banned'。
+        # 如果需要彻底降级，可以在此额外设置 target_membership.role = "member"
         db.add(target_membership)
         db.commit()
 
         print(f"DEBUG: 成员 {member_id} 已成功从聊天室 {room_id} 移除（被踢出）。")
-        return {"message": "成员已成功从聊天室移除。"}
+        return Response(status_code=status.HTTP_204_NO_CONTENT) # 成功踢出，返回 204
 
     except HTTPException as e:
         db.rollback()
@@ -3093,19 +3115,29 @@ async def update_chat_room(
 
 
 # project/main.py (聊天室管理接口部分)
-@app.delete("/chatrooms/{room_id}", summary="删除指定聊天室")
+# project/main.py (删除聊天室接口)
+from fastapi.responses import Response  # 确保导入 Response
+
+
+# ...确保其他所有必要的导入都在文件顶部...
+
+@app.delete("/chatrooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定聊天室（仅限群主或系统管理员）",
+            operation_id="delete_single_chat_room_by_creator_or_admin")  # 明确且唯一的 operation_id
 async def delete_chat_room(
         room_id: int,  # 从路径中获取聊天室ID
-        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
+        current_user_id: str = Depends(get_current_user_id),  # 已认证的用户ID (现在明确是 str 类型)
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 删除聊天室 ID: {room_id}。用户: {current_user_id}")
+    current_user_id_int = int(current_user_id)  # **<<<<< 关键修复：将字符串ID转换为整数 >>>>>**
+
+    print(f"DEBUG: 删除聊天室 ID: {room_id}。操作用户: {current_user_id_int}")
 
     try:
         # 1. 获取当前用户的信息，以便检查其是否为管理员
-        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        # **使用转换后的 current_user_id_int 进行数据库查询**
+        current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
         if not current_user:
-            # 理论上 get_current_user_id 能够保证用户存在，但这作为防御性检查
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
         # 2. 获取目标聊天室
@@ -3113,19 +3145,47 @@ async def delete_chat_room(
         if not db_chat_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-        # **核心权限检查：判断用户是否有权限删除此聊天室**
-        # 方式一：用户是聊天室的创建者 (ChatRoom.creator_id == current_user_id)
-        # 方式二：当前用户是系统管理员 (current_user.is_admin 为 True)
-        if not (db_chat_room.creator_id == current_user_id or current_user.is_admin):
-            # 如果既不是创建者也不是管理员，则无权访问
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除此聊天室。")
+        # **新增调试打印：查看权限相关的原始值和比较结果**
+        print(f"DEBUG_PERM_DELETE_ROOM: current_user_id_int={current_user_id_int} (type={type(current_user_id_int)})")
+        print(
+            f"DEBUG_PERM_DELETE_ROOM: chat_room.creator_id={db_chat_room.creator_id} (type={type(db_chat_room.creator_id)})")
+        print(f"DEBUG_PERM_DELETE_ROOM: current_user.is_admin={current_user.is_admin}")
 
-        # 如果权限通过，执行删除操作
+        # **核心权限检查：只有群主或系统管理员可以删除此聊天室**
+        # **<<<<< 关键修复：使用 int 型 ID 进行比较 >>>>>**
+        is_creator = (db_chat_room.creator_id == current_user_id_int)
+        is_system_admin = current_user.is_admin
+
+        print(f"DEBUG_PERM_DELETE_ROOM: is_creator={is_creator}, is_system_admin={is_system_admin}")
+        print(f"DEBUG_PERM_DELETE_ROOM: Final DELETE ROOM permission: {is_creator or is_system_admin}")
+
+        if not (is_creator or is_system_admin):
+            # 如果既不是创建者也不是系统管理员，则无权删除
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权删除此聊天室。只有群主或系统管理员可以执行此操作。")
+
+        # 执行删除操作：确保所有关联数据级联删除
+        # SQLAlchemy的模型定义中，通常会使用 cascade="all, delete-orphan" 或 ON DELETE CASCADE
+        # 来处理关联数据的级联删除。如果模型关系配置得当，直接删除 chat_room 即可。
+        # 如果没有配置级联删除，需要手动删除相关联的 records (chat_messages, chat_room_members, chat_room_join_requests)
+
+        # 假设模型已正确配置 ON DELETE CASCADE 或 cascade="all, delete-orphan"
+        # 则只需删除聊天室本身
         db.delete(db_chat_room)  # 标记为删除
         db.commit()  # 提交事务
 
-        print(f"DEBUG: 聊天室 {room_id} 及其所有关联消息已成功删除。")
-        return {"message": "Chat room and all associated messages deleted successfully."}
+        # 如果没有配置级联删除，以下代码可以手动删除，但推荐通过模型配置级联
+        # db.query(ChatMessage).filter(ChatMessage.room_id == room_id).delete()
+        # print(f"DEBUG: 聊天室 {room_id} 的所有消息已删除。")
+        # db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).delete()
+        # print(f"DEBUG: 聊天室 {room_id} 的所有成员关联已删除。")
+        # db.query(ChatRoomJoinRequest).filter(ChatRoomJoinRequest.room_id == room_id).delete()
+        # print(f"DEBUG: 聊天室 {room_id} 的所有入群申请已删除。")
+        # db.delete(db_chat_room)
+        # db.commit()
+
+        print(f"DEBUG: 聊天室 {room_id} 及其所有关联数据已成功删除。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)  # 成功删除，返回 204
 
     except IntegrityError as e:
         db.rollback()
@@ -3138,52 +3198,6 @@ async def delete_chat_room(
         db.rollback()
         print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"删除聊天室失败: {e}")
-
-
-@app.delete("/chatrooms/{room_id}", summary="解散指定聊天室")
-async def delete_chat_room(
-        room_id: int,  # 从路径中获取聊天室ID
-        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
-        db: Session = Depends(get_db)
-):
-    print(f"DEBUG: 用户 {current_user_id} 尝试解散聊天室 ID: {room_id}。")
-
-    try:
-        # 1. 获取当前用户和目标聊天室的信息
-        current_user = db.query(Student).filter(Student.id == current_user_id).first()
-        if not current_user:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
-
-        db_chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-        if not db_chat_room:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
-
-        # **核心权限检查：严格限制为只有群主可以解散聊天室**
-        is_creator = (db_chat_room.creator_id == current_user_id)
-
-        if not is_creator:  # **修改：移除 is_system_admin**
-            # 如果不是群主，则无权解散
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="无权解散此聊天室。只有群主可以执行此操作。")  # **修改：更明确的提示**
-
-        # 执行删除操作（包括级联删除成员和消息）
-        db.delete(db_chat_room)  # 标记为删除
-        db.commit()  # 提交事务
-
-        print(f"DEBUG: 聊天室 {room_id} 及其所有关联数据已成功解散/删除。")
-        return {"message": "Chat room and all associated data deleted successfully."}
-
-    except IntegrityError as e:
-        db.rollback()
-        print(f"ERROR_DB: 聊天室解散发生完整性约束错误: {e}")
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="解散聊天室失败，可能存在数据关联问题。")
-    except HTTPException as e:
-        db.rollback()
-        raise e
-    except Exception as e:
-        db.rollback()
-        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"解散聊天室失败: {e}")
 
 
 @app.post("/chat-rooms/{room_id}/join-request", response_model=schemas.ChatRoomJoinRequestResponse,
@@ -4395,7 +4409,9 @@ async def get_mcp_available_tools(
     print(f"DEBUG: 找到 {len(available_tools)} 个可用的MCP工具。")
     return available_tools
 
-# --- WebSocket 聊天室接口 ---
+# --- WebSocket 聊天室接口 --
+# project/main.py (WebSocket 聊天室接口)
+
 @app.websocket("/ws/chat/{room_id}")
 async def websocket_endpoint(
         websocket: WebSocket,
@@ -4404,63 +4420,83 @@ async def websocket_endpoint(
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG_WS: 尝试连接房间 {room_id}。")
-    current_username = None
-    current_user_id = None
+    current_email = None  # 重命名为 current_email 以避免混淆，以便从 JWT 的 'sub' 进一步处理为 ID
+    current_payload_sub_str = None  # 用于存储从 JWT 'sub' 出来的字符串
     current_user_db = None
     try:
         # 解码 JWT 令牌以获取用户身份
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        current_username: str = payload.get("sub")  # 通常存储用户邮箱
-        if current_username is None:
+
+        # **<<<<< 关键修复：从 'sub' 获取的是用户ID的字符串表示 >>>>>**
+        current_payload_sub_str: str = payload.get("sub")
+        if current_payload_sub_str is None:
             raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION,
-                                      reason="Invalid authentication token (username missing).")
+                                      reason="Invalid authentication token (subject missing).")
 
-        # 从数据库中根据 username (email) 获取用户 ID 和信息
-        current_user_db = db.query(Student).filter(Student.email == current_username).first()
+        # **<<<<< 关键修复：将字符串ID转换为整数，然后用它查询用户 >>>>>**
+        # 假设 sub 字段存储的是用户ID
+        try:
+            current_user_id_int = int(current_payload_sub_str)
+        except ValueError:
+            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid user ID format in token.")
+
+        # 从数据库中根据用户 ID 获取用户信息
+        current_user_db = db.query(Student).filter(Student.id == current_user_id_int).first()
         if current_user_db is None:
-            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="User not found.")
-        current_user_id = current_user_db.id
+            # 这通常不应该发生，除非数据库用户被删除了
+            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="User not found in database.")
 
-    except (jwt.PyJWTError, WebSocketDisconnect) as auth_error:
+        # 为了调试打印，获取用户的真实邮箱，虽然不用于认证
+        current_email = current_user_db.email
+
+    # **<<<<< 关键修复：将 jwt.PyJWTError 改为 JWTError >>>>>**
+    except (JWTError, WebSocketDisconnect) as auth_error:
         # 捕获 JWT 解析错误和主动抛出的 WebSocketDisconnect
-        print(f"ERROR_WS_AUTH: WebSocket 认证失败: {auth_error}")
+        print(f"ERROR_WS_AUTH: WebSocket 认证失败: {type(auth_error).__name__}: {auth_error}")  # 打印错误类型
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"Authentication failed: {auth_error}")
         return
     except Exception as e:
         # 捕获其他非预期的认证异常
-        print(f"ERROR_WS_AUTH: WebSocket 认证内部错误: {e}")
+        print(f"ERROR_WS_AUTH: WebSocket 认证内部错误: {type(e).__name__}: {e}")  # 打印错误类型
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Authentication internal error.")
         return
 
-    print(f"DEBUG_WS: 用户 {current_user_id} (邮箱: {current_username}) 尝试连接聊天室 {room_id}。")
+    print(f"DEBUG_WS: 用户 {current_user_id_int} (邮箱: {current_email}) 尝试连接聊天室 {room_id}。")
 
     chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if not chat_room:
-        print(f"WARNING_WS: 用户 {current_user_id} 尝试连接不存在的聊天室 {room_id}。")
+        print(f"WARNING_WS: 用户 {current_user_id_int} 尝试连接不存在的聊天室 {room_id}。")
         await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="聊天室不存在。")
         return
 
+    # **新增调试打印：查看权限相关的原始值和比较结果**
+    print(
+        f"DEBUG_PERM_WS: current_user_id_int={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)})")
+
     # 核心权限：验证用户是否为该聊天室的创建者或活跃成员
-    is_creator = (chat_room.creator_id == current_user_id)
+    is_creator = (chat_room.creator_id == current_user_id_int)
     is_active_member = db.query(ChatRoomMember).filter(
         ChatRoomMember.room_id == room_id,
-        ChatRoomMember.member_id == current_user_id,
+        ChatRoomMember.member_id == current_user_id_int,
         ChatRoomMember.status == "active"
     ).first() is not None
 
+    print(f"DEBUG_PERM_WS: is_creator={is_creator}, is_active_member={is_active_member}")
+    print(f"DEBUG_PERM_WS: Final WS permission: {is_creator or is_active_member}")
+
     if not (is_creator or is_active_member):
-        print(f"WARNING_WS: 用户 {current_user_id} 无权连接聊天室 {room_id}。")
+        print(f"WARNING_WS: 用户 {current_user_id_int} 无权连接聊天室 {room_id}。")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="您无权访问或加入此聊天室。")
         return
 
     try:
-        await manager.connect(websocket, room_id, current_user_id)
-        print(f"DEBUG_WS: 用户 {current_user_id} 已成功连接到聊天室 {room_id}。")
+        await manager.connect(websocket, room_id, current_user_id_int)
+        print(f"DEBUG_WS: 用户 {current_user_id_int} 已成功连接到聊天室 {room_id}。")
 
         # 发送欢迎消息给新连接的用户
         await manager.send_personal_message(
-            {"type": "status", "content": f"欢迎用户 {current_user_db.name} 加入聊天室 {chat_room.name}！"}, websocket)
-
+            json.dumps({"type": "status", "content": f"欢迎用户 {current_user_db.name} 加入聊天室 {chat_room.name}！"}),
+            websocket)
 
         while True:
             # 接收 JSON 格式消息 (假设前端发送 {"content": "..."} 类型)
@@ -4471,15 +4507,16 @@ async def websocket_endpoint(
                 await websocket.send_json({"error": "Invalid message format. 'content' (string) is required."})
                 continue
 
+            # 再次检查权限 (防止在连接期间权限被撤销)
             re_check_active_member = db.query(ChatRoomMember).filter(
                 ChatRoomMember.room_id == room_id,
-                ChatRoomMember.member_id == current_user_id,
+                ChatRoomMember.member_id == current_user_id_int,
                 ChatRoomMember.status == "active"
             ).first()
-            re_check_creator = (chat_room.creator_id == current_user_id)
+            re_check_creator = (chat_room.creator_id == current_user_id_int)
 
             if not (re_check_creator or re_check_active_member):
-                print(f"WARNING_WS: 用户 {current_user_id} 在聊天室 {room_id} 发送消息时已失去权限。连接将被关闭。")
+                print(f"WARNING_WS: 用户 {current_user_id_int} 在聊天室 {room_id} 发送消息时已失去权限。连接将被关闭。")
                 await websocket.send_json(
                     {"error": "No permission to send messages. You may have been removed or left the chat."})
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="失去发送消息权限。")
@@ -4487,7 +4524,7 @@ async def websocket_endpoint(
 
             db_message = ChatMessage(
                 room_id=room_id,
-                sender_id=current_user_id,
+                sender_id=current_user_id_int,
                 content_text=message_content,
                 message_type="text"  # 默认为文本
             )
@@ -4500,28 +4537,28 @@ async def websocket_endpoint(
                 "type": "chat_message",
                 "id": db_message.id,
                 "room_id": room_id,
-                "sender_id": current_user_id,
+                "sender_id": current_user_id_int,
                 "sender_name": current_user_db.name,  # 直接使用已获取的用户名
                 "content": message_content,
                 "sent_at": db_message.sent_at.isoformat()  # ISO 8601 格式
             }
-            await manager.broadcast(message_to_broadcast, room_id)
+            await manager.broadcast(json.dumps(message_to_broadcast), room_id)
             print(f"DEBUG_WS: 聊天室 {room_id} 广播消息: {current_user_db.name}: {message_content[:50]}...")
 
     except WebSocketDisconnect:
         # 用户正常断开连接（或服务器主动关闭）
-        print(f"DEBUG_WS: 用户 {current_user_id} 从聊天室 {room_id} 断开连接 (WebSocketDisconnect)。")
+        print(f"DEBUG_WS: 用户 {current_user_id_int} 从聊天室 {room_id} 断开连接 (WebSocketDisconnect)。")
     except Exception as e:
         # 捕获其他意外错误
-        print(f"ERROR_WS: 用户 {current_user_id} 在聊天室 {room_id} WebSocket 处理异常: {e}")
+        print(f"ERROR_WS: 用户 {current_user_id_int} 在聊天室 {room_id} WebSocket 处理异常: {e}")
         # 如果连接仍然开启，尝试发送错误消息并关闭
         if websocket.client_state == 1:  # WebSocketState.CONNECTED
             await websocket.send_json({"error": f"服务器内部错误: {e}"})
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"服务器内部错误: {e}")
     finally:
         # 确保在任何情况下都从管理器中移除连接
-        if current_user_id is not None:
-            manager.disconnect(room_id, current_user_id)
+        if current_user_id_int is not None:
+            manager.disconnect(room_id, current_user_id_int)
 
 
 # --- 配置静态文件服务，用于提供生成的音频文件 ---
