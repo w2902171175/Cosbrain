@@ -1,9 +1,9 @@
 # project/main.py
 from fastapi.responses import PlainTextResponse
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query
 from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session,joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Literal  # 导入 Literal 用于固定选项
 import numpy as np
@@ -12,18 +12,19 @@ import json
 import os
 from datetime import timedelta, datetime, timezone
 from sqlalchemy.sql import func
+from sqlalchemy import and_,or_
 import uuid
 import asyncio
 from jose import JWTError, jwt  # <-- 用于JWT的编码和解码
 from fastapi.security import OAuth2PasswordBearer # <-- 用于HTTPBearer认证方案
-
-
+from dotenv import load_dotenv
+load_dotenv()
 # 密码哈希
 from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest
 # 导入Pydantic Schemas
 import schemas
 
@@ -317,41 +318,50 @@ async def check_search_engine_connectivity(engine_type: str, api_key: str,
 
 # --- 搜索引擎配置管理接口 ---
 @app.post("/search-engine-configs/", response_model=schemas.UserSearchEngineConfigResponse,
-          summary="添加新的搜索引擎配置")
+          summary="创建新的搜索引擎配置")
 async def create_search_engine_config(
         config_data: schemas.UserSearchEngineConfigCreate,
-        current_user_id: int = Depends(get_current_user_id),  # 配置所属用户
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    为当前用户添加一个新的搜索引擎配置（例如Bing, Tavily等）。
-    如果提供了API密钥，将加密存储。
-    """
-    print(f"DEBUG: 用户 {current_user_id} 尝试添加搜索引擎配置: {config_data.name}")
+    print(f"DEBUG: 用户 {current_user_id} 尝试创建搜索引擎配置: {config_data.name}")
 
-    if config_data.api_key:
-        encrypted_key = ai_core.encrypt_key(config_data.api_key)
-    else:
-        encrypted_key = None
+    # 核心：确保 API 密钥存在且不为空 (对于大多数搜索引擎这是必需的)
+    if not config_data.api_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="API 密钥不能为空。")
 
+    # 检查是否已存在同名且活跃的配置，避免用户创建重复的配置
+    existing_config = db.query(UserSearchEngineConfig).filter(
+        UserSearchEngineConfig.owner_id == current_user_id,
+        UserSearchEngineConfig.name == config_data.name,
+        UserSearchEngineConfig.is_active == True  # 只检查活跃的配置是否有重名
+    ).first()
+
+    if existing_config:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="已存在同名且活跃的搜索引擎配置。请选择其他名称或停用旧配置。")
+
+    # 加密 API 密钥
+    encrypted_key = ai_core.encrypt_key(config_data.api_key)
+
+    # 创建数据库记录
     db_config = UserSearchEngineConfig(
-        owner_id=current_user_id,
+        owner_id=current_user_id,  # **设置拥有者为当前用户**
         name=config_data.name,
         engine_type=config_data.engine_type,
         api_key_encrypted=encrypted_key,
         is_active=config_data.is_active,
-        description=config_data.description
-        # base_url 字段从 schemas.UserSearchEngineConfigCreate 中移除，因为它不是所有搜索引擎的通用字段，
-        # 且通常由 ai_core 内部管理默认值。如果需要自定义，可以在 description 或其他字段说明。
+        description=config_data.description,
+        base_url=config_data.base_url  # **确保 base_url 被正确存储**
     )
 
     db.add(db_config)
-    db.commit()
-    db.refresh(db_config)
+    db.commit()  # 提交事务
+    db.refresh(db_config)  # 刷新以获取数据库生成的ID和时间戳
 
-    db_config.api_key = None  # 不返回密钥
-
-    print(f"DEBUG: 搜索引擎配置 '{db_config.name}' (ID: {db_config.id}) 添加成功。")
+    # 不要在这里设置 db_config.api_key = None, 因为 UserSearchEngineConfigResponse
+    # 本身就没有 api_key 字段（因为它接收的是 encrypted_key），所以不会泄露。
+    print(f"DEBUG: 用户 {current_user_id} 的搜索引擎配置 '{db_config.name}' (ID: {db_config.id}) 创建成功。")
     return db_config
 
 
@@ -401,46 +411,58 @@ async def get_search_engine_config_by_id(
 @app.put("/search-engine-configs/{config_id}", response_model=schemas.UserSearchEngineConfigResponse,
          summary="更新指定搜索引擎配置")
 async def update_search_engine_config(
-        config_id: int,
-        config_data: schemas.UserSearchEngineConfigBase,  # 注意这里使用BaseModel，所有字段可选
-        current_user_id: int = Depends(get_current_user_id),
+        config_id: int,  # 从路径中获取配置ID
+        config_data: schemas.UserSearchEngineConfigBase,  # 用于更新的数据
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    更新指定ID的搜索引擎配置。用户只能更新自己的配置。
-    如果提供了API密钥，将加密存储。
-    """
     print(f"DEBUG: 更新搜索引擎配置 ID: {config_id}。")
-    db_config = db.query(UserSearchEngineConfig).filter(UserSearchEngineConfig.id == config_id,
-                                                        UserSearchEngineConfig.owner_id == current_user_id).first()
-    if not db_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Search engine config not found or not authorized")
+    # 核心权限检查：根据配置ID和拥有者ID来检索，确保操作的是当前用户的配置
+    db_config = db.query(UserSearchEngineConfig).filter(
+        UserSearchEngineConfig.id == config_id,
+        UserSearchEngineConfig.owner_id == current_user_id  # 确保当前用户是该配置的拥有者
+    ).first()
 
+    if not db_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索引擎配置未找到或无权访问")
+
+    # 排除未设置的字段，只更新传入的字段
     update_data = config_data.dict(exclude_unset=True)
 
-    if "name" in update_data:
-        db_config.name = update_data["name"]
-    if "engine_type" in update_data:
-        db_config.engine_type = update_data["engine_type"]
-    if "is_active" in update_data:
-        db_config.is_active = update_data["is_active"]
-    if "description" in update_data:
-        db_config.description = update_data["description"]
+    # 处理 API 密钥的更新：加密或清空
+    if "api_key" in update_data:
+        if update_data["api_key"] is not None and update_data["api_key"] != "":
+            # 如果提供了新的密钥，加密并存储
+            db_config.api_key_encrypted = ai_core.encrypt_key(update_data["api_key"])
+        else:
+            # 如果传入的是 None 或空字符串，表示清空密钥
+            db_config.api_key_encrypted = None
 
-    if "api_key" in update_data and update_data["api_key"] is not None:
-        encrypted_key = ai_core.encrypt_key(update_data["api_key"])
-        db_config.api_key_encrypted = encrypted_key
-        print(f"DEBUG: 搜索引擎配置 {config_id} 的API密钥已加密存储。")
-    elif "api_key" in update_data and update_data["api_key"] is None:
-        db_config.api_key_encrypted = None
+    # 检查名称冲突 (如果名称在更新中改变了)
+    if "name" in update_data and update_data["name"] != db_config.name:
+        # 查找当前用户下是否已存在与新名称相同的活跃配置
+        existing_config_with_new_name = db.query(UserSearchEngineConfig).filter(
+            UserSearchEngineConfig.owner_id == current_user_id,
+            UserSearchEngineConfig.name == update_data["name"],
+            UserSearchEngineConfig.is_active == True,  # 只检查活跃的配置是否有重名
+            UserSearchEngineConfig.id != config_id  # 排除当前正在更新的配置本身
+        ).first()
+        if existing_config_with_new_name:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="新配置名称已存在于您的活跃配置中。")
+
+    fields_to_update = ["name", "engine_type", "is_active", "description", "base_url"]  # 增加了 "base_url"
+    for field in fields_to_update:
+        if field in update_data:  # 只有当传入的数据包含这个字段时才更新
+            setattr(db_config, field, update_data[field])
 
     db.add(db_config)
     db.commit()
     db.refresh(db_config)
 
+    # 安全处理：确保敏感的API密钥不会返回给客户端
     db_config.api_key = None
-    print(f"DEBUG: 搜索引擎配置 {db_config.id} 更新成功。")
+
+    print(f"DEBUG: 搜索引擎配置 {config_id} 更新成功。")
     return db_config
 
 
@@ -1216,36 +1238,35 @@ async def delete_note(
 @app.post("/knowledge-bases/", response_model=schemas.KnowledgeBaseResponse, summary="创建新知识库")
 async def create_knowledge_base(
         kb_data: schemas.KnowledgeBaseBase,
-        current_user_id: int = Depends(get_current_user_id),
+        current_user_id: int = Depends(get_current_user_id),  # 依赖项，已正确获取当前用户ID
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG: 用户 {current_user_id} 尝试创建知识库: {kb_data.name}")
     try:
+        # 创建新的知识库实例，将其 owner_id 设置为当前认证用户的ID
         db_kb = KnowledgeBase(
             owner_id=current_user_id,
             name=kb_data.name,
             description=kb_data.description,
             access_type=kb_data.access_type
         )
-        db.add(db_kb)
-        db.commit()
-        db.refresh(db_kb)  # 刷新 db_kb 对象以加载默认值和生成ID
 
-        # 为了更鲁棒地处理 Pydantic 序列化问题，显式地转换为字典
-        # db.refresh(db_kb) 通常已经足够，但如果遇到 Input should be a valid dictionary or object to extract fields from，可以尝试 force_dict
-        # force_dict = schemas.KnowledgeBaseResponse.model_validate(db_kb).model_dump(mode='json')
-        # print(f"DEBUG: 知识库 '{db_kb.name}' (ID: {db_kb.id}) 创建成功。")
-        # return force_dict # 返回字典
+        db.add(db_kb)
+        db.commit()  # 提交到数据库
+        db.refresh(db_kb)  # 刷新 db_kb 对象以获取数据库生成的ID和创建时间等
 
         print(f"DEBUG: 知识库 '{db_kb.name}' (ID: {db_kb.id}) 创建成功。")
-        # 再次尝试直接返回 ORM 对象，如果 schemas.py 修复得当，这应该是可以的
-        return db_kb
+        return db_kb  # 现在可以直接返回ORM对象，因为 schemas.py 已经处理了datetime的序列化问题
 
     except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="知识库名称已存在或创建失败。")
+        # 捕获数据库完整性错误，例如如果某个知识库名称在用户的知识库下必须唯一
+        db.rollback()  # 回滚事务
+        # 给出更明确的错误提示，说明是名称冲突
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="知识库名称已存在。")
     except Exception as e:
-        db.rollback()
+        # 捕获其他任何未预期错误
+        db.rollback()  # 确保在异常时回滚
         print(f"ERROR_DB: 数据库会话使用过程中发生异常: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建知识库失败: {e}")
 
@@ -1649,13 +1670,11 @@ async def get_document_chunks(
         document_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        limit: int = 10,
-        offset: int = 0
 ):
     """
     获取指定知识文档的所有文本块列表 (用于调试)。
     """
-    print(f"DEBUG: 获取文档 ID: {document_id} 的文本块。")
+    print(f"DEBUG: 用户 {current_user_id} 尝试获取知识库 {kb_id} 中文档 {document_id} 的文本块。")
     document = db.query(KnowledgeDocument).filter(
         KnowledgeDocument.id == document_id,
         KnowledgeDocument.kb_id == kb_id,
@@ -1664,20 +1683,22 @@ async def get_document_chunks(
     if not document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档未找到或无权访问。")
 
-    chunks = db.query(KnowledgeDocumentChunk).filter(
-        KnowledgeDocumentChunk.document_id == document_id
-    ).order_by(KnowledgeDocumentChunk.chunk_index).offset(offset).limit(limit).all()
+    # 核心权限检查2：确保文档已经处理完成 (如果还在处理中，则没有文本块可返回或者不应该暴露)
+    if document.status != "completed":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="文档仍在处理中，文本块暂不可用。")
 
+    # 检索对应文档的所有文本块
+    chunks = db.query(KnowledgeDocumentChunk).filter(
+        KnowledgeDocumentChunk.document_id == document_id,
+        KnowledgeDocumentChunk.kb_id == kb_id,  # 确保文本块也属于这个知识库
+        KnowledgeDocumentChunk.owner_id == current_user_id  # **新增：确保文本块的拥有者是当前用户**
+    ).order_by(KnowledgeDocumentChunk.chunk_index).all()  # 按索引排序，方便查看
+
+    print(f"DEBUG: 文档 {document_id} 获取到 {len(chunks)} 个文本块。")
     return chunks
 
 
-
-
 # --- AI问答与智能搜索接口 ---
-
-# project/main.py
-
-# ... (AI问答与智能搜索接口) ...
 
 @app.post("/ai/qa", response_model=schemas.AIQAResponse, summary="AI智能问答 (通用、RAG或工具调用)")
 async def ai_qa(
@@ -2426,56 +2447,80 @@ async def delete_collected_content(
     return {"message": "Collected content deleted successfully"}
 
 # --- 聊天室管理接口 ---
-@app.post("/chatrooms/", response_model=schemas.ChatRoomResponse, summary="创建新聊天室")
+
+@app.post("/chat-rooms/", response_model=schemas.ChatRoomResponse, summary="创建新的聊天室")
 async def create_chat_room(
-        room_data: schemas.ChatRoomCreate,
-        current_user_id: int = Depends(get_current_user_id),  # 聊天室创建者为当前用户
+        chat_room_data: schemas.ChatRoomCreate,
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    创建一个新的聊天室。可以是项目群组、课程群组、私人聊天或普通群组。
-    """
-    print(f"DEBUG: 用户 {current_user_id} 尝试创建聊天室: {room_data.name}")
+    print(f"DEBUG: 用户 {current_user_id} 尝试创建聊天室: {chat_room_data.name}")
 
-    if room_data.project_id:
-        project = db.query(Project).filter(Project.id == room_data.project_id).first()
-        if not project:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
-        # 检查项目是否已有关联聊天室
-        if project.chat_room:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Project already has an associated chat room.")
-
-    if room_data.course_id:
-        course = db.query(Course).filter(Course.id == room_data.course_id).first()
-        if not course:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
-        # 检查课程是否已有关联聊天室
-        if course.chat_room:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Course already has an associated chat room.")
-
-    db_room = ChatRoom(
-        name=room_data.name,
-        type=room_data.type,
-        project_id=room_data.project_id,
-        course_id=room_data.course_id,
-        creator_id=current_user_id,
-        color=room_data.color
-    )
-
-    db.add(db_room)
-    db.commit()
-    db.refresh(db_room)
-
-    # 对于新创建的聊天室，member_count 等统计信息初始为0
-    db_room.members_count = 1  # 至少包含创建者
-    db_room.last_message = {"sender": "系统", "content": "聊天室已创建！"}
-
-    print(f"DEBUG: 聊天室 '{db_room.name}' (ID: {db_room.id}) 创建成功。")
-    return db_room
+    try:
+        # 1. 关联项目/课程的校验 (业务逻辑和现有权限不足，仅做存在性检查)
+        if chat_room_data.project_id:
+            project = db.query(Project).filter(Project.id == chat_room_data.project_id).first()
+            if not project:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目不存在。")
+            if project.chat_room:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目已有关联聊天室。")
 
 
+        if chat_room_data.course_id:
+            course = db.query(Course).filter(Course.id == chat_room_data.course_id).first()
+            if not course:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的课程不存在。")
+            if course.chat_room:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="课程已有关联聊天室。")
+
+        # 2. 创建聊天室记录
+        db_chat_room = ChatRoom(
+            name=chat_room_data.name,
+            type=chat_room_data.type,
+            project_id=chat_room_data.project_id,
+            course_id=chat_room_data.course_id,
+            creator_id=current_user_id,
+            color=chat_room_data.color
+        )
+        db.add(db_chat_room)
+        db.commit()  # 首次提交以获取 db_chat_room 的 ID
+        db.refresh(db_chat_room)  # 刷新以加载数据库生成的 ID 和创建时间
+        db_chat_room_member = ChatRoomMember(
+            room_id=db_chat_room.id,
+            member_id=current_user_id,
+            role="member",  # 初始设置为 'member'，因为群主身份已由 ChatRoom.creator_id 表示
+            status="active"
+        )
+        db.add(db_chat_room_member)
+        db.commit()  # 提交成员记录
+
+        db_chat_room.members_count = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == db_chat_room.id,
+            ChatRoomMember.status == "active"
+        ).count()  # 获取活跃成员数量
+
+        db_chat_room.last_message = {"sender": "系统", "content": "聊天室已创建！"}
+        db_chat_room.unread_messages_count = 0
+        db_chat_room.online_members_count = 0
+
+        print(f"DEBUG: 聊天室 '{db_chat_room.name}' (ID: {db_chat_room.id}) 创建成功，创建者已添加为成员。")
+        return db_chat_room
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 聊天室创建发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="聊天室创建失败，可能存在重复的数据（如项目/课程已有关联聊天室）或名称冲突。")
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建聊天室失败: {e}")
+
+
+# project/main.py (聊天室管理接口部分)
 @app.get("/chatrooms/", response_model=List[schemas.ChatRoomResponse], summary="获取当前用户所属的所有聊天室")
 async def get_all_chat_rooms(
         current_user_id: int = Depends(get_current_user_id),
@@ -2484,34 +2529,91 @@ async def get_all_chat_rooms(
 ):
     """
     获取当前用户所属（创建或参与）的所有聊天室列表。
-    目前简化为获取用户创建的所有聊天室。
-    可以通过 type 过滤（例如：project_group, course_group）。
+    可通过 type 过滤（例如：project_group, course_group）。
     """
     print(f"DEBUG: 获取用户 {current_user_id} 的所有聊天室，类型过滤: {room_type}")
-    query = db.query(ChatRoom).filter(ChatRoom.creator_id == current_user_id)  # 简化：只获取创建的
 
-    # TODO: 后续需要实现用户与聊天室的多对多关系，以获取用户参与的所有聊天室
+    # 1. 构建核心权限查询：用户是创建者 OR 用户是活跃成员
+    # 条件1: 用户是聊天室的创建者
+    user_is_creator_condition = ChatRoom.creator_id == current_user_id
 
+    # 条件2: 用户是该聊天室的活跃成员 (通过 exists 子查询判断)
+    user_is_active_member_condition = (
+        db.query(ChatRoomMember.id)
+        .filter(
+            ChatRoomMember.room_id == ChatRoom.id,  # 确保是当前聊天室的成员
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        )
+        .exists()  # 如果存在符合条件的记录，则为 True
+    )
+
+    # 组合这两个条件
+    main_filter_condition = or_(user_is_creator_condition, user_is_active_member_condition)
+
+    # 构建基础查询
+    rooms_query = db.query(ChatRoom).filter(main_filter_condition)
+
+    # 应用类型过滤
     if room_type:
-        query = query.filter(ChatRoom.type == room_type)
+        rooms_query = rooms_query.filter(ChatRoom.type == room_type)
 
-    rooms = query.order_by(ChatRoom.updated_at.desc()).all()
+    # 执行查询，获取所有符合权限和过滤条件的聊天室
+    rooms = rooms_query.order_by(ChatRoom.updated_at.desc()).all()
 
-    # 填充动态统计字段
-    for room in rooms:
-        # 简化：成员数量为1（创建者），除非有实际的成员管理系统
-        room.members_count = 1
-        # 获取最后一条消息
-        last_msg = db.query(ChatMessage).filter(ChatMessage.room_id == room.id) \
-            .order_by(ChatMessage.sent_at.desc()).first()
-        if last_msg:
-            room.last_message = {
-                "sender": db.query(Student).filter(Student.id == last_msg.sender_id).first().name or "未知",
-                "content": last_msg.content_text[:50] + "..." if len(
-                    last_msg.content_text) > 50 else last_msg.content_text
+    # 2. 优化 N+1 问题 (保持不变)：一次性获取所有房间的最新消息和发送者信息
+    room_ids = [room.id for room in rooms]
+
+    room_latest_messages_map = {}  # 用于存储 {room_id: last_message_info_dict}
+    if room_ids:  # 只有当有房间时才执行消息查询
+        ranked_messages_subquery = (
+            db.query(
+                ChatMessage.room_id,
+                ChatMessage.sender_id,
+                ChatMessage.content_text,
+                ChatMessage.sent_at,
+                func.row_number().over(
+                    partition_by=ChatMessage.room_id,
+                    order_by=ChatMessage.sent_at.desc()
+                ).label('rn')
+            )
+            .filter(ChatMessage.room_id.in_(room_ids))
+            .subquery('ranked_messages')
+        )
+
+        latest_messages_with_senders = (
+            db.query(
+                ranked_messages_subquery.c.room_id,
+                ranked_messages_subquery.c.content_text,
+                Student.name.label('sender_name')
+            )
+            .join(Student, Student.id == ranked_messages_subquery.c.sender_id)
+            .filter(ranked_messages_subquery.c.rn == 1)
+            .all()
+        )
+
+        for msg in latest_messages_with_senders:
+            room_latest_messages_map[msg.room_id] = {
+                "sender": msg.sender_name or "未知",
+                "content": (msg.content_text[:50] + "..." if msg.content_text and len(msg.content_text) > 50 else (
+                            msg.content_text or ""))
             }
+
+    # 3. 填充动态统计字段到每个聊天室对象
+    for room in rooms:
+        # 动态计算成员数量 (已在 ChatRoomMember 逻辑中处理)
+        room.members_count = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room.id,
+            ChatRoomMember.status == "active"
+        ).count()
+
+        # 从预加载的字典中获取最新消息
+        last_message_info = room_latest_messages_map.get(room.id)
+        if last_message_info:
+            room.last_message = last_message_info
         else:
             room.last_message = {"sender": "系统", "content": "暂无消息"}
+
         # 未读消息数和在线状态暂时模拟为0
         room.unread_messages_count = 0
         room.online_members_count = 0
@@ -2520,117 +2622,820 @@ async def get_all_chat_rooms(
     return rooms
 
 
+# project/main.py (聊天室管理接口部分 - GET /chat-rooms/{room_id}/)
 @app.get("/chatrooms/{room_id}", response_model=schemas.ChatRoomResponse, summary="获取指定聊天室详情")
 async def get_chat_room_by_id(
         room_id: int,
-        current_user_id: int = Depends(get_current_user_id),  # 确保用户有权查看（简化为创建者）
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    获取指定ID的聊天室详情。目前简化为只有创建者才能查看。
+    获取指定ID的聊天室详情。
+    只有聊天室的创建者、活跃成员或系统管理员才能查看。
     """
-    print(f"DEBUG: 获取聊天室 ID: {room_id} 的详情。")
-    room = db.query(ChatRoom).filter(ChatRoom.id == room_id, ChatRoom.creator_id == current_user_id).first()  # 简化权限
-    if not room:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found or not authorized")
+    print(f"DEBUG: 用户 {current_user_id} 尝试获取聊天室 ID: {room_id} 的详情。")
 
-    # 填充动态统计字段
-    room.members_count = 1
-    last_msg = db.query(ChatMessage).filter(ChatMessage.room_id == room.id) \
-        .order_by(ChatMessage.sent_at.desc()).first()
-    if last_msg:
-        room.last_message = {
-            "sender": db.query(Student).filter(Student.id == last_msg.sender_id).first().name or "未知",
-            "content": last_msg.content_text[:50] + "..." if len(last_msg.content_text) > 50 else last_msg.content_text
-        }
-    else:
-        room.last_message = {"sender": "系统", "content": "暂无消息"}
-    room.unread_messages_count = 0
-    room.online_members_count = 0
+    try:  # **新增：将整个核心逻辑放入 try 块中**
+        # 1. 获取当前用户和目标聊天室的信息
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    return room
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # **核心权限检查：用户是否是群主、活跃成员或系统管理员**
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member or current_user.is_admin):
+            # 如果既不是创建者，也不是活跃成员，也不是系统管理员，则无权访问
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看此聊天室详情。")
+
+        # 2. 填充动态统计字段
+        # 获取活跃成员数量 (从 ChatRoomMember 表中动态统计)
+        chat_room.members_count = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == chat_room.id,
+            ChatRoomMember.status == "active"
+        ).count()
+
+        # 一次性获取最新消息和发送者名称 (保持之前优化过的逻辑)
+        latest_message_data = (
+            db.query(ChatMessage.content_text, Student.name)
+            .filter(ChatMessage.room_id == chat_room.id)
+            .join(Student, Student.id == ChatMessage.sender_id)
+            .order_by(ChatMessage.sent_at.desc())
+            .first()
+        )
+
+        if latest_message_data:
+            content_text, sender_name = latest_message_data
+            chat_room.last_message = {
+                "sender": sender_name or "未知",
+                "content": (
+                    content_text[:50] + "..." if content_text and len(content_text) > 50 else (content_text or ""))
+            }
+        else:
+            chat_room.last_message = {"sender": "系统", "content": "暂无消息"}
+
+        # 未读消息数和在线状态暂时模拟为0
+        chat_room.unread_messages_count = 0
+        chat_room.online_members_count = 0
+
+        return chat_room
+
+    except HTTPException as e:  # 捕获主动抛出的 HTTPException
+        raise e  # 重新抛出，不进行回滚
+    except Exception as e:  # 捕获其他任何未预期错误
+        db.rollback()  # 确保在异常时回滚
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取聊天室详情失败: {e}")
 
 
-@app.put("/chatrooms/{room_id}", response_model=schemas.ChatRoomResponse, summary="更新指定聊天室")
-async def update_chat_room(
+# project/main.py (聊天室管理接口部分 )
+@app.get("/chat-rooms/{room_id}/members", response_model=List[schemas.ChatRoomMemberResponse],
+         summary="获取指定聊天室的所有成员列表")
+async def get_chat_room_members(
+        room_id: int,  # 目标聊天室ID
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试获取聊天室 {room_id} 的成员列表。")
+
+    try:
+        # 1. 获取当前用户和目标聊天室的信息
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # 2. 核心权限检查：用户是否是群主、聊天室管理员或系统管理员
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_room_admin = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.role == "admin",
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_room_admin or current_user.is_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该聊天室的成员列表。")
+
+        # 3. 查询聊天室所有成员，并通过 joinedload 预加载关联的 Student 信息
+        memberships = db.query(ChatRoomMember).options(
+            joinedload(ChatRoomMember.member)  # 预加载成员的用户信息
+        ).filter(ChatRoomMember.room_id == room_id).all()
+
+        # 遍历成员关系，提取并填充 member_name
+        response_members = []
+        for member_ship in memberships:
+            member_response_dict = {
+                "id": member_ship.id,
+                "room_id": member_ship.room_id,
+                "member_id": member_ship.member_id,
+                "role": member_ship.role,
+                "status": member_ship.status,
+                "joined_at": member_ship.joined_at,
+                "member_name": member_ship.member.name if member_ship.member else "未知用户"  # 填充姓名
+            }
+            response_members.append(schemas.ChatRoomMemberResponse(**member_response_dict))
+
+        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(response_members)} 位成员。")
+        return response_members  # 返回手动构建的响应列表
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取聊天室成员列表失败: {e}")
+
+# project/main.py (设置系统管理员权限接口 - 管理员专用)
+@app.put("/admin/users/{user_id}/set-admin", response_model=schemas.StudentResponse,
+         summary="【管理员专用】设置系统管理员权限")
+async def set_user_admin_status(
+        user_id: int,  # 目标用户ID
+        admin_status: schemas.UserAdminStatusUpdate,  # 包含 is_admin 值
+        current_user_id: str = Depends(get_current_user_id),  # 已认证的系统管理员ID
+        db: Session = Depends(get_db)
+):
+    current_user_id_int = int(current_user_id)  # 转换为整数
+
+    print(f"DEBUG_ADMIN: 管理员 {current_user_id_int} 尝试设置用户 {user_id} 的管理员权限为 {admin_status.is_admin}。")
+
+    try:
+        # 1. 验证操作者是否为系统管理员
+        current_admin = db.query(Student).filter(Student.id == current_user_id_int).first()
+        if not current_admin or not current_admin.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权执行此操作。只有系统管理员才能设置用户管理员权限。")
+
+        # 2. 查找目标用户
+        target_user = db.query(Student).filter(Student.id == user_id).first()
+        if not target_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户未找到。")
+
+        # 3. 不允许系统管理员取消自己的系统管理员权限 (防止误操作导致失去最高权限)
+        if current_user_id_int == user_id and not admin_status.is_admin:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="系统管理员不能取消自己的管理员权限。请联系其他系统管理员协助。")
+
+        # 4. 更新目标用户的管理员状态
+        target_user.is_admin = admin_status.is_admin
+        db.add(target_user)
+        db.commit()
+        db.refresh(target_user)
+
+        print(f"DEBUG_ADMIN: 用户 {user_id} 的管理员权限已成功设置为 {admin_status.is_admin}。")
+        return target_user
+
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 设置管理员权限失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"设置管理员权限失败: {e}")
+
+
+# project/main.py (设置成员角色接口 - 聊天室管理部分)
+@app.put("/chat-rooms/{room_id}/members/{member_id}/set-role", response_model=schemas.ChatRoomMemberResponse,
+         summary="设置聊天室成员的角色（管理员/普通成员）")
+async def set_chat_room_member_role(
+        room_id: int,  # 目标聊天室ID
+        member_id: int,  # 目标成员的用户ID
+        role_update: schemas.ChatRoomMemberRoleUpdate,  # 包含新的角色信息
+        current_user_id: str = Depends(get_current_user_id),  # **<<<<< 关键修改：明确类型为 str >>>>>**
+        db: Session = Depends(get_db)
+):
+    current_user_id_int = int(current_user_id)  # **<<<<< 关键修改：将字符串ID转换为整数 >>>>>**
+
+    # **注意这里：使用转换后的 current_user_id_int**
+    print(
+        f"DEBUG: 用户 {current_user_id_int} 尝试设置聊天室 {room_id} 中用户 {member_id} 的角色为 '{role_update.role}'。")
+
+    try:
+        # 1. 验证目标角色是否合法
+        if role_update.role not in ["admin", "member"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="无效的角色类型，只能为 'admin' 或 'member'。")
+
+        # 2. 获取当前操作用户、目标聊天室和目标成员关系
+        # **注意这里：使用转换后的 current_user_id_int 进行数据库查询**
+        current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # 获取目标成员的 ChatRoomMember 记录
+        # 确保 db_member.member 关系已被加载
+        db_member = db.query(ChatRoomMember).options(joinedload(ChatRoomMember.member)).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == member_id,  # member_id 本身就是 int
+            ChatRoomMember.status == "active"  # 确保是活跃成员
+        ).first()
+        if not db_member:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户不是该聊天室的活跃成员。")
+
+        # 不允许通过此接口修改群主自己 (群主身份由 creator_id 管理)
+        # **注意这里：使用转换后的 current_user_id_int 确保正确的比较**
+        if chat_room.creator_id == db_member.member_id:  # 这里的 db_member.member_id 通常是 int，所以比较的是 int == int
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="不能通过此接口修改群主的角色。群主身份由 ChatRoom.creator_id 字段定义。")
+
+        # **新增调试打印：查看权限相关的原始值和比较结果**
+        print(
+            f"DEBUG_PERM_SET_ROLE: current_user_id_int={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)}), current_user.is_admin={current_user.is_admin}")
+
+        # **3. 核心操作权限检查：只有群主可以设置聊天室成员角色**
+        # **注意这里：比较时使用转换后的 current_user_id_int**
+        is_creator = (chat_room.creator_id == current_user_id_int)  # 仅群主可以操作
+
+        print(f"DEBUG_PERM_SET_ROLE: is_creator={is_creator}")
+
+        if not is_creator:  # 仅检查 is_creator
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权设置聊天室成员角色。只有群主可以执行此操作。")
+
+        # 4. 特殊业务逻辑限制 (防止聊天室管理员给自己降权)
+        # **注意这里：比较时使用转换后的 current_user_id_int**
+        if current_user_id_int == member_id and db_member.role == "admin" and role_update.role == "member":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="聊天室管理员不能取消自己的管理员权限。")
+
+        # 5. 更新目标成员的角色
+        db_member.role = role_update.role
+
+        db.add(db_member)
+        db.commit()
+        db.refresh(db_member)
+
+        print(f"DEBUG: 聊天室 {room_id} 中的用户 {member_id} 的角色已更新为 '{role_update.role}'。")
+
+        # 填充 member_name 到响应中 (确保 db_member.member 已通过 joinedload 加载)
+        db_member.member_name = db_member.member.name if db_member.member else "未知用户"
+        return db_member
+
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 设置成员角色失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"设置成员角色失败: {e}")
+
+
+# (聊天室管理接口部分 - 删除成员)
+@app.delete("/chat-rooms/{room_id}/members/{member_id}", response_model=Dict[str, str],
+            summary="从聊天室移除成员（踢出或离开）")
+async def remove_chat_room_member(
         room_id: int,
-        room_data: schemas.ChatRoomBase,
-        current_user_id: int = Depends(get_current_user_id),  # 只有创建者能更新
+        member_id: int,  # 目标成员的用户ID
+        current_user_id: int = Depends(get_current_user_id),  # 操作者用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    更新指定ID的聊天室信息。目前简化为只有创建者能更新。
-    """
-    print(f"DEBUG: 更新聊天室 ID: {room_id} 的信息。")
-    db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id, ChatRoom.creator_id == current_user_id).first()
-    if not db_room:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found or not authorized")
+    print(f"DEBUG: 用户 {current_user_id} 尝试从聊天室 {room_id} 移除成员 {member_id}。")
 
-    update_data = room_data.dict(exclude_unset=True)
+    try:
+        # 1. 获取当前操作用户、目标聊天室和目标成员的 ChatRoomMember 记录
+        acting_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not acting_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    # 验证 project_id / course_id 关联
-    if "project_id" in update_data and update_data["project_id"] is not None:
-        project = db.query(Project).filter(Project.id == update_data["project_id"]).first()
-        if not project:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
-        # 检查项目是否已有关联聊天室，或是否是当前聊天室自己
-        if project.chat_room and project.chat_room.id != room_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Project already has an associated chat room.")
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-    if "course_id" in update_data and update_data["course_id"] is not None:
-        course = db.query(Course).filter(Course.id == update_data["course_id"]).first()
-        if not course:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
-        # 检查课程是否已有关联聊天室，或是否是当前聊天室自己
-        if course.chat_room and course.chat_room.id != room_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Course already has an associated chat room.")
+        # 获取目标成员在群里的成员记录，且必须是活跃成员才能被操作
+        target_membership = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == member_id,
+            ChatRoomMember.status == "active"
+        ).first()
 
-    for key, value in update_data.items():
-        setattr(db_room, key, value)
+        if not target_membership:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户不是该聊天室的活跃成员。")
 
-    db.add(db_room)
-    db.commit()
-    db.refresh(db_room)
+        # 2. **处理用户自己离开群聊的情况** (`member_id` == `current_user_id`)
+        if current_user_id == member_id:
+            # 群主不能通过此接口离开群聊（他们应该使用解散群聊功能）
+            if chat_room.creator_id == current_user_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="群主不能通过此接口离开群聊。要解散聊天室请使用解散功能。")
 
-    # 刷新动态统计字段
-    db_room.members_count = 1
-    last_msg = db.query(ChatMessage).filter(ChatMessage.room_id == db_room.id) \
-        .order_by(ChatMessage.sent_at.desc()).first()
-    if last_msg:
-        db_room.last_message = {
-            "sender": db.query(Student).filter(Student.id == last_msg.sender_id).first().name or "未知",
-            "content": last_msg.content_text[:50] + "..." if len(last_msg.content_text) > 50 else last_msg.content_text
-        }
-    else:
-        db_room.last_message = {"sender": "系统", "content": "暂无消息"}
-    db_room.unread_messages_count = 0
-    db_room.online_members_count = 0
+            # 其他活跃成员可以直接离开群聊
+            target_membership.status = "left"  # 标记为“已离开”
+            db.add(target_membership)
+            db.commit()
+            print(f"DEBUG: 用户 {current_user_id} 已成功离开聊天室 {room_id}。")
+            return {"message": "您已成功离开聊天室。"}
+
+        # 3. **处理踢出他人成员的情况** (`member_id` != `current_user_id`)
+
+        # 确定操作者的角色
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_system_admin = acting_user.is_admin
+
+        # 如果操作者不是群主也不是系统管理员，则去查询他是否是聊天室管理员
+        acting_user_membership = None
+        if not is_creator and not is_system_admin:
+            acting_user_membership = db.query(ChatRoomMember).filter(
+                ChatRoomMember.room_id == room_id,
+                ChatRoomMember.member_id == current_user_id,
+                ChatRoomMember.status == "active"
+            ).first()
+
+        is_room_admin = (acting_user_membership and acting_user_membership.role == "admin")
+
+        # 确定被操作成员的角色
+        target_member_is_creator = (member_id == chat_room.creator_id)
+        target_member_role_in_room = target_membership.role  # 'admin' or 'member' (来自ChatRoomMember表)
+
+        # 权限决策树 - 谁可以踢谁
+        can_kick = False
+        reason_detail = "无权将该用户从聊天室移除。"  # 默认的拒绝理由
+
+        if is_system_admin:
+            can_kick = True  # 系统管理员可以踢出任何人
+        elif is_creator:
+            can_kick = True  # 群主可以踢出任何人 (被移除的成员不是群主自己，这在上面已分别处理)
+        elif is_room_admin:
+            # 聊天室管理员只能在特定条件下踢人
+            if target_member_is_creator:
+                reason_detail = "聊天室管理员无权移除群主。"
+            elif target_member_role_in_room == "admin":
+                reason_detail = "聊天室管理员无权移除其他管理员。"
+            else:  # 目标成员是普通成员
+                can_kick = True
+
+        if not can_kick:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason_detail)
+
+        # 4. 执行移除操作：更新目标成员状态为 'banned' (被踢出)
+        target_membership.status = "banned"
+        db.add(target_membership)
+        db.commit()
+
+        print(f"DEBUG: 成员 {member_id} 已成功从聊天室 {room_id} 移除（被踢出）。")
+        return {"message": "成员已成功从聊天室移除。"}
+
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 从聊天室移除成员失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"从聊天室移除成员失败: {e}")
+
+
+@app.put("/chatrooms/{room_id}/", response_model=schemas.ChatRoomResponse, summary="更新指定聊天室")
+async def update_chat_room(
+        room_id: int,  # 从路径中获取聊天室ID
+        room_data: schemas.ChatRoomUpdate,  # 要更新的聊天室数据
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 更新聊天室 ID: {room_id}。用户: {current_user_id}")
+
+    try:  # **新增：整个核心逻辑放入 try 块中**
+        # 核心权限检查：只有创建者才能更新聊天室
+        # TODO: 未来扩展：允许特定类型的管理员或被授权的成员更新
+        db_chat_room = db.query(ChatRoom).filter(
+            ChatRoom.id == room_id,
+            ChatRoom.creator_id == current_user_id  # 确保当前用户是该聊天室的创建者
+        ).first()
+
+        if not db_chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到或无权访问。")
+
+        update_data = room_data.dict(exclude_unset=True)
+
+        # 验证 project_id / course_id 关联
+        if "project_id" in update_data and update_data["project_id"] is not None:
+            project = db.query(Project).filter(Project.id == update_data["project_id"]).first()
+            if not project:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目不存在。")
+            # 检查项目是否已有关联聊天室，或是否是当前聊天室自己
+            if project.chat_room and project.chat_room.id != room_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="Project already has an associated chat room.")
+            # TODO: 进一步验证 current_user_id 是否有权将聊天室关联到此项目
+
+        if "course_id" in update_data and update_data["course_id"] is not None:
+            course = db.query(Course).filter(Course.id == update_data["course_id"]).first()
+            if not course:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
+            # 检查课程是否已有关联聊天室，或是否是当前聊天室自己
+            if course.chat_room and course.chat_room.id != room_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="Course already has an associated chat room.")
+            # TODO: 进一步验证 current_user_id 是否有权将聊天室关联到此课程
+
+        # 应用更新
+        for key, value in update_data.items():
+            setattr(db_chat_room, key, value)
+
+        db.add(db_chat_room)
+        db.commit()  # 提交事务
+        db.refresh(db_chat_room)  # 刷新以获取最新状态
+
+        print(f"DEBUG: 聊天室 {room_id} 更新成功。")
+
+        # 填充动态统计字段 (确保返回DTO的完整性)
+        db_chat_room.members_count = 1
+        latest_message_data = (
+            db.query(ChatMessage.content_text, Student.name)
+            .filter(ChatMessage.room_id == db_chat_room.id)
+            .join(Student, Student.id == ChatMessage.sender_id)
+            .order_by(ChatMessage.sent_at.desc())
+            .first()
+        )
+        if latest_message_data:
+            content_text, sender_name = latest_message_data
+            db_chat_room.last_message = {
+                "sender": sender_name or "未知",
+                "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (
+                            content_text or "")
+            }
+        else:
+            db_chat_room.last_message = {"sender": "系统", "content": "暂无消息"}
+
+        db_chat_room.unread_messages_count = 0
+        db_chat_room.online_members_count = 0
+
+        return db_chat_room
+
+    except IntegrityError as e:  # 捕获数据库完整性错误**
+        db.rollback()  # 回滚事务
+        print(f"ERROR_DB: 聊天室更新发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="更新聊天室失败，可能存在名称冲突或其他完整性约束冲突。")
+    except HTTPException as e:  # 捕获前面主动抛出的 HTTPException**
+        db.rollback()  # 确保回滚
+        raise e  # 重新抛出已携带正确状态码和详情的 HTTPException
+    except Exception as e:  # 捕获其他任何未预期错误**
+        db.rollback()  # 确保在异常时回滚
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新聊天室失败: {e}")
 
     print(f"DEBUG: 聊天室 {db_room.id} 更新成功。")
     return db_room
 
 
+# project/main.py (聊天室管理接口部分)
 @app.delete("/chatrooms/{room_id}", summary="删除指定聊天室")
 async def delete_chat_room(
-        room_id: int,
-        current_user_id: int = Depends(get_current_user_id),  # 只有创建者能删除
+        room_id: int,  # 从路径中获取聊天室ID
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    删除指定ID的聊天室及其所有消息。目前简化为只有创建者能删除。
-    """
-    print(f"DEBUG: 删除聊天室 ID: {room_id}。")
-    db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id, ChatRoom.creator_id == current_user_id).first()
-    if not db_room:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found or not authorized")
+    print(f"DEBUG: 删除聊天室 ID: {room_id}。用户: {current_user_id}")
 
-    # SQLAlchemy的cascade="all, delete-orphan"会在db.delete(db_room)时自动处理所有消息
-    db.delete(db_room)
-    db.commit()
-    print(f"DEBUG: 聊天室 {room_id} 及其消息删除成功。")
-    return {"message": "Chat room and messages deleted successfully"}
+    try:
+        # 1. 获取当前用户的信息，以便检查其是否为管理员
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            # 理论上 get_current_user_id 能够保证用户存在，但这作为防御性检查
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        # 2. 获取目标聊天室
+        db_chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # **核心权限检查：判断用户是否有权限删除此聊天室**
+        # 方式一：用户是聊天室的创建者 (ChatRoom.creator_id == current_user_id)
+        # 方式二：当前用户是系统管理员 (current_user.is_admin 为 True)
+        if not (db_chat_room.creator_id == current_user_id or current_user.is_admin):
+            # 如果既不是创建者也不是管理员，则无权访问
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除此聊天室。")
+
+        # 如果权限通过，执行删除操作
+        db.delete(db_chat_room)  # 标记为删除
+        db.commit()  # 提交事务
+
+        print(f"DEBUG: 聊天室 {room_id} 及其所有关联消息已成功删除。")
+        return {"message": "Chat room and all associated messages deleted successfully."}
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 聊天室删除发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="删除聊天室失败，可能存在数据关联问题。")
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"删除聊天室失败: {e}")
+
+
+@app.delete("/chatrooms/{room_id}", summary="解散指定聊天室")
+async def delete_chat_room(
+        room_id: int,  # 从路径中获取聊天室ID
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试解散聊天室 ID: {room_id}。")
+
+    try:
+        # 1. 获取当前用户和目标聊天室的信息
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        db_chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # **核心权限检查：严格限制为只有群主可以解散聊天室**
+        is_creator = (db_chat_room.creator_id == current_user_id)
+
+        if not is_creator:  # **修改：移除 is_system_admin**
+            # 如果不是群主，则无权解散
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权解散此聊天室。只有群主可以执行此操作。")  # **修改：更明确的提示**
+
+        # 执行删除操作（包括级联删除成员和消息）
+        db.delete(db_chat_room)  # 标记为删除
+        db.commit()  # 提交事务
+
+        print(f"DEBUG: 聊天室 {room_id} 及其所有关联数据已成功解散/删除。")
+        return {"message": "Chat room and all associated data deleted successfully."}
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 聊天室解散发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="解散聊天室失败，可能存在数据关联问题。")
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"解散聊天室失败: {e}")
+
+
+@app.post("/chat-rooms/{room_id}/join-request", response_model=schemas.ChatRoomJoinRequestResponse,
+          summary="向指定聊天室发起入群申请")
+async def send_join_request(
+        room_id: int,  # 目标聊天室ID
+        request_data: schemas.ChatRoomJoinRequestCreate,  # 申请理由等 (包含 room_id，但我们只用路径中的 room_id)
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID，即申请者
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试向聊天室 {room_id} 发起入群申请。理由: {request_data.reason}")
+
+    if request_data.room_id != room_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请求体中的room_id与路径中的room_id不匹配。")
+
+    try:
+        # 1. 验证目标聊天室是否存在
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # 2. 验证申请者身份：不能是聊天室创建者
+        if chat_room.creator_id == current_user_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="您已经是该聊天室的创建者，无需申请加入。")
+
+        # 3. 验证申请者是否已经是活跃成员
+        existing_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first()
+        if existing_member:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="您已是该聊天室的活跃成员，无需重复申请。")
+
+        # 4. 验证申请者是否已有待处理的申请 (通过数据库的 UniqueConstraint 实现，但也可以在这里提前检查)
+        existing_pending_request = db.query(ChatRoomJoinRequest).filter(
+            ChatRoomJoinRequest.room_id == room_id,
+            ChatRoomJoinRequest.requester_id == current_user_id,
+            ChatRoomJoinRequest.status == "pending"
+        ).first()
+        if existing_pending_request:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已有待处理的入群申请，请勿重复提交。")
+
+        # 5. 创建入群申请记录
+        db_join_request = ChatRoomJoinRequest(
+            room_id=room_id,
+            requester_id=current_user_id,
+            reason=request_data.reason,
+            status="pending"  # 默认状态为待处理
+        )
+        db.add(db_join_request)
+        db.commit()
+        db.refresh(db_join_request)
+
+        print(f"DEBUG: 用户 {current_user_id} 向聊天室 {room_id} 发起的入群申请 (ID: {db_join_request.id}) 已提交。")
+        return db_join_request
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 入群申请创建发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="入群申请提交失败，可能存在重复申请或其他数据冲突。")
+    except HTTPException as e:  # 捕获上面主动抛出的 HTTPException
+        raise e  # 重新抛出已携带正确状态码和详情的 HTTPException
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"提交入群申请失败: {e}")
+
+
+# project/main.py (获取入群申请列表接口 - 聊天室管理部分)
+
+@app.get("/chat-rooms/{room_id}/join-requests", response_model=List[schemas.ChatRoomJoinRequestResponse],
+         summary="获取指定聊天室的入群申请列表")
+async def get_join_requests_for_room(
+        room_id: int,  # 目标聊天室ID
+        # 允许通过 status 过滤请求 (例如 'pending', 'approved', 'rejected')
+        status_filter: Optional[str] = Query("pending", description="过滤申请状态（pending, approved, rejected）"),
+        current_user_id: str = Depends(get_current_user_id),  # 已认证的用户ID，现在明确是 str 类型
+        db: Session = Depends(get_db)
+):
+    current_user_id_int = int(current_user_id)  # 将字符串ID转换为整数，用于后续比较和查询DB
+
+    # **注意这里：使用转换后的 current_user_id_int**
+    print(f"DEBUG: 用户 {current_user_id_int} 尝试获取聊天室 {room_id} 的入群申请列表 (状态: {status_filter})。")
+
+    try:
+        # 1. 获取当前用户和目标聊天室的信息
+        # **注意这里：使用转换后的 current_user_id_int 进行数据库查询**
+        current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # **新增调试打印：查看权限相关的原始值和比较结果**
+        # **注意这里：打印时也使用 current_user_id_int 来显示转换后的类型和值**
+        print(
+            f"DEBUG_PERM: current_user_id={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)}), current_user.is_admin={current_user.is_admin}")
+
+        # 2. **核心权限检查：用户是否是群主、聊天室管理员或系统管理员**
+        # **注意这里：比较时使用转换后的 current_user_id_int**
+        is_creator = (chat_room.creator_id == current_user_id_int)
+        is_room_admin = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id_int,  # **注意这里：查询时使用转换后的 current_user_id_int**
+            ChatRoomMember.role == "admin",  # 注意：群主默认角色是 "member"，不是 "admin"
+            ChatRoomMember.status == "active"
+        ).first() is not None  # 判断是否存在活跃的管理员成员记录
+
+        print(f"DEBUG_PERM: is_creator={is_creator}, is_room_admin={is_room_admin}")
+        print(f"DEBUG_PERM: Final combined permission: {is_creator or is_room_admin or current_user.is_admin}")
+
+        # 只有群主、聊天室管理员或系统管理员才能查看申请
+        if not (is_creator or is_room_admin or current_user.is_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该聊天室的入群申请。")
+
+        # 3. 构建查询条件
+        query = db.query(ChatRoomJoinRequest).filter(ChatRoomJoinRequest.room_id == room_id)
+
+        # 应用状态过滤
+        if status_filter:
+            query = query.filter(ChatRoomJoinRequest.status == status_filter)
+
+        # 4. 执行查询并返回结果
+        join_requests = query.order_by(ChatRoomJoinRequest.requested_at.asc()).all()
+
+        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(join_requests)} 条入群申请。")
+        return join_requests
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取入群申请失败: {e}")
+
+
+# project/main.py (处理入群申请接口 - 聊天室管理部分)
+
+@app.post("/chat-rooms/join-requests/{request_id}/process", response_model=schemas.ChatRoomJoinRequestResponse,
+          summary="处理入群申请 (批准或拒绝)")
+async def process_join_request(
+        request_id: int,  # 要处理的入群申请ID
+        process_data: schemas.ChatRoomJoinRequestProcess,  # 包含处理结果 (approved/rejected)
+        current_user_id: str = Depends(get_current_user_id),  # 已认证的用户ID，即处理者 (现在明确是 str 类型)
+        db: Session = Depends(get_db)
+):
+    current_user_id_int = int(current_user_id)  # 将字符串ID转换为整数，用于后续比较和查询DB
+
+    print(f"DEBUG: 用户 {current_user_id_int} 尝试处理入群申请 ID: {request_id} 为 '{process_data.status}'。")
+
+    try:
+        # 1. 验证目标入群申请是否存在且为 pending 状态
+        db_request = db.query(ChatRoomJoinRequest).filter(ChatRoomJoinRequest.id == request_id).first()
+        if not db_request:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="入群申请未找到。")
+        if db_request.status != "pending":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该申请已处理或状态异常，无法再次处理。")
+
+        # 2. 获取当前用户和目标聊天室的信息，用于权限检查
+        current_user = db.query(Student).filter(Student.id == current_user_id_int).first()  # **使用 int 型 ID 查询**
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == db_request.room_id).first()
+        if not chat_room:
+            # 理论上不会发生，因为 db_request.room_id 引用 ChatRoom
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的聊天室不存在。")
+
+        # **新增调试打印：查看权限相关的原始值和比较结果**
+        print(
+            f"DEBUG_PERM_PROCESS: current_user_id_int={current_user_id_int}, chat_room.creator_id={chat_room.creator_id}, current_user.is_admin={current_user.is_admin}")
+
+        # 3. **核心权限检查：处理者是否是群主、聊天室管理员或系统管理员**
+        is_creator = (chat_room.creator_id == current_user_id_int)  # **使用 int 型 ID 比较**
+        is_room_admin = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == chat_room.id,
+            ChatRoomMember.member_id == current_user_id_int,  # **使用 int 型 ID 比较**
+            ChatRoomMember.role == "admin",
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        print(f"DEBUG_PERM_PROCESS: is_creator={is_creator}, is_room_admin={is_room_admin}")
+        print(f"DEBUG_PERM_PROCESS: Final combined permission: {is_creator or is_room_admin or current_user.is_admin}")
+
+        if not (is_creator or is_room_admin or current_user.is_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权处理此入群申请。")
+
+        # 4. 验证请求的状态是否合法
+        if process_data.status not in ["approved", "rejected"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="无效的申请处理状态，只能是 'approved' 或 'rejected'。")
+
+        # 5. 更新申请状态及处理信息
+        db_request.status = process_data.status
+        db_request.processed_by_id = current_user_id_int  # **使用 int 型 ID 赋值**
+        db_request.processed_at = func.now()
+
+        db.add(db_request)
+        db.commit()  # 提交申请状态的更新
+        # db.refresh(db_request) # 刷新 db_request，如果你需要获取 processed_by_id 等最新值，否则可以省略
+
+        # 6. 如果申请被批准，则将用户添加到聊天室成员表中
+        if process_data.status == "approved":
+            # 检查用户是否已经以某种方式（例如之前被审批过）成为了成员
+            existing_member = db.query(ChatRoomMember).filter(
+                ChatRoomMember.room_id == db_request.room_id,
+                ChatRoomMember.member_id == db_request.requester_id
+            ).first()
+
+            if existing_member:
+                # 如果已存在，更新其状态为 active (例如，从 'left' 或 'banned' 恢复)
+                existing_member.status = "active"
+                existing_member.role = "member"  # 批准加入时默认是普通成员
+                db.add(existing_member)
+                print(f"DEBUG: 用户 {db_request.requester_id} 在聊天室 {db_request.room_id} 的成员状态已激活。")
+            else:
+                # 创建新的成员记录
+                new_member = ChatRoomMember(
+                    room_id=db_request.room_id,
+                    member_id=db_request.requester_id,  # requester_id 从 db_request 来，已经是 int
+                    role="member",
+                    status="active"
+                )
+                db.add(new_member)
+                print(f"DEBUG: 用户 {db_request.requester_id} 已添加为聊天室 {db_request.room_id} 的成员。")
+
+            db.commit()  # 提交成员表的更改
+
+        print(f"DEBUG: 入群申请 ID: {request_id} 已成功处理为 '{process_data.status}'。")
+        # 为 ChatRoomJoinRequestResponse 自动填充 member_name
+        # 确保 db_request.requester 关系被加载
+        db.refresh(db_request)  # 确保最新的db_request返回，特别是processed_by_id和processed_at
+        return db_request
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 入群申请处理发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="处理入群申请失败，可能存在数据冲突。")
+    except HTTPException as e:  # 捕获上面主动抛出的 HTTPException
+        # 这里不需要 db.rollback() 因为 HTTPException 通常表示验证失败，而不是事务性错误
+        # 并且，get_db() 的 finally 块会处理 session 关闭
+        raise e  # 重新抛出已携带正确状态码和详情的 HTTPException
+    except Exception as e:
+        db.rollback()  # 对于其他未预期的数据库或内部错误，执行回滚
+        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"处理入群申请失败: {e}")
 
 
 # --- 聊天消息管理接口 ---
@@ -3322,42 +4127,49 @@ async def unfollow_user(
 
 
 # --- MCP服务配置管理接口 ---
-@app.post("/mcp-configs/", response_model=schemas.UserMcpConfigResponse, summary="添加新的MCP服务配置")
+@app.post("/mcp-configs/", response_model=schemas.UserMcpConfigResponse, summary="创建新的MCP配置")
 async def create_mcp_config(
         config_data: schemas.UserMcpConfigCreate,
-        current_user_id: int = Depends(get_current_user_id),  # 配置所属用户
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    为当前用户添加一个新的MCP（ModelScope Community Platform或其他类MCP服务）配置。
-    如果提供了API密钥，将加密存储。
-    """
-    print(f"DEBUG: 用户 {current_user_id} 尝试添加MCP配置: {config_data.name}")
+    print(f"DEBUG: 用户 {current_user_id} 尝试创建MCP配置: {config_data.name}")
 
+    encrypted_key = None
     if config_data.api_key:
         encrypted_key = ai_core.encrypt_key(config_data.api_key)
-    else:
-        encrypted_key = None
 
+    # **[新增] 检查是否已存在同名且活跃的配置，避免用户创建重复的配置**
+    existing_config = db.query(UserMcpConfig).filter(
+        UserMcpConfig.owner_id == current_user_id,
+        UserMcpConfig.name == config_data.name,
+        UserMcpConfig.is_active == True  # 只检查活跃的配置是否有重名
+    ).first()
+
+    if existing_config:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="已存在同名且活跃的MCP配置。请选择其他名称或停用旧配置。")
+
+    # 创建数据库记录
     db_config = UserMcpConfig(
-        owner_id=current_user_id,
+        owner_id=current_user_id,  # 设置拥有者为当前用户
         name=config_data.name,
         mcp_type=config_data.mcp_type,
         base_url=config_data.base_url,
-        protocol_type=config_data.protocol_type,  # 保存协议类型
+        protocol_type=config_data.protocol_type,
         api_key_encrypted=encrypted_key,
         is_active=config_data.is_active,
         description=config_data.description
     )
 
     db.add(db_config)
-    db.commit()
-    db.refresh(db_config)
+    db.commit()  # 提交事务
+    db.refresh(db_config)  # 刷新以获取数据库生成的ID和时间戳
 
-    # 手动设置api_key为 None 或空字符串，避免响应中包含明文密钥
-    db_config.api_key = None
+    # 确保不返回明文 API 密钥 (无论是否加密，都确保 Response Schema 中没有此字段的明文)
+    db_config.api_key = None  # 安全保障：确保不返回明文密钥
 
-    print(f"DEBUG: MCP配置 '{db_config.name}' (ID: {db_config.id}) 添加成功。")
+    print(f"DEBUG: 用户 {current_user_id} 的MCP配置 '{db_config.name}' (ID: {db_config.id}) 创建成功。")
     return db_config
 
 
@@ -3382,69 +4194,63 @@ async def get_all_mcp_configs(
     return configs
 
 
-@app.get("/mcp-configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="获取指定MCP服务配置详情")
-async def get_mcp_config_by_id(
-        config_id: int,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    """
-    获取指定ID的MCP服务配置详情。用户只能获取自己的配置。
-    """
-    print(f"DEBUG: 获取MCP配置 ID: {config_id} 的详情。")
-    config = db.query(UserMcpConfig).filter(UserMcpConfig.id == config_id,
-                                            UserMcpConfig.owner_id == current_user_id).first()
-    if not config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP config not found or not authorized")
+# project/main.py (用户MCP配置接口部分)
 
-    config.api_key = None  # 不返回密钥
-    return config
-
-
-@app.put("/mcp-configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="更新指定MCP服务配置")
+@app.put("/mcp-configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="更新指定MCP配置")
 async def update_mcp_config(
-        config_id: int,
-        config_data: schemas.UserMcpConfigBase,
-        current_user_id: int = Depends(get_current_user_id),
+        config_id: int,  # 从路径中获取配置ID
+        config_data: schemas.UserMcpConfigBase,  # 用于更新的数据
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
         db: Session = Depends(get_db)
 ):
-    """
-    更新指定ID的MCP服务配置。用户只能更新自己的配置。
-    如果提供了API密钥，将加密存储。
-    """
     print(f"DEBUG: 更新MCP配置 ID: {config_id}。")
-    db_config = db.query(UserMcpConfig).filter(UserMcpConfig.id == config_id,
-                                               UserMcpConfig.owner_id == current_user_id).first()
-    if not db_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP config not found or not authorized")
+    # 核心权限检查：根据配置ID和拥有者ID来检索，确保操作的是当前用户的配置
+    db_config = db.query(UserMcpConfig).filter(
+        UserMcpConfig.id == config_id,
+        UserMcpConfig.owner_id == current_user_id  # 确保当前用户是该配置的拥有者
+    ).first()
 
+    if not db_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP配置未找到或无权访问")
+
+    # 排除未设置的字段，只更新传入的字段
     update_data = config_data.dict(exclude_unset=True)
 
-    if "name" in update_data:
-        db_config.name = update_data["name"]
-    if "mcp_type" in update_data:
-        db_config.mcp_type = update_data["mcp_type"]
-    if "base_url" in update_data:
-        db_config.base_url = update_data["base_url"]
-    if "protocol_type" in update_data:  # 更新协议类型
-        db_config.protocol_type = update_data["protocol_type"]
-    if "is_active" in update_data:
-        db_config.is_active = update_data["is_active"]
-    if "description" in update_data:
-        db_config.description = update_data["description"]
+    # 处理 API 密钥的更新：加密或清空
+    if "api_key" in update_data:  # 检查传入数据中是否有 api_key 字段
+        if update_data["api_key"] is not None and update_data["api_key"] != "":
+            # 如果提供了新的密钥且不为空，加密并存储
+            db_config.api_key_encrypted = ai_core.encrypt_key(update_data["api_key"])
+        else:
+            # 如果传入的是 None 或空字符串，表示清空密钥
+            db_config.api_key_encrypted = None
+        # del update_data["api_key"] # 在使用 setattr 循环时，这里删除 api_key，避免将其明文赋给 ORM 对象的其他字段
 
-    if "api_key" in update_data and update_data["api_key"] is not None:
-        encrypted_key = ai_core.encrypt_key(update_data["api_key"])
-        db_config.api_key_encrypted = encrypted_key
-        print(f"DEBUG: MCP配置 {config_id} 的API密钥已加密存储。")
-    elif "api_key" in update_data and update_data["api_key"] is None:
-        db_config.api_key_encrypted = None
+    # **[重要新增] 检查名称冲突 (如果名称在更新中改变了)**
+    if "name" in update_data and update_data["name"] != db_config.name:
+        # 查找当前用户下是否已存在与新名称相同的活跃配置
+        existing_config_with_new_name = db.query(UserMcpConfig).filter(
+            UserMcpConfig.owner_id == current_user_id,
+            UserMcpConfig.name == update_data["name"],
+            UserMcpConfig.is_active == True,  # 只检查活跃的配置
+            UserMcpConfig.id != config_id  # **排除当前正在更新的配置本身**
+        ).first()
+        if existing_config_with_new_name:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="新配置名称已存在于您的活跃配置中。")
+
+    # 应用其他更新：通过循环处理所有可能更新的字段，更简洁和全面
+    fields_to_update = ["name", "mcp_type", "base_url", "protocol_type", "is_active", "description"]
+    for field in fields_to_update:
+        if field in update_data:  # 只有当传入的数据包含这个字段时才更新
+            setattr(db_config, field, update_data[field])
 
     db.add(db_config)
     db.commit()
     db.refresh(db_config)
 
-    db_config.api_key = None
+    # 安全处理：确保敏感的API密钥不会返回给客户端
+    db_config.api_key = None  # 确保不返回明文密钥
+
     print(f"DEBUG: MCP配置 {db_config.id} 更新成功。")
     return db_config
 
@@ -3589,81 +4395,133 @@ async def get_mcp_available_tools(
     print(f"DEBUG: 找到 {len(available_tools)} 个可用的MCP工具。")
     return available_tools
 
-
 # --- WebSocket 聊天室接口 ---
-@app.websocket("/ws/chat/{room_id}/{user_id}")
+@app.websocket("/ws/chat/{room_id}")
 async def websocket_endpoint(
         websocket: WebSocket,
         room_id: int,
-        user_id: int,  # 这里 user_id 只是为了演示方便从路径获取，生产环境应从认证Token中提取并验证
-        db: Session = Depends(get_db)  # WebSocket 中也可以使用 FastAPI 的依赖注入来获取数据库会话
+        token: str = Query(..., description="用户JWT认证令牌"),
+        db: Session = Depends(get_db)
 ):
-    """
-    WebSocket 聊天室端点。允许用户加入指定聊天室发送和接收实时消息。
-    - room_id: 聊天室的ID
-    - user_id: 当前连接的用户ID (生产环境应从认证Token中提取)
-    """
-    print(f"DEBUG_WS: 尝试连接房间 {room_id}，用户 {user_id}。")
+    print(f"DEBUG_WS: 尝试连接房间 {room_id}。")
+    current_username = None
+    current_user_id = None
+    current_user_db = None
+    try:
+        # 解码 JWT 令牌以获取用户身份
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        current_username: str = payload.get("sub")  # 通常存储用户邮箱
+        if current_username is None:
+            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION,
+                                      reason="Invalid authentication token (username missing).")
 
-    # 验证聊天室是否存在 (仅简单验证，后续可增强权限检查)
-    chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not chat_room:
-        # 如果聊天室不存在，关闭连接并给出理由
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Chat room not found.")
-        print(f"DEBUG_WS: 房间 {room_id} 未找到，连接关闭。")
+        # 从数据库中根据 username (email) 获取用户 ID 和信息
+        current_user_db = db.query(Student).filter(Student.email == current_username).first()
+        if current_user_db is None:
+            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="User not found.")
+        current_user_id = current_user_db.id
+
+    except (jwt.PyJWTError, WebSocketDisconnect) as auth_error:
+        # 捕获 JWT 解析错误和主动抛出的 WebSocketDisconnect
+        print(f"ERROR_WS_AUTH: WebSocket 认证失败: {auth_error}")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"Authentication failed: {auth_error}")
+        return
+    except Exception as e:
+        # 捕获其他非预期的认证异常
+        print(f"ERROR_WS_AUTH: WebSocket 认证内部错误: {e}")
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Authentication internal error.")
         return
 
-    # TODO（待办事项）：
-    # 在生产环境中，此处应添加更严格的用户权限检查，例如：
-    #   - 验证 user_id 是否合法 (通过 JWT Token 解析而不是路径变量)
-    #   - 检查该 user_id 是否是 `room_id` 的成员
-    # 如果验证失败，调用 await websocket.close(...)
+    print(f"DEBUG_WS: 用户 {current_user_id} (邮箱: {current_username}) 尝试连接聊天室 {room_id}。")
+
+    chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not chat_room:
+        print(f"WARNING_WS: 用户 {current_user_id} 尝试连接不存在的聊天室 {room_id}。")
+        await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="聊天室不存在。")
+        return
+
+    # 核心权限：验证用户是否为该聊天室的创建者或活跃成员
+    is_creator = (chat_room.creator_id == current_user_id)
+    is_active_member = db.query(ChatRoomMember).filter(
+        ChatRoomMember.room_id == room_id,
+        ChatRoomMember.member_id == current_user_id,
+        ChatRoomMember.status == "active"
+    ).first() is not None
+
+    if not (is_creator or is_active_member):
+        print(f"WARNING_WS: 用户 {current_user_id} 无权连接聊天室 {room_id}。")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="您无权访问或加入此聊天室。")
+        return
 
     try:
-        # 1. 连接：将新进来的WebSocket添加到管理器中
-        await manager.connect(websocket, room_id, user_id)
+        await manager.connect(websocket, room_id, current_user_id)
+        print(f"DEBUG_WS: 用户 {current_user_id} 已成功连接到聊天室 {room_id}。")
 
-        # 2. 发送欢迎消息给新连接的用户
-        await manager.send_personal_message(f"欢迎用户 {user_id} 加入聊天室 {room_id}！", websocket)
+        # 发送欢迎消息给新连接的用户
+        await manager.send_personal_message(
+            {"type": "status", "content": f"欢迎用户 {current_user_db.name} 加入聊天室 {chat_room.name}！"}, websocket)
 
-        # 3. 广播用户加入的消息给所有其他人 (可选)
-        await manager.broadcast(f"用户 {user_id} 加入了聊天室。", room_id)
 
-        # 4. 持续循环：接收客户端发送的消息，并进行处理
         while True:
-            # 尝试接收文本消息 (也可以是JSON等)
-            data = await websocket.receive_text()
-            print(f"DEBUG_WS: 收到来自用户 {user_id} (房间 {room_id}) 的消息: {data}")
+            # 接收 JSON 格式消息 (假设前端发送 {"content": "..."} 类型)
+            data = await websocket.receive_json()
+            message_content = data.get("content")
 
-            # 5. 消息持久化：将消息保存到数据库
+            if not message_content or not isinstance(message_content, str):
+                await websocket.send_json({"error": "Invalid message format. 'content' (string) is required."})
+                continue
+
+            re_check_active_member = db.query(ChatRoomMember).filter(
+                ChatRoomMember.room_id == room_id,
+                ChatRoomMember.member_id == current_user_id,
+                ChatRoomMember.status == "active"
+            ).first()
+            re_check_creator = (chat_room.creator_id == current_user_id)
+
+            if not (re_check_creator or re_check_active_member):
+                print(f"WARNING_WS: 用户 {current_user_id} 在聊天室 {room_id} 发送消息时已失去权限。连接将被关闭。")
+                await websocket.send_json(
+                    {"error": "No permission to send messages. You may have been removed or left the chat."})
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="失去发送消息权限。")
+                break  # 用户无权发送，断开循环
+
             db_message = ChatMessage(
                 room_id=room_id,
-                sender_id=user_id,
-                content_text=data,
-                message_type="text"  # 默认为文本消息，可以扩展为'image', 'file'等
+                sender_id=current_user_id,
+                content_text=message_content,
+                message_type="text"  # 默认为文本
             )
             db.add(db_message)
             db.commit()  # 立即提交
             db.refresh(db_message)  # 刷新以获取ID和时间戳
 
-            # 6. 消息广播：将收到的消息（通常会带上发送者信息和时间戳）广播给房间内所有活跃连接
-            # 这里我们广播一个包含发送者名称或ID的消息
-            # 实际可以构建更复杂的 JSON 格式消息，例如:
-            # message_to_broadcast = json.dumps({"sender_id": user_id, "content": data, "timestamp": str(db_message.sent_at)})
-            await manager.broadcast(f"用户 {user_id}: {data}", room_id)
+            # 广播包含发送者名称和时间戳的 JSON 消息
+            message_to_broadcast = {
+                "type": "chat_message",
+                "id": db_message.id,
+                "room_id": room_id,
+                "sender_id": current_user_id,
+                "sender_name": current_user_db.name,  # 直接使用已获取的用户名
+                "content": message_content,
+                "sent_at": db_message.sent_at.isoformat()  # ISO 8601 格式
+            }
+            await manager.broadcast(message_to_broadcast, room_id)
+            print(f"DEBUG_WS: 聊天室 {room_id} 广播消息: {current_user_db.name}: {message_content[:50]}...")
 
     except WebSocketDisconnect:
-        # 7. 断开连接：当客户端主动断开或连接异常时触发
-        manager.disconnect(room_id, user_id)  # 从管理器中移除连接
-        print(f"DEBUG_WS: 用户 {user_id} 从房间 {room_id} 断开连接。")
-        # 广播用户离开消息 (可选)
-        await manager.broadcast(f"用户 {user_id} 离开了聊天室。", room_id)
+        # 用户正常断开连接（或服务器主动关闭）
+        print(f"DEBUG_WS: 用户 {current_user_id} 从聊天室 {room_id} 断开连接 (WebSocketDisconnect)。")
     except Exception as e:
-        # 8. 错误处理：捕获其他意外错误
-        print(f"ERROR_WS: WebSocket 意外错误: {e}")
-        manager.disconnect(room_id, user_id)  # 即使错误也尝试断开连接
-        # 关闭WebSocket连接，并发送错误码和原因
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"服务器错误: {e}")
+        # 捕获其他意外错误
+        print(f"ERROR_WS: 用户 {current_user_id} 在聊天室 {room_id} WebSocket 处理异常: {e}")
+        # 如果连接仍然开启，尝试发送错误消息并关闭
+        if websocket.client_state == 1:  # WebSocketState.CONNECTED
+            await websocket.send_json({"error": f"服务器内部错误: {e}"})
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"服务器内部错误: {e}")
+    finally:
+        # 确保在任何情况下都从管理器中移除连接
+        if current_user_id is not None:
+            manager.disconnect(room_id, current_user_id)
 
 
 # --- 配置静态文件服务，用于提供生成的音频文件 ---

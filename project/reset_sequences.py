@@ -25,7 +25,7 @@ def reset_all_sequences_after_import():
         "collected_contents", "chat_rooms", "chat_messages", "forum_topics",
         "forum_comments", "forum_likes", "user_follows", "user_mcp_configs",
         "user_search_engine_configs", "knowledge_bases", "knowledge_articles",
-        "knowledge_documents", "knowledge_document_chunks", "courses", "user_courses"
+        "knowledge_documents", "knowledge_document_chunks", "courses"
     ]
 
     db_session = SessionLocal()
