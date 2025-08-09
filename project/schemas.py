@@ -1,4 +1,4 @@
-# project/schemas.py (完整代码，更新 AIQARequest 和 AIQAResponse)
+# project/schemas.py
 
 from pydantic import BaseModel, EmailStr, Field, Field, model_validator
 from typing import Optional, List, Dict, Any, Literal, Union
