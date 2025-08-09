@@ -777,7 +777,9 @@ async def login_for_access_token(
     print(f"DEBUG_AUTH: 尝试用户登录: {form_data.username}")  # OAuth2PasswordRequestForm 使用 username 字段
 
     user = db.query(Student).filter(Student.email == form_data.username).first()
+
     if not user or not pwd_context.verify(form_data.password, user.password_hash):
+        print(f"DEBUG_AUTH: 用户 {form_data.username} 登录失败：不正确的邮箱或密码。")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="不正确的邮箱或密码",
@@ -798,26 +800,6 @@ async def login_for_access_token(
         token_type="bearer",
         expires_in_minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
-
-
-@app.post("/auth/login", summary="用户登录")
-async def login_for_access_token(
-        form_data: schemas.UserLogin,
-        db: Session = Depends(get_db)
-):
-    """
-    用户登录，验证邮箱和密码。
-    """
-    print(f"DEBUG: 尝试用户登录: {form_data.email}")
-    student = db.query(Student).filter(Student.email == form_data.email).first()
-    if not student or not verify_password(form_data.password, student.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    print(f"DEBUG: 用户 {student.email} 登录成功。")
-    return {"message": "Login successful", "user_id": student.id}
 
 
 @app.get("/users/me", response_model=schemas.StudentResponse, summary="获取当前登录用户详情")
