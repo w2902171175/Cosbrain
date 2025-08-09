@@ -42,7 +42,7 @@ app = FastAPI(
 # --- JWT 认证配置 ---
 SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-that-should-be-in-env") # 从环境变量获取，或使用默认值 (生产环境务必修改)
 ALGORITHM = "HS256" # JWT签名算法
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 访问令牌过期时间（例如7天）
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 访问令牌过期时间（7天）
 
 # 令牌认证方案
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
