@@ -26,7 +26,7 @@ from passlib.context import CryptContext
 from database import SessionLocal, engine, init_db, get_db
 from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest
 # 导入Pydantic Schemas
-import schemas
+import schemas,secrets
 
 # 导入重构后的 ai_core 模块
 import ai_core
@@ -730,37 +730,85 @@ async def process_document_in_background(
 # --- 用户认证与管理接口 ---
 @app.post("/register", response_model=schemas.StudentResponse, summary="用户注册")
 async def register_user(
-        user_data: schemas.StudentCreate,  # 此时 StudentCreate 用于注册
+        user_data: schemas.StudentCreate,  # 接收的数据模型，现在包含 username, phone_number, school
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 尝试注册用户: {user_data.email}")
-    # 检查邮箱是否已存在
-    existing_user = db.query(Student).filter(Student.email == user_data.email).first()
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="邮箱已被注册。")
+    print(f"DEBUG: 尝试注册用户。邮箱: {user_data.email}, 手机号: {user_data.phone_number}")
+
+    # 1. 检查邮箱和手机号的唯一性
+    if user_data.email:
+        existing_user_email = db.query(Student).filter(Student.email == user_data.email).first()
+        if existing_user_email:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="邮箱已被注册。")
+
+    if user_data.phone_number:
+        existing_user_phone = db.query(Student).filter(Student.phone_number == user_data.phone_number).first()
+        if existing_user_phone:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="手机号已被注册。")
+
+    # 2. 处理用户名: 如果用户未提供，则自动生成一个唯一用户名
+    final_username = user_data.username
+    if not final_username:
+        # 如果 username 未提供，自动生成一个随机的唯一用户名
+        unique_username_found = False
+        attempts = 0  # 防止无限循环，增加尝试次数限制
+        max_attempts = 10
+        while not unique_username_found and attempts < max_attempts:
+            random_suffix = secrets.token_hex(4)  # 生成一个短的随机十六进制字符串
+            proposed_username = f"新用户_{random_suffix}"
+            if not db.query(Student).filter(Student.username == proposed_username).first():
+                final_username = proposed_username
+                unique_username_found = True
+            attempts += 1
+
+        if not unique_username_found:
+            # 如果多次尝试都未能生成唯一用户名，则抛出错误 (极少发生)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="无法生成唯一用户名，请稍后再试或提供一个自定义用户名。")
+        print(f"DEBUG: 用户未提供用户名，自动生成唯一用户名: {final_username}")
+    else:
+        # 如果 username 已提供，检查其唯一性
+        existing_user_username = db.query(Student).filter(Student.username == final_username).first()
+        if existing_user_username:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被使用。")
 
     # 哈希密码
     hashed_password = pwd_context.hash(user_data.password)
 
     db_user = Student(
         email=user_data.email,
+        phone_number=user_data.phone_number,
         password_hash=hashed_password,
-        # 可以初始化一些默认的用户信息
-        name="新用户",
-        major="未填写",
-        skills="未填写",
-        interests="未填写",
-        bio="欢迎使用本平台！",
-        llm_api_type=None,  # 注册时不设置LLM配置
+
+        username=final_username,  # 使用最终确定的唯一用户名
+        school=user_data.school,  # 允许为 None
+
+        # 其他用户详细信息，优先使用用户提供的值，否则使用默认值
+        name=user_data.name if user_data.name else final_username,  # 如果名字未提供，默认使用用户名
+        major=user_data.major if user_data.major else "未填写",
+        skills=user_data.skills if user_data.skills else "未填写",
+        interests=user_data.interests if user_data.interests else "未填写",
+        bio=user_data.bio if user_data.bio else "欢迎使用本平台！",
+
+        awards_competitions=user_data.awards_competitions,
+        academic_achievements=user_data.academic_achievements,
+        soft_skills=user_data.soft_skills,
+        portfolio_link=user_data.portfolio_link,
+        preferred_role=user_data.preferred_role,
+        availability=user_data.availability,
+
+        llm_api_type=None,
         llm_api_key_encrypted=None,
         llm_api_base_url=None,
-        llm_model_id=None
+        llm_model_id=None,
+        is_admin=False
     )
 
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    print(f"DEBUG: 用户 {db_user.email} (ID: {db_user.id}) 注册成功。")
+    print(
+        f"DEBUG: 用户 {db_user.email if db_user.email else db_user.phone_number} (ID: {db_user.id}) 注册成功。用户名: {db_user.username}")
     return db_user
 
 
@@ -770,19 +818,42 @@ async def login_for_access_token(
         db: Session = Depends(get_db)
 ):
     """
-    通过邮箱和密码获取 JWT 访问令牌。
-    - username (实际上是邮箱): 用户邮箱
+    通过邮箱或手机号和密码获取 JWT 访问令牌。
+    - username (实际上可以是邮箱或手机号): 用户邮箱或手机号
     - password: 用户密码
     """
-    print(f"DEBUG_AUTH: 尝试用户登录: {form_data.username}")  # OAuth2PasswordRequestForm 使用 username 字段
+    credential = form_data.username # 获取用户输入的凭证 (可能是邮箱或手机号)
+    password = form_data.password
 
-    user = db.query(Student).filter(Student.email == form_data.username).first()
+    print(f"DEBUG_AUTH: 尝试用户登录: {credential}")
 
-    if not user or not pwd_context.verify(form_data.password, user.password_hash):
-        print(f"DEBUG_AUTH: 用户 {form_data.username} 登录失败：不正确的邮箱或密码。")
+    user = None
+    # **<<<<< 关键修复：新增：尝试通过邮箱或手机号查找用户 >>>>>**
+    # 简单的判断，如果包含 '@' 符号，认为是邮箱
+    if "@" in credential:
+        user = db.query(Student).filter(Student.email == credential).first()
+        print(f"DEBUG_AUTH: 尝试通过邮箱 '{credential}' 查找用户。")
+    # 否则，尝试通过手机号查找 (可以增加更严格的手机号正则表达式验证)
+    # 这里使用了一个简化的纯数字和长度判断，确保至少与真实手机号有一点区分
+    elif credential.isdigit() and len(credential) >= 7 and len(credential) <= 15: # 假设手机号是纯数字且合理长度，如7-15位
+        user = db.query(Student).filter(Student.phone_number == credential).first()
+        print(f"DEBUG_AUTH: 尝试通过手机号 '{credential}' 查找用户。")
+    else:
+        # 如果既不是邮箱也不是有效手机号格式，直接拒绝
+        print(f"DEBUG_AUTH: 凭证 '{credential}' 格式不正确，登录失败。")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="不正确的邮箱或密码",
+            detail="不正确的邮箱/手机号或密码",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 密码验证
+    # 如果用户没找到，或者找到但密码不正确，都拒绝登录
+    if not user or not pwd_context.verify(password, user.password_hash):
+        print(f"DEBUG_AUTH: 用户 '{credential}' 登录失败：不正确的邮箱/手机号或密码。")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="不正确的邮箱/手机号或密码",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
