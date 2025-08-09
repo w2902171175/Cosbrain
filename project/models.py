@@ -1,4 +1,5 @@
 # project/models.py
+
 from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean,text, Index
 from sqlalchemy.orm import relationship, remote
 from sqlalchemy.sql import func
