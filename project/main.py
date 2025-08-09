@@ -885,24 +885,71 @@ async def read_users_me(current_user_id: int = Depends(get_current_user_id), db:
     return user
 
 
+# project/main.py (更新当前登录用户详情接口)
 @app.put("/users/me", response_model=schemas.StudentResponse, summary="更新当前登录用户详情")
 async def update_users_me(
         student_update_data: schemas.StudentBase,
-        current_user_id: int = Depends(get_current_user_id),
+        current_user_id: str = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    """
-    更新当前登录用户的个人信息。
-    """
-    print(f"DEBUG: 更新用户 ID: {current_user_id} 的信息。")
-    db_student = db.query(Student).filter(Student.id == current_user_id).first()
+    current_user_id_int = int(current_user_id)
+
+    print(f"DEBUG: 更新用户 ID: {current_user_id_int} 的信息。")
+    # **使用转换后的 current_user_id_int 进行数据库查询**
+    db_student = db.query(Student).filter(Student.id == current_user_id_int).first()
     if not db_student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # `exclude_unset=True` ensures only provided fields are in update_data
     update_data = student_update_data.dict(exclude_unset=True)
+
+    # --- 1. **<<<<< 特殊处理 username 的唯一性检查 >>>>>**
+    # 检查 update_data 中是否有 username 字段，并且新值不为 None
+    if "username" in update_data and update_data["username"] is not None:
+        new_username = update_data["username"]
+        # 只有当新用户名与用户当前用户名不同时才进行唯一性检查
+        if new_username != db_student.username:
+            existing_user_with_username = db.query(Student).filter(
+                Student.username == new_username,
+                Student.id != current_user_id_int  # 排除当前用户自身
+            ).first()
+            if existing_user_with_username:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被其他用户使用。")
+        # 验证通过或未改变，更新 db_student 对象
+        db_student.username = new_username
+        print(f"DEBUG: 用户 {current_user_id_int} 用户名更新为: {new_username}")
+        # 从 update_data 中移除 username，防止下面的通用循环再次处理
+        del update_data["username"]
+
+    elif "username" in update_data and update_data["username"] is None:
+        pass
+
+    # --- 2. **<<<<< 特殊处理 phone_number 的唯一性检查 >>>>>**
+    # 检查 update_data 中是否有 phone_number 字段
+    if "phone_number" in update_data:  # 允许用户将手机号设为 None
+        new_phone_number = update_data["phone_number"]
+
+        # 只有当新手机号不为 None 且与用户当前手机号不同时才进行唯一性检查
+        if new_phone_number is not None and new_phone_number != db_student.phone_number:
+            existing_user_with_phone = db.query(Student).filter(
+                Student.phone_number == new_phone_number,
+                Student.id != current_user_id_int  # 排除当前用户自身
+            ).first()
+            if existing_user_with_phone:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="手机号已被其他用户使用。")
+
+        # 验证通过、未改变或设为 None (清空)，更新 db_student 对象
+        db_student.phone_number = new_phone_number
+        print(f"DEBUG: 用户 {current_user_id_int} 手机号更新为: {new_phone_number}")
+        # 从 update_data 中移除 phone_number，防止下面的通用循环再次处理
+        del update_data["phone_number"]
+
+    # --- 3. **<<<<< 通用循环处理其余字段 >>>>>**
     for key, value in update_data.items():
         setattr(db_student, key, value)
+        print(f"DEBUG: 更新字段 {key}: {value}")
 
+    # 重建 combined_text
     db_student.combined_text = (
             (db_student.major or "") + ". " +
             (db_student.skills or "") + ". " +
@@ -916,6 +963,7 @@ async def update_users_me(
             (db_student.availability or "")
     ).strip()
 
+    # 更新 embedding
     if db_student.combined_text:
         try:
             new_embedding = ai_core.get_embeddings_from_api([db_student.combined_text])
@@ -923,11 +971,12 @@ async def update_users_me(
             print(f"DEBUG: 用户 {db_student.id} 嵌入向量已更新。")
         except Exception as e:
             print(f"ERROR: 更新用户 {db_student.id} 嵌入向量失败: {e}")
+            # 不阻碍其他更新，但可以考虑在这里返回 500 或特定错误
 
     db.add(db_student)
     db.commit()
     db.refresh(db_student)
-    print(f"DEBUG: 用户 {current_user_id} 信息更新成功。")
+    print(f"DEBUG: 用户 {current_user_id_int} 信息更新成功。")
     return db_student
 
 
