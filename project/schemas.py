@@ -1,6 +1,6 @@
 # project/schemas.py (完整代码，更新 AIQARequest 和 AIQAResponse)
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, Field, model_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
 
@@ -8,7 +8,12 @@ from datetime import datetime
 # --- Student Schemas ---
 class StudentBase(BaseModel):
     """学生基础信息模型，用于创建或更新时接收数据"""
-    name: Optional[str] = None
+    username: Optional[str] = Field(None, min_length=1, max_length=50, description="用户在平台内唯一的用户名/昵称")
+    phone_number: Optional[str] = Field(None, min_length=11, max_length=11,
+                                        description="用户手机号，用于登录和重置密码")  # 假设手机号是11位
+    school: Optional[str] = Field(None, max_length=100, description="用户所属学校名称")
+
+    name: Optional[str] = Field(None, description="用户真实姓名")
     major: Optional[str] = None
     skills: Optional[str] = None
     interests: Optional[str] = None
@@ -22,19 +27,28 @@ class StudentBase(BaseModel):
 
 
 class StudentCreate(StudentBase):
-    """创建学生时的数据模型 (包含邮箱和密码)"""
-    email: EmailStr
-    password: str
+    """创建学生时的数据模型 (包含邮箱或手机号，以及密码)"""
+    email: Optional[EmailStr] = Field(None, description="用户邮箱，如果提供则用于注册和登录")
+
+    password: str = Field(..., min_length=6, description="用户密码，至少6位")
+
+    @model_validator(mode='after')  # 在所有字段验证之后运行
+    def check_email_or_phone_number_provided(self) -> 'StudentCreate':
+        if not self.email and not self.phone_number:
+            raise ValueError('邮箱或手机号至少需要提供一个用于注册。')
+        return self
 
 
 class StudentResponse(StudentBase):
     """返回学生信息时的模型 (不包含密码哈希)"""
     id: int
     email: Optional[EmailStr] = None
+
     combined_text: Optional[str] = None
     llm_api_type: Optional[str] = None
     llm_api_base_url: Optional[str] = None
     llm_model_id: Optional[str] = None
+    llm_api_key_encrypted: Optional[str] = None
 
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -43,7 +57,6 @@ class StudentResponse(StudentBase):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-
     # --- Project Schemas ---
 
 
