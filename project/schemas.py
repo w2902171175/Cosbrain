@@ -87,7 +87,6 @@ class ProjectResponse(ProjectBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -114,7 +113,6 @@ class NoteResponse(NoteBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -142,7 +140,6 @@ class DailyRecordResponse(DailyRecordBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -173,7 +170,6 @@ class FolderResponse(FolderBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -214,7 +210,6 @@ class CollectedContentResponse(CollectedContentBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -245,7 +240,6 @@ class ChatRoomMemberResponse(ChatRoomMemberBase):
     member_name: Optional[str] = Field(None, description="成员的姓名")
     class Config:
         from_attributes = True # Pydantic V2
-        # orm_mode = True # Pydantic V1
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None} # 保持一致
 
 
@@ -307,7 +301,6 @@ class ChatRoomResponse(ChatRoomBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -335,7 +328,6 @@ class ChatMessageResponse(ChatMessageBase):
     sender_name: Optional[str] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -372,7 +364,6 @@ class ForumTopicResponse(ForumTopicBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -406,7 +397,6 @@ class ForumCommentResponse(ForumCommentBase):
         return self._owner_name if self._owner_name else "未知用户"
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -422,7 +412,6 @@ class ForumLikeResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -437,7 +426,6 @@ class UserFollowResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -467,7 +455,6 @@ class UserMcpConfigResponse(UserMcpConfigBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -525,7 +512,6 @@ class UserSearchEngineConfigResponse(UserSearchEngineConfigBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -595,7 +581,6 @@ class KnowledgeBaseResponse(KnowledgeBaseBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {
             datetime: lambda dt: dt.isoformat() if dt is not None else None
@@ -623,7 +608,6 @@ class KnowledgeArticleResponse(KnowledgeArticleBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -652,7 +636,6 @@ class KnowledgeDocumentResponse(KnowledgeDocumentBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -669,7 +652,6 @@ class KnowledgeDocumentChunkResponse(BaseModel):
     combined_text: Optional[str] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -696,7 +678,6 @@ class CourseResponse(CourseBase):
     updated_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -719,7 +700,6 @@ class UserCourseResponse(UserCourseBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -744,7 +724,6 @@ class CollectionItemResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
@@ -859,7 +838,6 @@ class DashboardProjectCard(BaseModel):
     progress: float = 0.0
 
     class Config:
-        orm_mode = True
         from_attributes = True
 
 
@@ -870,6 +848,5 @@ class DashboardCourseCard(BaseModel):
     last_accessed: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
