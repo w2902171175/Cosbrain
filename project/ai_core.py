@@ -1,5 +1,5 @@
 # project/ai_core.py
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 import pandas as pd
 import numpy as np
 import os
@@ -195,12 +195,12 @@ def decrypt_key(encrypted_key_hex: str) -> str:
         'utf-8')
 
 
-# --- 硅基流动API配置 (Embedding和Rerank固定模型) ---
-SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
-if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "sk-YOUR_SILICONFLOW_API_KEY_HERE":
-    print("警告：SILICONFLOW_API_KEY 环境变量未设置或为默认值。AI Embedding/Rerank功能将受限。")
-    SILICONFLOW_API_KEY = "dummy_key_for_testing_without_api"
-
+# # --- 硅基流动API配置 (Embedding和Rerank固定模型) ---
+# SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
+# if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "sk-YOUR_SILICONFLOW_API_KEY_HERE":
+#     print("警告：SILICONFLOW_API_KEY 环境变量未设置或为默认值。AI Embedding/Rerank功能将受限。")
+#     SILICONFLOW_API_KEY = "dummy_key_for_testing_without_api"
+#
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
 RERANKER_API_URL = "https://api.siliconflow.cn/v1/rerank"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
@@ -243,6 +243,32 @@ DEFAULT_LLM_API_CONFIG = {
         "chat_path": "/chat/completions",
         "default_model": "deepseek-chat",
         "available_models": ["deepseek-chat", "deepseek-coder"]
+    }
+}
+
+# --- TTS 服务配置常量 ---
+# 这些是各TTS提供商的固定API端点、默认模型和可用语音等信息
+DEFAULT_TTS_CONFIGS = {
+    "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "tts_path": "/audio/speech",
+        "default_model": "tts-1",
+        "available_models": ["tts-1", "tts-1-hd"],
+        "default_voice": "alloy",
+        "available_voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+    },
+    # 以下提供商需要更复杂的SDK或HTTP API集成
+    "gemini": {
+        "notes": "Gemini TTS direct API integration not yet implemented. Requires Google Cloud/Vertex AI TTS API setup."
+    },
+    "aliyun": {
+        "notes": "Aliyun TTS direct API integration not yet implemented. Requires Aliyun SDK/API setup."
+    },
+    "siliconflow": {
+        "notes": "SiliconFlow TTS direct API integration not yet implemented. (假设SiliconFlow有独立的TTS服务而非仅LLM)."
+    },
+    "default_gtts": { # 定义一个表示 gTTS 回退的类型，用作内部标记
+        "notes": "Default gTTS fallback, no API key needed."
     }
 }
 
@@ -393,77 +419,181 @@ async def call_web_search_api(
     return results
 
 
-async def synthesize_speech(text: str, lang: str = 'zh-CN') -> str:
+# project/ai_core.py
+
+# ... (在 get_rerank_scores_from_api 和 extract_text_from_document 之间) ...
+
+async def synthesize_speech(
+        text: str,
+        lang: str = 'zh-CN',  # 基础语言代码，用于 gTTS 和某些 API
+        tts_type: Optional[str] = None,  # 语音提供商类型
+        api_key: Optional[str] = None,  # 用户提供的 API 密钥
+        base_url: Optional[str] = None,  # API 基础 URL
+        model_id: Optional[str] = None,  # 特定模型 ID
+        voice_name: Optional[str] = None  # 特定语音名称/ID
+) -> str:
     """
-    使用gTTS将文本转换为语音文件，并返回文件路径。
-    注意：gTTS.save 是同步IO操作。为了真正的非阻塞，它应该在执行器中运行。
-    但在当前 contextos，为了快速修复和兼容性，暂时保持直接调用。
+    根据用户配置的TTS类型和参数将文本转换为语音文件，并返回文件路径。
+    如果未配置或配置无效，则回退到gTTS。
     """
     tts_audio_dir = "temp_audio"
     os.makedirs(tts_audio_dir, exist_ok=True)
-
     audio_filename = f"tts_{uuid.uuid4().hex}.mp3"
     audio_filepath = os.path.join(tts_audio_dir, audio_filename)
 
-    try:
-        print(f"DEBUG_TTS: Synthesizing speech for text (first 50 chars): '{text[:50]}'")
-        start_time = time.time()
+    # 默认使用 gTTS 回退机制
+    use_gtts_fallback = True
+    provider_config = DEFAULT_TTS_CONFIGS.get(tts_type)
 
-        tts = gTTS(text=text, lang=lang)
-        tts.save(audio_filepath)
+    # 检查是否配置了有效API密钥和支持的提供商
+    if tts_type and provider_config and api_key and api_key != "dummy_key_for_testing_without_api":
+        use_gtts_fallback = False  # 尝试使用配置的提供商
 
-        end_time = time.time()
-        print(
-            f"DEBUG_TTS: Speech synthesis complete. Saved to {audio_filepath}. Time taken: {end_time - start_time:.2f}s")
+        if tts_type == "openai":
+            openai_tts_config = DEFAULT_TTS_CONFIGS["openai"]
+            tts_base_url = base_url or openai_tts_config["base_url"]
+            tts_api_url = f"{tts_base_url}{openai_tts_config['tts_path']}"
+            tts_model = model_id or openai_tts_config["default_model"]
+            tts_voice = voice_name or openai_tts_config["default_voice"]
 
-        return audio_filepath
-    except Exception as e:
-        print(f"ERROR_TTS: Speech synthesis failed: {e}")
-        raise
+            # 简单的语音名称验证
+            if tts_voice not in openai_tts_config["available_voices"]:
+                print(
+                    f"WARNING_TTS: OpenAI voice '{tts_voice}' not recognized or available. Falling back to default: {openai_tts_config['default_voice']}.")
+                tts_voice = openai_tts_config["default_voice"]
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": tts_model,
+                "input": text,
+                "voice": tts_voice,
+                # "response_format": "mp3" # 默认就是mp3
+            }
+
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(tts_api_url, headers=headers, json=payload, timeout=30)
+                    response.raise_for_status()  # 检查HTTP响应状态码
+
+                    # OpenAI TTS 返回音频流，直接写入文件
+                    with open(audio_filepath, "wb") as f:
+                        for chunk in response.iter_bytes(chunk_size=8192):  # 迭代写入大文件
+                            f.write(chunk)
+
+                    print(
+                        f"DEBUG_TTS: OpenAI TTS successful using model '{tts_model}', voice '{tts_voice}'. Saved to {audio_filepath}.")
+                    return audio_filepath
+            except httpx.RequestError as e:
+                print(
+                    f"ERROR_TTS: OpenAI TTS API request failed: {e}. Response: {getattr(e, 'response', None).text if getattr(e, 'response', None) else 'N/A'}")
+                use_gtts_fallback = True  # API 调用失败，回退到 gTTS
+            except Exception as e:
+                print(f"ERROR_TTS: OpenAI TTS processing failed: {e}")
+                use_gtts_fallback = True  # 其他处理失败，回退到 gTTS
+
+        # 对于其他提供商，目前仅打印警告并回退，或抛出未实现异常
+        elif tts_type in ["gemini", "aliyun", "siliconflow"]:
+            print(
+                f"WARNING_TTS: TTS provider '{tts_type}' is registered but its API integration is not yet fully implemented in ai_core.py. Falling back to gTTS.")
+            use_gtts_fallback = True
+            # 如果不想回退，可以抛出异常：
+            # raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            #                     detail=f"TTS provider '{tts_type}' API integration not yet implemented in backend.")
+        else:
+            print(f"WARNING_TTS: Unknown TTS provider type '{tts_type}' configured. Falling back to gTTS.")
+            use_gtts_fallback = True
+    else:
+        print("DEBUG_TTS: No valid TTS API configuration found or dummy key used. Proceeding with gTTS fallback.")
+        # use_gtts_fallback 已经为 True
+
+    # gTTS Fallback
+    if use_gtts_fallback:
+        try:
+            # gTTS 有其支持的语言列表，我们只使用其支持的语言
+            gtts_lang = lang if lang in ['zh-CN', 'en', 'zh_CN', 'en_US', 'en_GB'] else 'zh-CN'  # 更精确的gTTS语言匹配
+            print(f"DEBUG_TTS: Using gTTS fallback with language: {gtts_lang}.")
+
+            # gTTS 不支持选择特定语音，voice_name 和 model_id 将被忽略
+            # 注意：gTTS.save 是同步IO操作。在高度并发的应用中，这应该使用 asyncio.to_thread 运行。
+            # 当前为了简化，保持直接调用。
+            tts = gTTS(text=text, lang=gtts_lang)
+            tts.save(audio_filepath)
+
+            print(f"DEBUG_TTS: gTTS fallback successful. Saved to {audio_filepath}.")
+            return audio_filepath
+        except Exception as e:
+            print(f"ERROR_TTS: gTTS fallback failed: {e}. Unable to synthesize speech.")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"文本转语音失败: {e}. 请联系管理员。")
 
 
-async def get_embeddings_from_api(texts: List[str]) -> List[List[float]]:
+async def get_embeddings_from_api(texts: List[str], api_key: Optional[str] = None) -> List[List[float]]:
     # Embedding 模型固定使用 BAAAI/bge-m3
-    if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "dummy_key_for_testing_without_api":
-        print("API密钥未配置，无法获取嵌入。")
+    non_empty_texts = [t for t in texts if t and t.strip()]
+    if not non_empty_texts:
+        print("警告：没有有效的文本可以发送给Embedding API。")
+        return [np.zeros(1024).tolist()] * len(texts)
+
+    if not api_key or api_key == "dummy_key_for_testing_without_api":
+        print("API密钥未配置或为虚拟密钥，无法获取嵌入。将返回零向量作为占位符。")
         return [np.zeros(1024).tolist()] * len(texts)
 
     headers = {
-        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
         "model": EMBEDDING_MODEL_NAME,
-        "input": texts
+        "input": non_empty_texts
     }
-    print(f"DEBUG_EMBEDDING: Requesting embeddings for {len(texts)} texts using {EMBEDDING_MODEL_NAME}.")
+    print(f"DEBUG_EMBEDDING: Requesting embeddings for {len(non_empty_texts)} texts using {EMBEDDING_MODEL_NAME}.")
 
     async with httpx.AsyncClient() as client:
+        response = None # **<<<<< MODIFICATION: 确保 response 在 try 块外部被声明 >>>>>**
         try:
             response = await client.post(EMBEDDING_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             data = response.json()
-            embeddings = [item['embedding'] for item in
-                          data['data']]
-            print(f"DEBUG_EMBEDDING: Successfully received {len(embeddings)} embeddings.")
-            return embeddings
+            embeddings_result = [item['embedding'] for item in data.get('data', [])] # **<<<<< MODIFICATION: 使用 .get() 安全地访问 'data' 键 >>>>>**
+
+            full_embeddings = []
+            result_idx = 0
+            for text_orig in texts:
+                if text_orig and text_orig.strip():
+                    if result_idx < len(embeddings_result):
+                        full_embeddings.append(embeddings_result[result_idx])
+                        result_idx += 1
+                    else:
+                        full_embeddings.append(np.zeros(1024).tolist())
+                else:
+                    full_embeddings.append(np.zeros(1024).tolist())
+            print(f"DEBUG_EMBEDDING: Successfully received {len(full_embeddings)} embeddings (including placeholders).")
+            return full_embeddings
         except httpx.RequestError as e:
             print(f"API请求错误 (Embedding): {e}")
-            print(f"响应内容: {getattr(e, 'response', None).text if getattr(e, 'response', None) else '无'}")
+            print(f"响应内容: {getattr(e, 'response', None).text if hasattr(e, 'response') and e.response else '无'}")
             raise
         except KeyError as e:
-            print(f"API响应格式错误 (Embedding): {e}. 响应: {data}")
+            # **<<<<< MODIFICATION: 修正 data 引用，并确保 response 可用 >>>>>**
+            print(f"API响应格式错误 (Embedding): {e}. 响应: {response.text if response and hasattr(response, 'text') else '无法获取响应数据或响应正文'}")
+            raise
+        except json.JSONDecodeError as e: # 添加特定的JSON解码错误
+            print(f"API响应JSON解码错误 (Embedding): {e}.")
+            print(f"响应: {response.text if response and hasattr(response, 'text') else '无法获取响应数据或响应正文'}")
             raise
 
 
-async def get_rerank_scores_from_api(query: str, documents: List[str]) -> List[float]:
+async def get_rerank_scores_from_api(query: str, documents: List[str], api_key: Optional[str] = None) -> List[float]:
     # Reranker 模型固定使用 BAAAI/bge-reranker-v2-m3
-    if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "dummy_key_for_testing_without_api":
-        print("API密钥未配置，无法获取重排分数。")
+    if not api_key or api_key == "dummy_key_for_testing_without_api":
+        print("API密钥未配置或为虚拟密钥，无法获取重排分数。将返回零分数作为占位符。")
         return [0.0] * len(documents)
 
     headers = {
-        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -477,17 +607,24 @@ async def get_rerank_scores_from_api(query: str, documents: List[str]) -> List[f
         try:
             response = await client.post(RERANKER_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-            data = response.json()
+            data = response.json() # data 定义在这里
             scores = [item['relevance_score'] for item in data['results']]
             print(f"DEBUG_RERANKER: Successfully received {len(scores)} rerank scores.")
             return scores
         except httpx.RequestError as e:
             print(f"API请求错误 (Reranker): {e}")
             print(f"响应内容: {getattr(e, 'response', None).text if getattr(e, 'response', None) else '无'}")
-            raise
+            raise # Re-raise the exception to be handled by the caller
         except KeyError as e:
-            print(f"API响应格式错误 (Reranker): {e}. 响应: {data}")
-            raise
+            # **<<<<< MODIFICATION: 修正 data 引用，确保 data 即使未定义也不会报错 >>>>>**
+            print(f"API响应格式错误 (Reranker): {e}.")
+            print(f"响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
+            raise # Re-raise the exception to be handled by the caller
+        except json.JSONDecodeError as e: # Add specific JSON decode error
+            print(f"API响应JSON解码错误 (Reranker): {e}.")
+            print(f"响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
+            raise # Re-raise the exception to be handled by the caller
+
 
 
 def extract_text_from_document(filepath: str, file_type: str) -> str:
@@ -1657,7 +1794,7 @@ async def _generate_match_rationale_llm(
         location_score: float, # <-- 新增：接收地理位置得分
         enhancement_opportunities: Dict[str, Any],
         match_type: Literal["student_to_project", "project_to_student"],
-        llm_api_key: str = SILICONFLOW_API_KEY
+        llm_api_key: Optional[str] = None
 ) -> str:
     """
     根据学生和项目的详细信息、匹配分数、地理位置得分以及识别出的增强机会，利用LLM生成匹配理由和可行动建议。
@@ -1773,6 +1910,7 @@ async def _generate_match_rationale_llm(
 
 # --- 智能匹配函数 ---
 async def find_matching_projects_for_student(db: Session, student_id: int,
+                                             current_user_api_key: Optional[str] = None,  # <-- 新增参数：当前用户API Key
                                              initial_k: int = INITIAL_CANDIDATES_K,
                                              final_k: int = FINAL_TOP_K) -> List[MatchedProject]:
     """
@@ -1783,10 +1921,37 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     if not student:
         raise HTTPException(status_code=404, detail="学生未找到。")
 
+    # **<<<<< MODIFICATION: 在 AI 核心函数中，获取学生自己的 API Key，而不是依赖外部传入 >>>>>**
+    # 推荐时，如果学生自己的嵌入是零向量，但它有配置API Key，则尝试重新生成嵌入。
+    # 仅在学生主动触发更新的情况下才会更新到DB。这里只用于当前计算。
+    student_api_key_for_embedding_and_rerank = None
+    if student.llm_api_type == "siliconflow" and student.llm_api_key_encrypted:
+        try:
+            student_api_key_for_embedding_and_rerank = decrypt_key(
+                student.llm_api_key_encrypted)  # 使用ai_core内部的decrypt_key
+            print(f"DEBUG_EMBEDDING_KEY: 学生 {student.id} 配置了硅基流动 API 密钥。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密学生 {student.id} 的硅基流动 API 密钥失败: {e}。将不使用其密钥。")
+            student_api_key_for_embedding_and_rerank = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 学生 {student.id} 未配置硅基流动 API 类型或密钥。")
+
     student_embedding_np = _get_safe_embedding_np(student.embedding, "学生", student_id)
-    if student_embedding_np is None:
-        print(f"WARNING_AI_MATCHING: 学生 {student_id} 嵌入向量无效，无法进行匹配。")
-        return []
+    if student_embedding_np is None or (student_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+        # 如果学生嵌入向量为None或全零（表示未生成或已失效），尝试用提供的API Key重新生成
+        print(f"WARNING_AI_MATCHING: 学生 {student_id} 嵌入向量为None或全零，尝试使用学生自己的API Key重新生成。")
+        if student_api_key_for_embedding_and_rerank:
+            try:
+                re_generated_embedding = await get_embeddings_from_api(
+                    [student.combined_text], api_key=student_api_key_for_embedding_and_rerank
+                )
+                if re_generated_embedding and len(re_generated_embedding) > 0:
+                    student_embedding_np = np.array(re_generated_embedding[0], dtype=np.float32)
+                    print(f"DEBUG_AI_MATCHING: 学生 {student_id} 嵌入向量已临时重新生成。")
+            except Exception as e:
+                print(f"ERROR_AI_MATCHING: 临时重新生成学生 {student_id} 嵌入向量失败: {e}。将继续使用零向量。")
+        if student_embedding_np is None or (student_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            return []  # 如果重试后仍是None或全零，则无法匹配
 
     student_embedding = student_embedding_np.reshape(1, -1)
     print(
@@ -1802,7 +1967,34 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
 
     for p in all_projects:
         safe_p_embedding_np = _get_safe_embedding_np(p.embedding, "项目", p.id)
-        if safe_p_embedding_np is None:
+        if safe_p_embedding_np is None or (safe_p_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            # 如果项目嵌入向量为None或全零，尝试用项目创建者或当前学生的API Key临时重新生成
+            project_creator_api_key = None
+            if p.creator_id:
+                project_creator = db.query(Student).filter(Student.id == p.creator_id).first()
+                if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
+                    try:
+                        project_creator_api_key = decrypt_key(project_creator.llm_api_key_encrypted)
+                    except Exception:
+                        pass  # 解密失败则为None
+
+            key_to_use_for_project_embedding = project_creator_api_key or student_api_key_for_embedding_and_rerank
+
+            if key_to_use_for_project_embedding:
+                print(
+                    f"WARNING_AI_MATCHING: 项目 {p.id} 嵌入向量为None或全零，尝试使用API Key ({'创建者' if project_creator_api_key else '学生'})重新生成。")
+                try:
+                    re_generated_embedding = await get_embeddings_from_api(
+                        [p.combined_text], api_key=key_to_use_for_project_embedding
+                    )
+                    if re_generated_embedding and len(re_generated_embedding) > 0:
+                        safe_p_embedding_np = np.array(re_generated_embedding[0], dtype=np.float32)
+                        print(f"DEBUG_AI_MATCHING: 项目 {p.id} 嵌入向量已临时重新生成。")
+                except Exception as e:
+                    print(f"ERROR_AI_MATCHING: 临时重新生成项目 {p.id} 嵌入向量失败: {e}。将继续使用零向量。")
+
+        if safe_p_embedding_np is None or (safe_p_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            # 如果即使重试后仍然无效，则跳过此项目
             continue
 
         project_embeddings.append(safe_p_embedding_np)
@@ -1863,20 +2055,19 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
         time_score = _calculate_time_match_score(student, project)
         print(f"DEBUG_MATCH: 项目 {project.id} ({project.title}) - 时间得分: {time_score:.4f}")
 
-        # **<<<<< 新增：计算地理位置得分 >>>>>**
         location_score = _calculate_location_match_score(student.location, project.location)
         print(f"DEBUG_MATCH: 项目 {project.id} ({project.title}) - 地理位置得分: {location_score:.4f}")
 
-        # 总权重调整为1：0.5 (嵌入) + 0.3 (技能) + 0.1 (时间) + 0.1 (地理位置)
         combined_score = (sim_score * 0.5) + \
                          (proficiency_score * 0.3) + \
                          (time_score * 0.1) + \
-                         (location_score * 0.1) # **<<<<< 新增：地理位置权重 >>>>>**
+                         (location_score * 0.1)
 
         print(
             f"DEBUG_MATCH: 项目 {project.id} ({project.title}) - 嵌入相似度: {sim_score:.4f}, 熟练度得分: {proficiency_score:.4f}, 时间得分: {time_score:.4f}, 地理位置得分: {location_score:.4f}, 综合得分: {combined_score:.4f}")
 
-        enhancement_opportunities = _identify_enhancement_opportunities(student=student, project=project, match_type="student_to_project")
+        enhancement_opportunities = _identify_enhancement_opportunities(student=student, project=project,
+                                                                        match_type="student_to_project")
 
         refined_candidates.append({
             "project": project,
@@ -1884,7 +2075,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
             "sim_score": sim_score,
             "proficiency_score": proficiency_score,
             "time_score": time_score,
-            "location_score": location_score, # **<<<<< 保存地理位置得分 >>>>>**
+            "location_score": location_score,
             "enhancement_opportunities": enhancement_opportunities
         })
 
@@ -1898,13 +2089,18 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     final_recommendations = []
     if reranker_documents and reranker_query and reranker_query.strip():
         try:
-            rerank_scores = await get_rerank_scores_from_api(reranker_query, reranker_documents)
+            # **<<<<< MODIFICATION: 将学生自己的 API Key 传递给 get_rerank_scores_from_api >>>>>**
+            rerank_scores = await get_rerank_scores_from_api(
+                reranker_query,
+                reranker_documents,
+                api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
+            )
 
             reranked_projects_with_scores = []
             rerank_doc_to_full_candidate_map = {
-                refined_candidates[:final_k * 2][idx]["project"].combined_text: refined_candidates[:final_k * 2][idx]
-                for idx, doc_text in enumerate([c["project"].combined_text for c in refined_candidates[:final_k * 2]])
-                if doc_text and doc_text.strip()
+                (c["project"].combined_text or ""): c  # Ensure key is non-None
+                for c in refined_candidates[:final_k * 2]
+                if c["project"].combined_text and c["project"].combined_text.strip()
             }
 
             for score_idx, score_val in enumerate(rerank_scores):
@@ -1917,22 +2113,24 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                         "sim_score": original_candidate_info["sim_score"],
                         "proficiency_score": original_candidate_info["proficiency_score"],
                         "time_score": original_candidate_info["time_score"],
-                        "location_score": original_candidate_info["location_score"], # **<<<<< 获取地理位置得分 >>>>>**
+                        "location_score": original_candidate_info["location_score"],
                         "enhancement_opportunities": original_candidate_info["enhancement_opportunities"]
                     })
 
             reranked_projects_with_scores.sort(key=lambda x: x["relevance_score"], reverse=True)
 
             for rec in reranked_projects_with_scores[:final_k]:
+                # **<<<<< MODIFICATION: 将学生自己的 API Key 传递给 _generate_match_rationale_llm >>>>>**
                 rationale = await _generate_match_rationale_llm(
                     student=student,
                     project=rec["project"],
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
-                    location_score=rec["location_score"], # **<<<<< 传递地理位置得分 >>>>>**
+                    location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
-                    match_type="student_to_project"
+                    match_type="student_to_project",
+                    llm_api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
                 )
                 final_recommendations.append(
                     MatchedProject(
@@ -1956,9 +2154,10 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
-                    location_score=rec["location_score"], # **<<<<< 传递地理位置得分 >>>>>**
+                    location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
-                    match_type="student_to_project"
+                    match_type="student_to_project",
+                    llm_api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
                 )
                 final_recommendations.append(
                     MatchedProject(
@@ -1980,9 +2179,10 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                 sim_score=rec["sim_score"],
                 proficiency_score=rec["proficiency_score"],
                 time_score=rec["time_score"],
-                location_score=rec["location_score"], # **<<<<< 传递地理位置得分 >>>>>**
+                location_score=rec["location_score"],
                 enhancement_opportunities=rec["enhancement_opportunities"],
-                match_type="student_to_project"
+                match_type="student_to_project",
+                llm_api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
             )
             final_recommendations.append(
                 MatchedProject(
@@ -2000,6 +2200,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
 
 # project/ai_core.py
 async def find_matching_students_for_project(db: Session, project_id: int,
+                                             project_creator_api_key: Optional[str] = None,  # <-- 新增参数：项目创建者API Key
                                              initial_k: int = INITIAL_CANDIDATES_K,
                                              final_k: int = FINAL_TOP_K) -> List[MatchedStudent]:
     """
@@ -2010,10 +2211,42 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     if not project:
         raise HTTPException(status_code=404, detail="项目未找到。")
 
+    # **<<<<< MODIFICATION: 在 AI 核心函数中，获取项目创建者自己的 API Key，而不是依赖外部传入 >>>>>**
+    # 推荐时，如果项目自己的嵌入是零向量，但它有配置API Key，则尝试重新生成嵌入。
+    # 仅在项目主动触发更新的情况下才会更新到DB。这里只用于当前计算。
+    project_api_key_for_embedding_and_rerank = None
+    if project.creator_id:
+        project_creator = db.query(Student).filter(Student.id == project.creator_id).first()
+        if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
+            try:
+                project_api_key_for_embedding_and_rerank = decrypt_key(project_creator.llm_api_key_encrypted)
+                print(f"DEBUG_EMBEDDING_KEY: 项目创建者 {project_creator.id} 配置了硅基流动 API 密钥。")
+            except Exception as e:
+                print(
+                    f"ERROR_EMBEDDING_KEY: 解密项目创建者 {project_creator.id} 的硅基流动 API 密钥失败: {e}。将不使用其密钥。")
+                project_api_key_for_embedding_and_rerank = None
+        else:
+            print(
+                f"DEBUG_EMBEDDING_KEY: 项目创建者 {project_creator.id if project_creator else 'N/A'} 未配置硅基流动 API 类型或密钥。")
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 项目 {project.id} 没有关联创建者ID。")
+
     project_embedding_np = _get_safe_embedding_np(project.embedding, "项目", project_id)
-    if project_embedding_np is None:
-        print(f"WARNING_AI_MATCHING: 项目 {project_id} 嵌入向量无效，无法进行匹配。")
-        return []
+    if project_embedding_np is None or (project_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+        # 如果项目嵌入向量为None或全零，尝试用项目创建者自己的API Key重新生成
+        print(f"WARNING_AI_MATCHING: 项目 {project_id} 嵌入向量为None或全零，尝试使用项目创建者的API Key重新生成。")
+        if project_api_key_for_embedding_and_rerank:
+            try:
+                re_generated_embedding = await get_embeddings_from_api(
+                    [project.combined_text], api_key=project_api_key_for_embedding_and_rerank
+                )
+                if re_generated_embedding and len(re_generated_embedding) > 0:
+                    project_embedding_np = np.array(re_generated_embedding[0], dtype=np.float32)
+                    print(f"DEBUG_AI_MATCHING: 项目 {project_id} 嵌入向量已临时重新生成。")
+            except Exception as e:
+                print(f"ERROR_AI_MATCHING: 临时重新生成项目 {project_id} 嵌入向量失败: {e}。将继续使用零向量。")
+        if project_embedding_np is None or (project_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            return []  # 如果重试后仍是None或全零，则无法匹配
 
     project_embedding = project_embedding_np.reshape(1, -1)
     print(
@@ -2028,7 +2261,31 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     valid_students = []
     for s in all_students:
         safe_s_embedding_np = _get_safe_embedding_np(s.embedding, "学生", s.id)
-        if safe_s_embedding_np is None:
+        if safe_s_embedding_np is None or (safe_s_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            # 如果学生嵌入向量为None或全零，尝试用学生自己的API Key临时重新生成
+            student_api_key = None
+            if s.llm_api_type == "siliconflow" and s.llm_api_key_encrypted:
+                try:
+                    student_api_key = decrypt_key(s.llm_api_key_encrypted)
+                except Exception:
+                    pass
+
+            key_to_use_for_student_embedding = student_api_key or project_api_key_for_embedding_and_rerank
+
+            if key_to_use_for_student_embedding:
+                print(
+                    f"WARNING_AI_MATCHING: 学生 {s.id} 嵌入向量为None或全零，尝试使用API Key ({'学生自己' if student_api_key else '项目创建者'})重新生成。")
+                try:
+                    re_generated_embedding = await get_embeddings_from_api(
+                        [s.combined_text], api_key=key_to_use_for_student_embedding
+                    )
+                    if re_generated_embedding and len(re_generated_embedding) > 0:
+                        safe_s_embedding_np = np.array(re_generated_embedding[0], dtype=np.float32)
+                        print(f"DEBUG_AI_MATCHING: 学生 {s.id} 嵌入向量已临时重新生成。")
+                except Exception as e:
+                    print(f"ERROR_AI_MATCHING: 临时重新生成学生 {s.id} 嵌入向量失败: {e}。将继续使用零向量。")
+
+        if safe_s_embedding_np is None or (safe_s_embedding_np == np.zeros(1024, dtype=np.float32)).all():
             continue
 
         student_embeddings.append(safe_s_embedding_np)
@@ -2089,20 +2346,19 @@ async def find_matching_students_for_project(db: Session, project_id: int,
         time_score = _calculate_time_match_score(student, project)
         print(f"DEBUG_MATCH: 学生 {student.id} ({student.name}) - 时间得分: {time_score:.4f}")
 
-        # **<<<<< 新增：计算地理位置得分 >>>>>**
         location_score = _calculate_location_match_score(student.location, project.location)
         print(f"DEBUG_MATCH: 学生 {student.id} ({student.name}) - 地理位置得分: {location_score:.4f}")
 
-        # 总权重调整为1：0.5 (嵌入) + 0.3 (技能) + 0.1 (时间) + 0.1 (地理位置)
         combined_score = (sim_score * 0.5) + \
                          (proficiency_score * 0.3) + \
                          (time_score * 0.1) + \
-                         (location_score * 0.1) # **<<<<< 新增：地理位置权重 >>>>>**
+                         (location_score * 0.1)
 
         print(
             f"DEBUG_MATCH: 学生 {student.id} ({student.name}) - 嵌入相似度: {sim_score:.4f}, 熟练度得分: {proficiency_score:.4f}, 时间得分: {time_score:.4f}, 地理位置得分: {location_score:.4f}, 综合得分: {combined_score:.4f}")
 
-        enhancement_opportunities = _identify_enhancement_opportunities(student=student, project=project, match_type="project_to_student")
+        enhancement_opportunities = _identify_enhancement_opportunities(student=student, project=project,
+                                                                        match_type="project_to_student")
 
         refined_candidates.append({
             "student": student,
@@ -2110,7 +2366,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
             "sim_score": sim_score,
             "proficiency_score": proficiency_score,
             "time_score": time_score,
-            "location_score": location_score, # **<<<<< 保存地理位置得分 >>>>>**
+            "location_score": location_score,
             "enhancement_opportunities": enhancement_opportunities
         })
 
@@ -2124,13 +2380,18 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     final_recommendations = []
     if reranker_documents and reranker_query and reranker_query.strip():
         try:
-            rerank_scores = await get_rerank_scores_from_api(reranker_query, reranker_documents)
+            # **<<<<< MODIFICATION: 将项目创建者自己的 API Key 传递给 get_rerank_scores_from_api >>>>>**
+            rerank_scores = await get_rerank_scores_from_api(
+                reranker_query,
+                reranker_documents,
+                api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
+            )
 
             reranked_students_with_scores = []
             rerank_doc_to_full_candidate_map = {
-                refined_candidates[:final_k * 2][idx]["student"].combined_text: refined_candidates[:final_k * 2][idx]
-                for idx, doc_text in enumerate([c["student"].combined_text for c in refined_candidates[:final_k * 2]])
-                if doc_text and doc_text.strip()
+                (c["student"].combined_text or ""): c  # Ensure key is non-None
+                for c in refined_candidates[:final_k * 2]
+                if c["student"].combined_text and c["student"].combined_text.strip()
             }
 
             for score_idx, score_val in enumerate(rerank_scores):
@@ -2143,22 +2404,24 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                         "sim_score": original_candidate_info["sim_score"],
                         "proficiency_score": original_candidate_info["proficiency_score"],
                         "time_score": original_candidate_info["time_score"],
-                        "location_score": original_candidate_info["location_score"], # **<<<<< 获取地理位置得分 >>>>>**
+                        "location_score": original_candidate_info["location_score"],
                         "enhancement_opportunities": original_candidate_info["enhancement_opportunities"]
                     })
 
             reranked_students_with_scores.sort(key=lambda x: x["relevance_score"], reverse=True)
 
             for rec in reranked_students_with_scores[:final_k]:
+                # **<<<<< MODIFICATION: 将项目创建者自己的 API Key 传递给 _generate_match_rationale_llm >>>>>**
                 rationale = await _generate_match_rationale_llm(
                     student=rec["student"],
                     project=project,
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
-                    location_score=rec["location_score"], # **<<<<< 传递地理位置得分 >>>>>**
+                    location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
-                    match_type="project_to_student"
+                    match_type="project_to_student",
+                    llm_api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
                 )
                 final_recommendations.append(
                     MatchedStudent(
@@ -2183,9 +2446,10 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
-                    location_score=rec["location_score"], # **<<<<< 传递地理位置得分 >>>>>**
+                    location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
-                    match_type="project_to_student"
+                    match_type="project_to_student",
+                    llm_api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
                 )
                 final_recommendations.append(
                     MatchedStudent(
@@ -2208,9 +2472,10 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                 sim_score=rec["sim_score"],
                 proficiency_score=rec["proficiency_score"],
                 time_score=rec["time_score"],
-                location_score=rec["location_score"], # **<<<<< 传递地理位置得分 >>>>>**
+                location_score=rec["location_score"],
                 enhancement_opportunities=rec["enhancement_opportunities"],
-                match_type="project_to_student"
+                match_type="project_to_student",
+                llm_api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
             )
             final_recommendations.append(
                 MatchedStudent(
@@ -2225,5 +2490,6 @@ async def find_matching_students_for_project(db: Session, project_id: int,
             )
 
     return final_recommendations
+
 
 

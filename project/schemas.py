@@ -560,8 +560,9 @@ class McpToolDefinition(BaseModel):
     class Config:
         from_attributes = True
 
-    # --- UsersSearchEngineConfig Schemas ---
 
+
+# --- UsersSearchEngineConfig Schemas ---
 
 class UserSearchEngineConfigBase(BaseModel):
     name: Optional[str] = None
@@ -577,7 +578,6 @@ class UserSearchEngineConfigCreate(UserSearchEngineConfigBase):
     base_url: Optional[str] = None
     pass
 
-
 class UserSearchEngineConfigResponse(UserSearchEngineConfigBase):
     id: int
     owner_id: int
@@ -588,9 +588,77 @@ class UserSearchEngineConfigResponse(UserSearchEngineConfigBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- SearchEngineStatusResponse Schemas ---
+
+class UserTTSConfigBase(BaseModel):
+    name: str = Field(..., description="TTS配置名称，如：'我的OpenAI语音'")
+    tts_type: Literal[
+        "openai", # OpenAI的TTS服务类型
+        "gemini", # Google Gemini的TTS服务类型
+        "aliyun", # 阿里云的TTS服务类型
+        "siliconflow" # 硅基流动的TTS服务类型，假设存在
+    ] = Field(..., description="语音提供商类型，如：'openai', 'gemini', 'aliyun', 'siliconflow'")
+    api_key: Optional[str] = Field(None, description="API密钥（未加密）") # 输入时接收的明文密钥
+    base_url: Optional[str] = Field(None, description="API基础URL，如有自定义需求")
+    model_id: Optional[str] = Field(None, description="语音模型ID，如：'tts-1', 'gemini-pro'")
+    voice_name: Optional[str] = Field(None, description="语音名称或ID，如：'alloy', 'f_cn_zh_anqi_a_f'")
+    is_active: Optional[bool] = Field(False, description="是否当前激活的TTS配置，每个用户只能有一个激活配置")
+
+    # **<<<<< MODIFICATION: 解决 Pydantic 'model_' 命名空间冲突警告 >>>>>**
+    model_config = { # Pydantic V2 的配置方式是 model_config
+        'protected_namespaces': () # 解除对 'model_' 命名空间的保护
+    }
 
 
+class UserTTSConfigCreate(UserTTSConfigBase):
+    # 创建时 name 和 tts_type 必须提供，api_key 必须提供
+    name: str = Field(..., description="TTS配置名称")
+    tts_type: Literal[
+        "openai", "gemini", "aliyun", "siliconflow"
+    ] = Field(..., description="语音提供商类型")
+    api_key: str = Field(..., description="API密钥（未加密）")
+
+    # **<<<<< MODIFICATION: 解决 Pydantic 'model_' 命名空间冲突警告 >>>>>**
+    model_config = {
+        'protected_namespaces': ()
+    }
+
+
+class UserTTSConfigUpdate(UserTTSConfigBase):
+    # 更新时所有字段均为可选
+    name: Optional[str] = None
+    tts_type: Optional[Literal["openai", "gemini", "aliyun", "siliconflow"]] = None
+    api_key: Optional[str] = None # 更新时如果提供，则更新密钥
+    base_url: Optional[str] = None
+    model_id: Optional[str] = None
+    voice_name: Optional[str] = None
+    is_active: Optional[bool] = None # 允许更新激活状态
+
+    # **<<<<< MODIFICATION: 解决 Pydantic 'model_' 命名空间冲突警告 >>>>>**
+    model_config = {
+        'protected_namespaces': ()
+    }
+
+class UserTTSConfigResponse(UserTTSConfigBase):
+    id: int
+    owner_id: int
+    api_key_encrypted: Optional[str] = Field(None, description="加密后的API密钥") # 响应时返回的是加密后的密钥
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    # **<<<<< MODIFICATION: 合并 Pydantic 配置，移除 class Config: >>>>>**
+    model_config = {
+        'protected_namespaces': (), # 解除对 'model_' 命名空间的保护
+        'from_attributes': True,   # 从 ORM 模型创建实例
+        'json_encoders': {datetime: lambda dt: dt.isoformat() if dt is not None else None} # 将 json_encoders 移到此处
+    }
+
+# --- TTSTextRequest Schemas ---
+class TTSTextRequest(BaseModel):
+    text: str
+    lang: str = "zh-CN"
+
+
+# --- SearchEngineStatusResponse Schemas ---
 class SearchEngineStatusResponse(BaseModel):
     status: str
     message: str
