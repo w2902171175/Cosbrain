@@ -19,34 +19,40 @@ from models import Student, Project  # 导入 Student 和 Project 模型
 STUDENTS_CSV_PATH = 'export_tools/data/students.csv'  # 修正路径
 PROJECTS_CSV_PATH = 'export_tools/data/projects.csv'  # 修正路径
 
-# --- 2. 硅基流动API配置 (确保 .env 文件已正确配置) ---
-SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
+# --- 2. 硅基流动API配置（固定端点和模型名称） ---
+# 此脚本不再使用环境变量中的SILICONFLOW_API_KEY，而是明确依赖对get_embeddings_from_api_async的api_key参数传递。
+# 这样，只有当API Key被显式传递（例如，如果将来需要一个特殊的导入密钥），才会进行实际API调用。
+# 否则，它将依赖ai_core内部的占位符逻辑。
+# **<<<<< MODIFICATION: 移除不必要的全局 API KEY 读取 >>>>>**
+# SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY") # 移除此行
+# if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "sk-YOUR_SILICONFLOW_API_KEY_HERE": # 移除此行
+#     print("警告：SILICONFLOW_API_KEY 环境变量未设置或为默认值。AI Embedding/Rerank功能将受限。") # 移除此行
+#     SILICONFLOW_API_KEY = "dummy_key_for_testing_without_api" # 移除此行
 
-if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "sk-YOUR_SILICONFLOW_API_KEY_HERE":
-    print("警告：SILICONFLOW_API_KEY 环境变量未设置或为默认值。AI Embedding/Rerank功能将受限。")
-    SILICONFLOW_API_KEY = "dummy_key_for_testing_without_api"
-
+# 这些是API的固定端点和模型名称，需要保留
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 
 
 # --- 3. API 调用函数 ---
-async def get_embeddings_from_api_async(texts: List[str]) -> List[List[float]]:
+# **<<<<< MODIFICATION: get_embeddings_from_api_async 接受 api_key 参数 >>>>>**
+async def get_embeddings_from_api_async(texts: List[str], api_key: Optional[str] = None) -> List[List[float]]:
     """
     通过硅基流动API异步获取文本嵌入。
+    此版本明确接受api_key参数。如果api_key为None或虚拟key，则返回零向量。
     """
     non_empty_texts = [t for t in texts if t and t.strip()]
     if not non_empty_texts:
         print("警告：没有有效的文本可以发送给Embedding API。")
-        # 返回与原始文本列表���度匹配的零向量列表
         return [np.zeros(1024).tolist()] * len(texts)
 
-    if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "dummy_key_for_testing_without_api":
+    # **<<<<< MODIFICATION: 使用传入的 api_key 进行检查 >>>>>**
+    if not api_key or api_key == "dummy_key_for_testing_without_api":
         print("API密钥未配置或为虚拟密钥，无法获取嵌入。将返回零向量作为占位符。")
         return [np.zeros(1024).tolist()] * len(texts)
 
     headers = {
-        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Authorization": f"Bearer {api_key}", # <-- 使用传入的 api_key
         "Content-Type": "application/json",
     }
     payload = {
@@ -59,7 +65,6 @@ async def get_embeddings_from_api_async(texts: List[str]) -> List[List[float]]:
             response.raise_for_status()
             embeddings_result = [item['embedding'] for item in response.json()['data']]
 
-            # 将嵌入结果映射回原始请求的文本顺序，对于空文本，返回零向量
             full_embeddings = []
             result_idx = 0
             for text_orig in texts:
@@ -68,19 +73,20 @@ async def get_embeddings_from_api_async(texts: List[str]) -> List[List[float]]:
                         full_embeddings.append(embeddings_result[result_idx])
                         result_idx += 1
                     else:
-                        full_embeddings.append(np.zeros(1024).tolist())  # API返回数量不足，用零向量填充
+                        full_embeddings.append(np.zeros(1024).tolist())
                 else:
-                    full_embeddings.append(np.zeros(1024).tolist())  # 为空文本使用零向量
+                    full_embeddings.append(np.zeros(1024).tolist())
             return full_embeddings
 
     except httpx.RequestError as e:
         print(f"API请求错误 (Embedding): {e}")
         print(f"响应内容: {getattr(e, 'response', None).text if hasattr(e, 'response') and e.response else '无'}")
-        # 如果API调用失败，返回零向量以避免中断整个导入流程
         return [np.zeros(1024).tolist()] * len(texts)
     except KeyError as e:
-        print(f"API响应格式错误 (Embedding): {e}. 响应: {response.json() if hasattr(response, 'json') else '无'}")
-        # 如果API响应格式错误，返回零向量
+        print(f"API响应格式错误 (Embedding): {e}. 响应: {response.json() if 'response' in locals() and hasattr(response, 'json') else '无法获取响应数据'}")
+        return [np.zeros(1024).tolist()] * len(texts) # 确保返回列表以匹配预期
+    except json.JSONDecodeError as e:
+        print(f"API响应JSON解码错误 (Embedding): {e}. 响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
         return [np.zeros(1024).tolist()] * len(texts)
 
 
@@ -88,12 +94,10 @@ async def get_embeddings_from_api_async(texts: List[str]) -> List[List[float]]:
 def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
     """为学生数据生成 combined_text，并处理 skills 字段和确保 username 唯一。"""
 
-    # 确保所有可能缺失的列存在，以便后续处理，并初始化为None或np.nan
-    # **<<<<< MODIFICATION: 添加 'location' 列 >>>>>**
     for col_name in ['username', 'email', 'phone_number', 'school', 'password_hash',
                      'major', 'skills', 'interests', 'bio', 'awards_competitions',
                      'academic_achievements', 'soft_skills', 'portfolio_link',
-                     'preferred_role', 'availability', 'location']:  # 新增 'location'
+                     'preferred_role', 'availability', 'location']:
         if col_name not in df.columns:
             df[col_name] = np.nan
 
@@ -101,20 +105,23 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
     valid_skill_levels = ["初窥门径", "登堂入室", "融会贯通", "炉火纯青"]
 
     for index, row in df.iterrows():
-        # 处理唯一性约束字段，为空值生成唯一值
         user_id = int(row['id'])
 
-        # 为缺失的唯一字段生成值
+        # **<<<<< MODIFICATION: 为确保唯一性，这些字段即使在 CSV 里为空，也会生成唯一值 >>>>>**
+        # 以前在 main.py 的 register 中处理过 username 生成，这里也需要保证唯一。
+        # 对于 email, phone_number, school, password_hash 这些唯一或非空的字段，
+        # 如果 CSV 中为空，我们也生成一个唯一的占位符，避免导入时报错
         if pd.isna(row.get('email')) or not str(row.get('email')).strip():
-            df.at[index, 'email'] = f"user{user_id}@example.com"
+            df.at[index, 'email'] = f"user{user_id:04d}@example.com" # 确保邮箱唯一且有格式
 
         if pd.isna(row.get('phone_number')) or not str(row.get('phone_number')).strip():
-            df.at[index, 'phone_number'] = f"1{user_id:010d}"  # 生成11位手机号
+            df.at[index, 'phone_number'] = f"139{user_id:08d}" # 生成一个唯一的11位手机号
 
         if pd.isna(row.get('school')) or not str(row.get('school')).strip():
-            df.at[index, 'school'] = f"示例学校{user_id}"
+            df.at[index, 'school'] = f"示例大学_{user_id}"
 
         if pd.isna(row.get('password_hash')) or not str(row.get('password_hash')).strip():
+            # 这里简单用 hash_id_placeholder，实际中应使用加密过的默认密码
             df.at[index, 'password_hash'] = f"hash_{user_id}_placeholder"
 
         skills_raw_data = row['skills']
@@ -153,9 +160,7 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
         original_username = row['username'] if pd.notna(row['username']) and str(row['username']).strip() else "新用户"
         df.at[index, 'username'] = f"{original_username}_{int(row['id'])}"
 
-        # Helper to get string from potentially NaN/None value, avoiding "nan" string
         def _get_string_value(val):
-            # 将 pd.NA, np.nan, None, 或只包含空格的字符串都视为 Falsy
             if pd.isna(val) or val is None or (isinstance(val, str) and val.strip() == ""):
                 return ''
             return str(val).strip()
@@ -163,7 +168,6 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
         skills_text_for_combined = ", ".join(
             [s.get("name", "") for s in processed_skills_for_cell if isinstance(s, dict) and s.get("name")])
 
-        # **<<<<< MODIFICATION: 将 'location' 加入 combined_text >>>>>**
         df.at[index, 'combined_text'] = ". ".join(filter(None, [
             _get_string_value(row.get('major')),
             skills_text_for_combined,
@@ -175,7 +179,7 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
             _get_string_value(row.get('portfolio_link')),
             _get_string_value(row.get('preferred_role')),
             _get_string_value(row.get('availability')),
-            _get_string_value(row.get('location'))  # 新增：地理位置
+            _get_string_value(row.get('location'))
         ])).strip()
 
         if not df.at[index, 'combined_text']:
@@ -187,12 +191,10 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
 def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
     """为项目数据生成 combined_text，并处理 required_skills/roles 字段。"""
 
-    # 确保所有可能缺失的列存在，并初始化为np.nan
-    # **<<<<< MODIFICATION: 添加 'location' 列 >>>>>**
     for col_name in ['creator_id', 'description', 'keywords', 'project_type',
                      'expected_deliverables', 'contact_person_info', 'learning_outcomes',
                      'team_size_preference', 'project_status', 'required_skills',
-                     'required_roles', 'start_date', 'end_date', 'estimated_weekly_hours', 'location']:  # 新增 'location'
+                     'required_roles', 'start_date', 'end_date', 'estimated_weekly_hours', 'location']:
         if col_name not in df.columns:
             df[col_name] = np.nan
 
@@ -255,6 +257,7 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
 
         df.at[index, 'required_roles'] = json.dumps(processed_required_roles_for_cell, ensure_ascii=False)
 
+
         def _get_string_value(val):
             if pd.isna(val) or val is None or (isinstance(val, str) and val.strip() == ""):
                 return ''
@@ -271,7 +274,6 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
         roles_text_for_combined = ", ".join(
             [r for r in processed_required_roles_for_cell if isinstance(r, str) and r.strip()])
 
-        # **<<<<< MODIFICATION: 将 'location' 加入 combined_text 的重建中 >>>>>**
         df.at[index, 'combined_text'] = ". ".join(filter(None, [
             _get_string_value(row.get('title')),
             _get_string_value(row.get('description')),
@@ -287,7 +289,7 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
             _get_string_value(row.get('start_date')),
             _get_string_value(row.get('end_date')),
             _get_string_value(row.get('estimated_weekly_hours')),
-            _get_string_value(row.get('location'))  # 新增：地理位置
+            _get_string_value(row.get('location'))
         ])).strip()
 
         if not df.at[index, 'combined_text']:
@@ -298,20 +300,12 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
 
 # --- 5. 数据导入函数 ---
 def import_students_to_db(db: Session, students_df: pd.DataFrame):
-    """将学生数据（含嵌入）导入数据库。"""
+    """将学生数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入学生数据到数据库...")
-    texts = students_df['combined_text'].tolist()
-    embeddings = asyncio.run(get_embeddings_from_api_async(texts))
-
-    if len(embeddings) != len(students_df):
-        print(f"警告：嵌入向量数量 ({len(embeddings)}) 与学生��量 ({len(students_df)}) 不匹配。将为缺失的嵌入使用零向量。")
-        embeddings_filled = []
-        for i in range(len(students_df)):
-            if i < len(embeddings):
-                embeddings_filled.append(embeddings[i])
-            else:
-                embeddings_filled.append(np.zeros(1024).tolist())
-        embeddings = embeddings_filled
+    # **<<<<< MODIFICATION: 在导入脚本中，不再尝试调用外部API生成嵌入 >>>>>**
+    # 嵌入将由用户在配置API密钥后，通过更新个人资料或在推荐时按需生成
+    # texts = students_df['combined_text'].tolist() # 移除此行
+    # embeddings = asyncio.run(get_embeddings_from_api_async(texts)) # 移除此行
 
     for i, row in students_df.iterrows():
         skills_data = row['skills']
@@ -337,23 +331,19 @@ def import_students_to_db(db: Session, students_df: pd.DataFrame):
             portfolio_link=row['portfolio_link'],
             preferred_role=row['preferred_role'],
             availability=row['availability'],
-            # **<<<<< MODIFICATION: 赋值 location >>>>>**
-            location=row['location'],  # 新增
-            # **<<<<< 赋值结束 >>>>>**
+            location=row['location'],
             email=row['email'],
             phone_number=row['phone_number'],
             school=row['school'],
             password_hash=row['password_hash'],
 
             combined_text=row['combined_text'],
-            embedding=embeddings[i]
+            embedding=np.zeros(1024).tolist(), # **<<<<< 新增: 默认生成零向量 >>>>>**
+            llm_api_type=None, # 导入时 LLM API 类型默认为 None
+            llm_api_key_encrypted=None, # 导入时 API Key 默认为 None
+            llm_api_base_url=None,
+            llm_model_id=None
         )
-        # **<<<<< MODIFICATION: 在清空 None 的循环中添加 'location' >>>>>**
-        # for col_name in ['name', 'major', 'interests', 'bio', 'awards_competitions', 'academic_achievements',
-        #                  'soft_skills', 'portfolio_link', 'preferred_role', 'availability',
-        #                  'email', 'phone_number', 'school', 'password_hash']:
-        # 由于我们已经在 preprocess_student_data 中用 np.nan 统一处理了缺失值
-        # 且 SQLA 会将 None 正确写入 NULL，这里可以简化，只处理 location
         if pd.isna(getattr(student, 'location')):
             setattr(student, 'location', None)
 
@@ -364,20 +354,11 @@ def import_students_to_db(db: Session, students_df: pd.DataFrame):
 
 
 def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
-    """将项目数据（含嵌入）导入数据库。"""
+    """将项目数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入项目数据到数据库...")
-    texts = projects_df['combined_text'].tolist()
-    embeddings = asyncio.run(get_embeddings_from_api_async(texts))
-
-    if len(embeddings) != len(projects_df):
-        print(f"警告：嵌入向量数量 ({len(embeddings)}) 与项目数量 ({len(projects_df)}) 不匹配。将为缺失的嵌入使用零向量。")
-        embeddings_filled = []
-        for i in range(len(projects_df)):
-            if i < len(embeddings):
-                embeddings_filled.append(embeddings[i])
-            else:
-                embeddings_filled.append(np.zeros(1024).tolist())
-        embeddings = embeddings_filled
+    # **<<<<< MODIFICATION: 在导入脚本中，不再尝试调用外部API生成嵌入 >>>>>**
+    # texts = projects_df['combined_text'].tolist() # 移除此行
+    # embeddings = asyncio.run(get_embeddings_from_api_async(texts)) # 移除此行
 
     for i, row in projects_df.iterrows():
         creator_id_for_db = None
@@ -430,17 +411,11 @@ def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
             start_date=start_date_val,
             end_date=end_date_val,
             estimated_weekly_hours=estimated_weekly_hours_val,
-            # **<<<<< MODIFICATION: 赋值 location >>>>>**
-            location=row['location'],  # 新增
-            # **<<<<< 赋值结束 >>>>>**
+            location=row['location'],
             creator_id=creator_id_for_db,
             combined_text=row['combined_text'],
-            embedding=embeddings[i]
+            embedding=np.zeros(1024).tolist() # **<<<<< 新增: 默认生成零向量 >>>>>**
         )
-        # **<<<<< MODIFICATION: 在清空 None 的循环中添加 'location' >>>>>**
-        # for col_name in ['description', 'keywords', 'project_type', 'expected_deliverables',
-        #                  'contact_person_info', 'learning_outcomes', 'team_size_preference',
-        #                  'project_status', 'title']:
         if pd.isna(getattr(project, 'location')):
             setattr(project, 'location', None)
 
@@ -476,7 +451,6 @@ if __name__ == "__main__":
     # 将日期时间列转换为 datetime 对象
     for col in ['start_date', 'end_date']:
         if col in projects_df.columns:
-            # errors='coerce' 会将无法解析的日期转换为 NaT (Not a Time)
             projects_df[col] = pd.to_datetime(projects_df[col], errors='coerce')
 
     # 将新的 'location' 列转换为字符串类型，缺失值转换为None (以便后续存入数据库)

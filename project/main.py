@@ -1,6 +1,6 @@
 # project/main.py
 from fastapi.responses import PlainTextResponse, Response
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, Response
 from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session,joinedload
@@ -20,9 +20,9 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
 # 导入重构后的 ai_core 模块
 import ai_core
 
@@ -32,7 +32,6 @@ app = FastAPI(
     description="为学生提供智能匹配、知识管理、课程学习和协作支持的综合平台。",
     version="0.1.0",
 )
-
 
 # 令牌认证方案
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
@@ -103,7 +102,16 @@ async def get_current_user_id(
             detail="认证过程中发生服务器错误"
         )
 
-
+# **<<<<< 用于设置活跃TTS配置的辅助依赖函数 >>>>>**
+async def get_active_tts_config(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+) -> Optional[UserTTSConfig]:
+    """获取当前用户激活的TTS配置"""
+    return db.query(UserTTSConfig).filter(
+        UserTTSConfig.owner_id == current_user_id,
+        UserTTSConfig.is_active == True
+    ).first()
 
 # --- WebSocket 连接管理：为每个聊天室分配一个管理器 ---
 class ConnectionManager:
@@ -609,33 +617,307 @@ async def perform_web_search(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"网络搜索服务调用失败: {e}")
 
 
-# --- 语言服务 - 文本转语音 (TTS) 接口 ---
+# --- 用户TTS配置管理接口 ---
+@app.post("/users/me/tts_configs", response_model=UserTTSConfigResponse, summary="为当前用户创建新的TTS配置")
+async def create_user_tts_config(
+        tts_config_data: UserTTSConfigCreate,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试创建新的TTS配置: {tts_config_data.name}")
+
+    # 检查配置名称是否已存在
+    existing_config = db.query(UserTTSConfig).filter(
+        UserTTSConfig.owner_id == current_user_id,
+        UserTTSConfig.name == tts_config_data.name
+    ).first()
+    if existing_config:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"已存在同名TTS配置: '{tts_config_data.name}'。")
+
+    # 检查是否有其他配置被意外设置为 active (防止前端逻辑错误，这里再确认一次)
+    # 理论上数据库约束会处理，但在此业务逻辑层再做一遍，保证数据一致性
+    if tts_config_data.is_active:
+        active_config_for_user = db.query(UserTTSConfig).filter(
+            UserTTSConfig.owner_id == current_user_id,
+            UserTTSConfig.is_active == True
+        ).first()
+        if active_config_for_user:
+            active_config_for_user.is_active = False # 将旧的激活配置设为非激活
+            db.add(active_config_for_user)
+            print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{active_config_for_user.name}' 置为非激活。")
+
+    encrypted_key = None
+    if tts_config_data.api_key:
+        try:
+            encrypted_key = ai_core.encrypt_key(tts_config_data.api_key)
+        except Exception as e:
+            print(f"ERROR: 加密TTS API密钥失败: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加密API密钥失败。")
+
+    new_tts_config = UserTTSConfig(
+        owner_id=current_user_id,
+        name=tts_config_data.name,
+        tts_type=tts_config_data.tts_type,
+        api_key_encrypted=encrypted_key,
+        base_url=tts_config_data.base_url,
+        model_id=tts_config_data.model_id,
+        voice_name=tts_config_data.voice_name,
+        is_active=tts_config_data.is_active # 如果创建时就设为激活，则激活
+    )
+
+    db.add(new_tts_config)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建TTS配置发生完整性约束错误: {e}")
+        # 捕获数据库层面的活跃配置唯一性冲突
+        if "_owner_id_active_tts_config_uc" in str(e): # 根据models.py中的唯一约束名称判断
+             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="每个用户只能有一个激活的TTS配置。请先设置现有配置为非激活，或更新现有激活配置。")
+        elif "_owner_id_tts_config_name_uc" in str(e):
+             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="TTS配置名称已存在。")
+        else:
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="创建TTS配置失败，请检查输入或联系管理员。")
+
+    db.refresh(new_tts_config)
+    print(f"DEBUG: 用户 {current_user_id} 成功创建TTS配置: {new_tts_config.name} (ID: {new_tts_config.id})")
+    return new_tts_config
+
+
+@app.get("/users/me/tts_configs", response_model=List[UserTTSConfigResponse], summary="获取当前用户的所有TTS配置")
+async def get_user_tts_configs(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 获取用户 {current_user_id} 的所有TTS配置。")
+    tts_configs = db.query(UserTTSConfig).filter(UserTTSConfig.owner_id == current_user_id).all()
+    return tts_configs
+
+
+@app.get("/users/me/tts_configs/{config_id}", response_model=UserTTSConfigResponse, summary="获取指定TTS配置详情")
+async def get_single_user_tts_config(
+        config_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 获取用户 {current_user_id} 的TTS配置 ID: {config_id}。")
+    tts_config = db.query(UserTTSConfig).filter(
+        UserTTSConfig.id == config_id,
+        UserTTSConfig.owner_id == current_user_id
+    ).first()
+    if not tts_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
+    return tts_config
+
+
+@app.put("/users/me/tts_configs/{config_id}", response_model=UserTTSConfigResponse, summary="更新指定TTS配置")
+async def update_user_tts_config(
+        config_id: int,
+        tts_config_data: UserTTSConfigUpdate,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试更新TTS配置 ID: {config_id}。")
+    db_tts_config = db.query(UserTTSConfig).filter(
+        UserTTSConfig.id == config_id,
+        UserTTSConfig.owner_id == current_user_id
+    ).first()
+    if not db_tts_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
+
+    update_data = tts_config_data.dict(exclude_unset=True)
+
+    # 如果尝试改变名称，检查新名称是否冲突
+    if "name" in update_data and update_data["name"] is not None and update_data["name"] != db_tts_config.name:
+        existing_name_config = db.query(UserTTSConfig).filter(
+            UserTTSConfig.owner_id == current_user_id,
+            UserTTSConfig.name == update_data["name"],
+            UserTTSConfig.id != config_id
+        ).first()
+        if existing_name_config:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"TTS配置名称 '{update_data['name']}' 已被使用。")
+
+    # 特殊处理 is_active 字段的逻辑：确保只有一个配置为 active
+    if "is_active" in update_data and update_data["is_active"] is True:
+        # 找到当前用户的所有其他处于 active 状态的配置，并将其设为 False
+        active_configs = db.query(UserTTSConfig).filter(
+            UserTTSConfig.owner_id == current_user_id,
+            UserTTSConfig.is_active == True,
+            UserTTSConfig.id != config_id  # 排除当前正在更新的配置
+        ).all()
+        for config_to_deactivate in active_configs:
+            config_to_deactivate.is_active = False
+            db.add(config_to_deactivate)
+            print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{config_to_deactivate.name}' 置为非激活。")
+    # 如果 is_active 从 True 变为 False，不需要特殊处理，直接更新即可
+
+    # 特殊处理 api_key：加密后再存储
+    if "api_key" in update_data and update_data["api_key"] is not None:
+        try:
+            db_tts_config.api_key_encrypted = ai_core.encrypt_key(update_data["api_key"])
+            del update_data["api_key"] # 从 update_data 中移除，防止通用循环再次处理
+        except Exception as e:
+            print(f"ERROR: 加密TTS API密钥失败: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加密API密钥失败。")
+
+    for key, value in update_data.items():
+        setattr(db_tts_config, key, value)
+
+    db.add(db_tts_config)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新TTS配置发生完整性约束错误: {e}")
+        # 根据 models.py 中的唯一约束名称判断
+        if "_owner_id_active_tts_config_uc" in str(e):
+             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="每个用户只能有一个激活的TTS配置。")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新TTS配置失败。")
+
+    db.refresh(db_tts_config)
+    print(f"DEBUG: 用户 {current_user_id} 成功更新TTS配置 ID: {config_id}.")
+    return db_tts_config
+
+
+@app.delete("/users/me/tts_configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除指定TTS配置")
+async def delete_user_tts_config(
+        config_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试删除TTS配置 ID: {config_id}。")
+    db_tts_config = db.query(UserTTSConfig).filter(
+        UserTTSConfig.id == config_id,
+        UserTTSConfig.owner_id == current_user_id
+    ).first()
+    if not db_tts_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
+
+    db.delete(db_tts_config)
+    db.commit()
+    print(f"DEBUG: 用户 {current_user_id} 成功删除TTS配置 ID: {config_id}.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.put("/users/me/tts_configs/{config_id}/set_active", response_model=UserTTSConfigResponse, summary="设置指定TTS配置为激活状态")
+async def set_active_user_tts_config(
+        config_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试设置TTS配置 ID: {config_id} 为激活状态。")
+
+    # 1. 找到并验证要激活的配置
+    db_tts_config_to_activate = db.query(UserTTSConfig).filter(
+        UserTTSConfig.id == config_id,
+        UserTTSConfig.owner_id == current_user_id
+    ).first()
+    if not db_tts_config_to_activate:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
+
+    # 2. 将用户所有其他TTS配置的 is_active 设为 False
+    # 排除当前要激活的配置
+    configs_to_deactivate = db.query(UserTTSConfig).filter(
+        UserTTSConfig.owner_id == current_user_id,
+        UserTTSConfig.is_active == True,
+        UserTTSConfig.id != config_id
+    ).all()
+
+    for config in configs_to_deactivate:
+        config.is_active = False
+        db.add(config)
+        print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{config.name}' 置为非激活。")
+
+    # 3. 将目标配置设为 True
+    db_tts_config_to_activate.is_active = True
+    db.add(db_tts_config_to_activate)
+
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        # 理论上这里的唯一约束已经在模型中用 postgresql_where 处理，并在这里的应用层逻辑中确保了唯一性。
+        # 但为防止意外，保留捕获。
+        print(f"ERROR_DB: 设置激活TTS配置发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="设置激活TTS配置失败。")
+
+    db.refresh(db_tts_config_to_activate)
+    print(f"DEBUG: 用户 {current_user_id} 成功设置TTS配置 ID: {config_id} 为激活状态。")
+    return db_tts_config_to_activate
+
+
 @app.post("/audio/tts", summary="将文本转换为语音")
 async def text_to_speech(
         tts_request: schemas.TTSTextRequest,
-        current_user_id: int = Depends(get_current_user_id),  # 仅用于权限检查，确保登录
+        current_user_id: int = Depends(get_current_user_id), # 已认证的用户ID，用于获取其TTS配置
+        db: Session = Depends(get_db) # 引入数据库会话
 ) -> Dict[str, str]:
     """
     将提供的文本转换为语音文件，并返回可访问的MP3文件URL。
-    支持 'zh-CN' (中文), 'en' (英文) 等 gTTS 支持的语言代码。
+    根据用户的激活TTS配置，支持不同的语音提供商和语言代码。
     """
-    print(f"DEBUG: 用户 {current_user_id} 请求将文本转换为语音。")
+    print(f"DEBUG: 用户 {current_user_id} 请求将文本 '{tts_request.text[:50]}...' 转换为语音。")
+
+    # 1. 获取当前用户的激活TTS配置
+    active_tts_config = db.query(UserTTSConfig).filter(
+        UserTTSConfig.owner_id == current_user_id,
+        UserTTSConfig.is_active == True
+    ).first()
+
+    if not active_tts_config:
+        print(f"WARNING: 用户 {current_user_id} 没有激活的TTS配置。将尝试使用默认的 gTTS。")
+        # 即使没有激活配置，ai_core.synthesize_speech 也应该有一个默认的fallback。
+        # 这里，我们传递 None 给 api_key 和其他配置，让 ai_core 内部处理。
+        config_params = {
+            "tts_type": "default_gtts", # 明确标记为使用 gTTS
+            "api_key": None,
+            "base_url": None,
+            "model_id": None,
+            "voice_name": None
+        }
+    else:
+        # 2. 解密API密钥
+        decrypted_api_key = None
+        if active_tts_config.api_key_encrypted:
+            try:
+                decrypted_api_key = ai_core.decrypt_key(active_tts_config.api_key_encrypted)
+                print(f"DEBUG_TTS_CONFIG: 成功解密用户 {current_user_id} 的TTS API密钥。")
+            except Exception as e:
+                print(f"ERROR_TTS_CONFIG: 用户 {current_user_id} 解密TTS API密钥失败: {e}。将跳过使用该密钥。")
+
+        config_params = {
+            "tts_type": active_tts_config.tts_type,
+            "api_key": decrypted_api_key,
+            "base_url": active_tts_config.base_url,
+            "model_id": active_tts_config.model_id,
+            "voice_name": active_tts_config.voice_name
+        }
+        print(f"DEBUG_TTS_CONFIG: 找到用户 {current_user_id} 的激活TTS配置: {active_tts_config.name} (类型: {config_params['tts_type']})")
+
+
     try:
-        # 调用 ai_core 中的 TTS 核心逻辑
+        # 3. 调用 ai_core 中的 TTS 核心逻辑，并传递配置参数
         # ai_core.synthesize_speech 返回的是文件系统路径
-        filepath = await ai_core.synthesize_speech(tts_request.text,
-                                                   lang=tts_request.lang)  # <-- **修改这里，使用 tts_request.text 和 tts_request.lang**
+        filepath = await ai_core.synthesize_speech(
+            text=tts_request.text,
+            lang=tts_request.lang,
+            tts_type=config_params['tts_type'],
+            api_key=config_params["api_key"],
+            base_url=config_params["base_url"],
+            model_id=config_params["model_id"],
+            voice_name=config_params["voice_name"]
+        )
 
         # 将文件系统路径转换为可访问的HTTP URL
-        audio_url = f"/audio/{os.path.basename(filepath)}"
+        audio_url = f"/audio/{os.path.basename(filepath)}" # 假设 /audio/* 路由已配置用于提供静态文件
 
         print(f"DEBUG: TTS 转换成功，音频URL: {audio_url}")
         return {"audio_url": audio_url}
+    except HTTPException: # 如果 ai_core 抛出 HTTPException，直接向上层传递
+        raise
     except Exception as e:
         print(f"ERROR: TTS 转换失败: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文本转语音失败: {e}")
-
-
 
 
 # --- 健康检查接口 ---
@@ -754,8 +1036,8 @@ async def process_document_in_background(
 
 # --- 用户认证与管理接口 ---
 @app.post("/register", response_model=schemas.StudentResponse, summary="用户注册")
-async def register_user( # <--- 确保这里是 async def
-        user_data: schemas.StudentCreate,  # 接收的数据模型，现在包含 username, phone_number, school
+async def register_user(
+        user_data: schemas.StudentCreate,
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG: 尝试注册用户。邮箱: {user_data.email}, 手机号: {user_data.phone_number}")
@@ -797,17 +1079,15 @@ async def register_user( # <--- 确保这里是 async def
     # 哈希密码
     hashed_password = pwd_context.hash(user_data.password)
 
-    # 处理 skills 字段，确保赋值给 db_user.skills 的是 Python 的列表对象
+    # 处理 skills 字段
     skills_list_for_db = []
     if user_data.skills:
         skills_list_for_db = [skill.model_dump() for skill in user_data.skills]
-
 
     user_skills_text = ""
     if skills_list_for_db:
         user_skills_text = ", ".join([s.get("name", "") for s in skills_list_for_db if isinstance(s, dict) and s.get("name")])
 
-    # **<<<<< MODIFICATION: 将 location 字段加入 combined_text >>>>>**
     combined_text_content = ". ".join(filter(None, [
         _get_text_part(user_data.name),
         _get_text_part(user_data.major),
@@ -820,7 +1100,7 @@ async def register_user( # <--- 确保这里是 async def
         _get_text_part(user_data.portfolio_link),
         _get_text_part(user_data.preferred_role),
         _get_text_part(user_data.availability),
-        _get_text_part(user_data.location) # 新增：地理位置
+        _get_text_part(user_data.location)
     ])).strip()
 
     if not combined_text_content:
@@ -831,7 +1111,9 @@ async def register_user( # <--- 确保这里是 async def
     embedding = None
     if combined_text_content:
         try:
-            new_embedding = await ai_core.get_embeddings_from_api([combined_text_content]) # <--- 使用 await
+            # **<<<<< MODIFICATION: 新注册用户不再使用系统级密钥，依赖 ai_core 内部判断 >>>>>**
+            # 如果用户尚未配置密钥，ai_core.get_embeddings_from_api 会返回零向量
+            new_embedding = await ai_core.get_embeddings_from_api([combined_text_content])
             if new_embedding:
                 embedding = new_embedding[0]
             print(f"DEBUG_REGISTER: 用户嵌入向量已生成。")
@@ -859,14 +1141,12 @@ async def register_user( # <--- 确保这里是 async def
         portfolio_link=user_data.portfolio_link,
         preferred_role=user_data.preferred_role,
         availability=user_data.availability,
-        # **<<<<< 新增: 赋值 location >>>>>**
         location=user_data.location,
-        # **<<<<< 赋值结束 >>>>>**
 
         combined_text=combined_text_content,
         embedding=embedding,
 
-        llm_api_type=None,
+        llm_api_type=None, # 新用户注册时，默认不设置用户自己的LLM API配置
         llm_api_key_encrypted=None,
         llm_api_base_url=None,
         llm_model_id=None,
@@ -891,7 +1171,6 @@ async def register_user( # <--- 确保这里是 async def
     print(
         f"DEBUG: 用户 {db_user.email if db_user.email else db_user.phone_number} (ID: {db_user.id}) 注册成功。用户名: {db_user.username}")
     return db_user
-
 
 
 
@@ -968,10 +1247,8 @@ async def read_users_me(current_user_id: int = Depends(get_current_user_id), db:
     return user
 
 
-# 更新当前登录用户详情接口
 @app.put("/users/me", response_model=schemas.StudentResponse, summary="更新当前登录用户详情")
 async def update_users_me(
-        # **<<<<< MODIFICATION: 将 StudentBase 更改为 StudentUpdate >>>>>**
         student_update_data: schemas.StudentUpdate,
         current_user_id: str = Depends(get_current_user_id),
         db: Session = Depends(get_db)
@@ -983,7 +1260,7 @@ async def update_users_me(
     if not db_student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    update_data = student_update_data.dict(exclude_unset=True)  # 这会将 Pydantic 模型转换为 Python 字典
+    update_data = student_update_data.dict(exclude_unset=True)
 
     # --- 1. 特殊处理 username 的唯一性检查和更新 ---
     if "username" in update_data and update_data["username"] is not None:
@@ -1021,15 +1298,14 @@ async def update_users_me(
         del update_data["skills"]
 
     # --- 4. 通用循环处理其余字段 (例如 school, name, major, location 等) ---
-    for key, value in update_data.items():  # 此时 update_data 已不包含 username, phone_number, skills
-        # 确保不会将不可修改的字���（如 email）赋为 None 如果它们在 update_data 中存在但实际是 None
-        if hasattr(db_student, key) and value is not None:  # 仅当提供的值不是 None 时才��置，避免覆盖现有数据
+    for key, value in update_data.items():
+        if hasattr(db_student, key) and value is not None:
             setattr(db_student, key, value)
             print(f"DEBUG: 更新字段 {key}: {value}")
-        elif hasattr(db_student, key) and value is None:  # 如果显式传 None，且 DB 字段允许 None，则设置
+        elif hasattr(db_student, key) and value is None:
             if key in ["major", "school", "interests", "bio", "awards_competitions",
                        "academic_achievements", "soft_skills", "portfolio_link",
-                       "preferred_role", "availability", "name", "location"]: # **<<<<< MODIFICATION: 添加 location >>>>>**
+                       "preferred_role", "availability", "name", "location"]:
                 setattr(db_student, key, value)
                 print(f"DEBUG: 清空字段 {key}")
 
@@ -1052,7 +1328,6 @@ async def update_users_me(
         skills_text = ", ".join(
             [s.get("name", "") for s in parsed_skills_for_text if isinstance(s, dict) and s.get("name")])
 
-    # **<<<<< MODIFICATION: 将 location 字段添加到 combined_text 的重建中 >>>>>**
     db_student.combined_text = ". ".join(filter(None, [
         _get_text_part(db_student.major),
         _get_text_part(skills_text),
@@ -1064,13 +1339,26 @@ async def update_users_me(
         _get_text_part(db_student.portfolio_link),
         _get_text_part(db_student.preferred_role),
         _get_text_part(db_student.availability),
-        _get_text_part(db_student.location) # 新增：地理位置
+        _get_text_part(db_student.location)
     ])).strip()
+
+    # **<<<<< 新增: 获取用户配置的硅基流动 API 密钥用于生成嵌入向量 >>>>>**
+    siliconflow_api_key_for_embedding = None
+    if db_student.llm_api_type == "siliconflow" and db_student.llm_api_key_encrypted:
+        try:
+            siliconflow_api_key_for_embedding = ai_core.decrypt_key(db_student.llm_api_key_encrypted)
+            print(f"DEBUG_EMBEDDING_KEY: 使用用户配置的硅基流动 API 密钥进行嵌入生成。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密用户硅基流动 API 密钥失败: {e}。将跳过嵌入生成。")
+            siliconflow_api_key_for_embedding = None # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 用户未配置硅基流动 API 类型或密钥，使用默认占位符。")
 
     # 更新 embedding
     if db_student.combined_text:
         try:
-            new_embedding = await ai_core.get_embeddings_from_api([db_student.combined_text]) # **<<<<< MODIFICATION: 添加 await >>>>>**
+            # **<<<<< MODIFICATION: 将获取到的密钥传递给 ai_core.get_embeddings_from_api >>>>>**
+            new_embedding = await ai_core.get_embeddings_from_api([db_student.combined_text], api_key=siliconflow_api_key_for_embedding)
             if new_embedding:
                 db_student.embedding = new_embedding[0]
             print(f"DEBUG: 用户 {db_student.id} 嵌入向量已更新。")
@@ -1093,6 +1381,7 @@ async def update_users_me(
 
     print(f"DEBUG: 用户 {current_user_id_int} 信息更新成功。")
     return db_student
+
 
 
 # --- 用户LLM配置接口 ---
@@ -1210,9 +1499,8 @@ async def create_project(
 
     roles_text = ""
     if required_roles_list_for_db:
-        roles_text = "、".join(required_roles_list_for_db) # 角色用顿号连接更自然
+        roles_text = "、".join(required_roles_list_for_db)
 
-    # **<<<<< MODIFICATION: 将 location 字段加入 combined_text >>>>>**
     combined_text_content = ". ".join(filter(None, [
         _get_text_part(project_data.title),
         _get_text_part(project_data.description),
@@ -1228,13 +1516,30 @@ async def create_project(
         _get_text_part(project_data.start_date),
         _get_text_part(project_data.end_date),
         _get_text_part(project_data.estimated_weekly_hours),
-        _get_text_part(project_data.location) # 新增：项目地理位置
+        _get_text_part(project_data.location)
     ])).strip()
+
+    # **<<<<< 获取项目创建者配置的硅基流动 API 密钥用于生成嵌入向量 >>>>>**
+    siliconflow_api_key_for_embedding = None
+    if current_user.llm_api_type == "siliconflow" and current_user.llm_api_key_encrypted:
+        try:
+            siliconflow_api_key_for_embedding = ai_core.decrypt_key(current_user.llm_api_key_encrypted)
+            print(f"DEBUG_EMBEDDING_KEY: 使用创建者配置的硅基流动 API 密钥为项目生成嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用占位符。")
+            siliconflow_api_key_for_embedding = None # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
+
 
     embedding = None
     if combined_text_content:
         try:
-            new_embedding = await ai_core.get_embeddings_from_api([combined_text_content])
+            # **<<<<< MODIFICATION: 将获取到的密钥传递给 ai_core.get_embeddings_from_api >>>>>**
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_content],
+                api_key=siliconflow_api_key_for_embedding # 使用创建者配置的密钥
+            )
             if new_embedding:
                 embedding = new_embedding[0]
             print(f"DEBUG: 项目嵌入向量已生成。")
@@ -1257,9 +1562,7 @@ async def create_project(
             start_date=project_data.start_date,
             end_date=project_data.end_date,
             estimated_weekly_hours=project_data.estimated_weekly_hours,
-            # **<<<<< 新增: 赋值 location >>>>>**
             location=project_data.location,
-            # **<<<<< 赋值结束 >>>>>**
             creator_id=current_user_id_int,
             combined_text=combined_text_content,
             embedding=embedding
@@ -1353,12 +1656,10 @@ async def update_project(
             else:
                 print(f"DEBUG: 更新字段 {key}: {value}")
         elif hasattr(db_project, key) and value is None:
-            # **<<<<< MODIFICATION: 在允许清空的字段中添加 location >>>>>**
             if key in ["description", "keywords", "project_type", "expected_deliverables",
                        "contact_person_info", "learning_outcomes", "team_size_preference",
                        "project_status", "start_date", "end_date", "estimated_weekly_hours",
-                       "location", # 新增：允许清空 location
-                       "combined_text", "embedding"]: # combined_text和embedding不应通过update接口直接修改
+                       "location"]: # 移除 combined_text 和 embedding，它们不应被直接清空
                 setattr(db_project, key, value)
                 print(f"DEBUG: 清空字段 {key}")
 
@@ -1388,9 +1689,8 @@ async def update_project(
         parsed_roles_for_text = []
     roles_text = ""
     if isinstance(parsed_roles_for_text, list):
-        roles_text = "、".join(parsed_roles_for_text) # 角色用顿号连接更自然
+        roles_text = "、".join(parsed_roles_for_text)
 
-    # **<<<<< MODIFICATION: 将 location 字段添加到 combined_text 的重建中 >>>>>**
     db_project.combined_text = ". ".join(filter(None, [
         _get_text_part(db_project.title),
         _get_text_part(db_project.description),
@@ -1406,13 +1706,33 @@ async def update_project(
         _get_text_part(db_project.start_date),
         _get_text_part(db_project.end_date),
         _get_text_part(db_project.estimated_weekly_hours),
-        _get_text_part(db_project.location) # 新增：项目地理位置
+        _get_text_part(db_project.location)
     ])).strip()
+
+    # **<<<<< 新增: 获取项目创建者配置的硅基流动 API 密钥用于生成嵌入向量 >>>>>**
+    # 注意：这里应该使用 db_project.creator 来获取创建者的API Key，而不是 current_user
+    # 因为 current_user 只是当前操作的用户，不一定是项目的创建者，只有创建者能影响项目的嵌入生成
+    project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
+    siliconflow_api_key_for_embedding = None
+    if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
+        try:
+            siliconflow_api_key_for_embedding = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
+            print(f"DEBUG_EMBEDDING_KEY: 使用项目创建者配置的硅基流动 API 密钥更新项目嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密项目创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用占位符。")
+            siliconflow_api_key_for_embedding = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
+
 
     # 更新 embedding
     if db_project.combined_text:
         try:
-            new_embedding = await ai_core.get_embeddings_from_api([db_project.combined_text])
+            # **<<<<< MODIFICATION: 将获取到的密钥传递给 ai_core.get_embeddings_from_api >>>>>**
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_project.combined_text],
+                api_key=siliconflow_api_key_for_embedding # 使用创建者配置的密钥
+            )
             if new_embedding:
                 db_project.embedding = new_embedding[0]
             print(f"DEBUG: 项目 {project_id} 嵌入向量已更新。")

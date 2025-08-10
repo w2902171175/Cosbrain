@@ -32,9 +32,7 @@ class Student(Base):
     portfolio_link = Column(String, nullable=True)
     preferred_role = Column(String, nullable=True)
     availability = Column(String, nullable=True)
-    # **<<<<< 新增：学生所在地理位置字段 >>>>>**
     location = Column(String, nullable=True, comment="学生所在地理位置")
-    # **<<<<< 新增字段结束 >>>>>**
 
     combined_text = Column(Text, nullable=True)
     embedding = Column(Vector(1024), nullable=True)
@@ -78,6 +76,8 @@ class Student(Base):
     search_engine_configs = relationship("UserSearchEngineConfig", back_populates="owner", cascade="all, delete-orphan")
     uploaded_documents = relationship("KnowledgeDocument", back_populates="owner",
                                       cascade="all, delete-orphan")
+    # **<<<<< 新增：用户TTS配置关系 >>>>>**
+    tts_configs = relationship("UserTTSConfig", back_populates="owner", cascade="all, delete-orphan")
 
     projects_created = relationship("Project", back_populates="creator")
 
@@ -104,9 +104,7 @@ class Project(Base):
     start_date = Column(DateTime, nullable=True, comment="项目开始日期")
     end_date = Column(DateTime, nullable=True, comment="项目结束日期")
     estimated_weekly_hours = Column(Integer, nullable=True, comment="项目估计每周所需投入小时数")
-    # **<<<<< 新增：项目所在地理位置字段 >>>>>**
     location = Column(String, nullable=True, comment="项目所在地理位置")
-    # **<<<<< 新增字段结束 >>>>>**
 
     creator_id = Column(Integer, ForeignKey("students.id"), nullable=False)  # 外键关联到 Student 表
 
@@ -458,6 +456,34 @@ class UserSearchEngineConfig(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     owner = relationship("Student", back_populates="search_engine_configs")
+
+
+# **<<<<< 新增：用户TTS配置模型 >>>>>**
+class UserTTSConfig(Base):
+    __tablename__ = "user_tts_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+
+    name = Column(String, nullable=False, comment="TTS配置名称，如：'我的OpenAI语音'")
+    tts_type = Column(String, nullable=False, comment="语音提供商类型，如：'openai', 'gemini', 'aliyun'")
+    api_key_encrypted = Column(Text, nullable=True, comment="加密后的API密钥")
+    base_url = Column(String, nullable=True, comment="API基础URL")
+    model_id = Column(String, nullable=True, comment="语音模型ID，如：'tts-1', 'gemini-pro'")
+    voice_name = Column(String, nullable=True, comment="语音名称或ID，如：'alloy', 'f_cn_zh_anqi_a_f'")
+    is_active = Column(Boolean, default=False, nullable=False, comment="是否当前激活的TTS配置")
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    owner = relationship("Student", back_populates="tts_configs")
+
+    __table_args__ = (
+        UniqueConstraint('owner_id', 'name', name='_owner_id_tts_config_name_uc'), # 同一个用户下配置名称唯一
+        # 注意：为了确保每个用户只有一个激活的TTS配置，需要在应用层面处理
+        # UniqueConstraint('owner_id', 'is_active', name='_owner_id_active_tts_config_uc'),
+    )
+# **<<<<< 新增TTS配置模型结束 >>>>>**
 
 
 # --- 知识库相关模型 ---
