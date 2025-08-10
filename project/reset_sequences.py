@@ -3,13 +3,9 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
-
+from database import DATABASE_URL
 load_dotenv()  # <--显式加载 .env 文件**
 
-# 读取 .env 中的 DATABASE_URL
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# 检查 DATABASE_URL 是否成功加载，如果未加载，则抛出错误或提供一个安全的默认值
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL 环境变量未设置。请确保 .env 文件存在且 DATABASE_URL 已配置。")
 

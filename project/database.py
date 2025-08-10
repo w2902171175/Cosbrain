@@ -1,19 +1,17 @@
 # project/database.py
 import os
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
-
-from fastapi import HTTPException, status
 from base import Base
 import models
 
 load_dotenv()
-
-DATABASE_URL = os.getenv("DATABASE_URL")
+# PostgreSQL 数据库连接字符串
+DATABASE_URL = "postgresql+psycopg2://wcr:%40wcr123456@pgm-7xv2wyg2zes246l3co.pg.rds.aliyuncs.com:5432/Cosbrain"
 
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL 环境变量未设置。请在 .env 文件中提供PostgreSQL连接字符串。")
+    raise ValueError("DATABASE_URL 环境变量未设置。")
 
 engine = create_engine(
     DATABASE_URL,
@@ -30,12 +28,15 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     print("DEBUG_DB: 正在尝试初始化数据库结构...")
-    # **警告：以下行将删除数据库中所有由 SQLAlchemy 管理的表及其数据！**
-    # **仅在开发或测试环境使用，生产环境请通过 Alembic 或其他迁移工具进行版本化管理。**
-    Base.metadata.drop_all(bind=engine)  # <-- **这一行已被添加**
+
+    Base.metadata.drop_all(bind=engine)
     print("DEBUG_DB: 数据库中所有旧表已删除。")
 
-    Base.metadata.create_all(bind=engine)
+    with engine.connect() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        connection.commit()
+        print("DEBUG_DB: pgvector 扩展已确保创建或已存在。")
+    models.Base.metadata.create_all(bind=engine)
     print("DEBUG_DB: 数据库表已根据模型重新创建。")
 
 
@@ -75,4 +76,3 @@ if __name__ == "__main__":
     print("DEBUG_DB: 启动数据库初始化流程...")
     init_db()
     print("DEBUG_DB: 数据库初始化流程完成。")
-

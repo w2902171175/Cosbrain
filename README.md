@@ -273,7 +273,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/export_tools
     
 volumes:
   postgres_data:

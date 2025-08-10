@@ -1,11 +1,14 @@
 # project/models.py
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean,text, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean, text, Index
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, remote
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.schema import UniqueConstraint
 from base import Base
+import json
 
 
 class Student(Base):
@@ -20,7 +23,7 @@ class Student(Base):
 
     name = Column(String, index=True)
     major = Column(String, nullable=True)
-    skills = Column(Text, nullable=True)
+    skills = Column(JSONB, nullable=False, server_default='[]')  # 存储技能列表，每个技能包含名称和熟练度
     interests = Column(Text, nullable=True)
     bio = Column(Text, default="欢迎使用本平台！")
     awards_competitions = Column(Text, nullable=True)
@@ -29,6 +32,9 @@ class Student(Base):
     portfolio_link = Column(String, nullable=True)
     preferred_role = Column(String, nullable=True)
     availability = Column(String, nullable=True)
+    # **<<<<< 新增：学生所在地理位置字段 >>>>>**
+    location = Column(String, nullable=True, comment="学生所在地理位置")
+    # **<<<<< 新增字段结束 >>>>>**
 
     combined_text = Column(Text, nullable=True)
     embedding = Column(Vector(1024), nullable=True)
@@ -41,6 +47,8 @@ class Student(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
     is_admin = Column(Boolean, default=False, nullable=False)
+
+    # Relationships
     created_chat_rooms = relationship("ChatRoom", back_populates="creator")
     chat_room_memberships = relationship("ChatRoomMember", back_populates="member")
     sent_join_requests = relationship("ChatRoomJoinRequest", foreign_keys="[ChatRoomJoinRequest.requester_id]",
@@ -56,8 +64,6 @@ class Student(Base):
     daily_records = relationship("DailyRecord", back_populates="owner")
     folders = relationship("Folder", back_populates="owner")
     collected_contents = relationship("CollectedContent", back_populates="owner")
-
-    created_chat_rooms = relationship("ChatRoom", back_populates="creator")
     sent_messages = relationship("ChatMessage", back_populates="sender")
 
     forum_topics = relationship("ForumTopic", back_populates="owner", cascade="all, delete-orphan")
@@ -71,7 +77,12 @@ class Student(Base):
     mcp_configs = relationship("UserMcpConfig", back_populates="owner", cascade="all, delete-orphan")
     search_engine_configs = relationship("UserSearchEngineConfig", back_populates="owner", cascade="all, delete-orphan")
     uploaded_documents = relationship("KnowledgeDocument", back_populates="owner",
-                                      cascade="all, delete-orphan")  # 用户上传的文档
+                                      cascade="all, delete-orphan")
+
+    projects_created = relationship("Project", back_populates="creator")
+
+    def __repr__(self):
+        return f"<Student(id={self.id}, email='{self.email}', username='{self.username}')>"
 
 
 class Project(Base):
@@ -80,7 +91,8 @@ class Project(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, index=True)
     description = Column(Text)
-    required_skills = Column(Text)
+    required_skills = Column(JSONB, nullable=False, server_default='[]')  # 存储所需技能列表，每个技能包含名称和熟练度
+    required_roles = Column(JSONB, nullable=False, server_default='[]') # 存储项目所需角色列表，例如 ["后端开发", "UI/UX 设计"]
     keywords = Column(String)
     project_type = Column(String)
     expected_deliverables = Column(Text)
@@ -89,13 +101,27 @@ class Project(Base):
     team_size_preference = Column(String)
     project_status = Column(String)
 
+    start_date = Column(DateTime, nullable=True, comment="项目开始日期")
+    end_date = Column(DateTime, nullable=True, comment="项目结束日期")
+    estimated_weekly_hours = Column(Integer, nullable=True, comment="项目估计每周所需投入小时数")
+    # **<<<<< 新增：项目所在地理位置字段 >>>>>**
+    location = Column(String, nullable=True, comment="项目所在地理位置")
+    # **<<<<< 新增字段结束 >>>>>**
+
+    creator_id = Column(Integer, ForeignKey("students.id"), nullable=False)  # 外键关联到 Student 表
+
     combined_text = Column(Text)
     embedding = Column(Vector(1024))
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
+    # Relationships
     chat_room = relationship("ChatRoom", back_populates="project", uselist=False, cascade="all, delete-orphan")
+    creator = relationship("Student", back_populates="projects_created")
+
+    def __repr__(self):
+        return f"<Project(id={self.id}, title='{self.title}')>"
 
 
 class Note(Base):
@@ -208,7 +234,7 @@ class ChatRoom(Base):
     __tablename__ = "chat_rooms"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False,unique=True)
+    name = Column(String, nullable=False, unique=True)
     type = Column(String, nullable=False, default="general")
 
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, unique=True)
@@ -352,7 +378,7 @@ class ForumComment(Base):
 
     parent = relationship(
         "ForumComment",
-        remote_side=[id],
+        remote_side=[id],  # 确保这里的 id 指向的是本类的 id 列
         primaryjoin="ForumComment.parent_comment_id == remote(ForumComment.id)",
         back_populates="children",
         cascade="all, delete-orphan",
@@ -440,7 +466,7 @@ class KnowledgeBase(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("students.id"))
-    name = Column(String, index=True, nullable=False)  # <--- name 字段明确为非空
+    name = Column(String, index=True, nullable=False)
     description = Column(Text)
     access_type = Column(String)
 
@@ -450,7 +476,7 @@ class KnowledgeBase(Base):
     owner = relationship("Student", back_populates="knowledge_bases")
     articles = relationship("KnowledgeArticle", back_populates="knowledge_base", cascade="all, delete-orphan")
     documents = relationship("KnowledgeDocument", back_populates="knowledge_base",
-                             cascade="all, delete-orphan")  # 知识库下的文档
+                             cascade="all, delete-orphan")
 
 
 class KnowledgeArticle(Base):

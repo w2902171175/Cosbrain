@@ -3,17 +3,15 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-
+import secrets
 from database import SessionLocal  # 确保 base.py 存在且 SessionLocal 已从中定义
 from models import Student  # 导入 Student 模型，用于用户认证
 import ai_core  # 用于密钥的加密解密
-
 # --- JWT 认证配置 ---
 SECRET_KEY = os.getenv("SECRET_KEY", "your-very-secret-key-that-should-be-in-env-production")  # 从环境变量获取，避免硬编码
 ALGORITHM = "HS256"  # JWT签名算法
@@ -98,13 +96,13 @@ async def get_current_user_id(
         user_id = int(user_id_str)  # 转换为整数
 
         # 验证用户是否存在 (确保 token 对应的用户是有效的)
-        # 这里优化：如果不需要 user 对象的详细信息，仅验证存在性即可
+        # 这里优化：如果不��要 user 对象的详细信息，仅验证存在性即可
         # user = db.query(Student).filter(Student.id == user_id).first()
         # if user is None:
         #     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT 令牌指向的用户不存在")
 
         # 由于依赖注入的 get_current_user_id 会在每个受保护接口调用，频繁查询会加重数据库负担。
-        # 这里的目的是验证 ID 合法性，通常在数据库层面，只需要确认 ID 存在即可，
+        # 这里的目的是验证 ID 合法性，通常在数据库层面，只需要确认 ID 存在即��，
         # 避免全量加载 Student 对象。如果需要在路由函数中用到 Student 对象的其他属性，再通过 user_id 查询。
         # 为了简化，我们暂时不进行这个额外的 db 查询，信任 token 中的 user_id
         # 如果极端情况，用户在登录后被删除了，但其token未过期，依然可以访问，这是后续可以优化的点。
