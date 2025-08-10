@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-blue.svg)](https://postgresql.org)
+[![pgvector](https://img.shields.io/badge/pgvector-0.5+-purple.svg)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## 📖 项目简介
@@ -18,29 +19,37 @@
 - **智能文档解析**: 支持Word、PDF、Excel等多种格式文档的智能解析和内容提取
 - **语义搜索**: 基于pgvector的向量数据库实现高精度的语义搜索
 - **AI助手集成**: 支持OpenAI GPT、本地模型等多种AI模型配置
+- **文本转语音(TTS)**: 集成多种TTS服务提供商，支持个性化语音配置
 
 ### 📚 知识管理系统
 - **个人知识库**: 创建和管理个人知识体系，支持分类标签和智能检索
-- **文档上传处理**: 自动解析和索引上传的文档内容
+- **文档上传处理**: 自动解析和索引上传的文档内容，支持RAG检索
 - **知识文章编写**: 富文本编辑器支持，markdown语法兼容
 - **智能推荐**: 基于用户行为和内容相似性的知识推荐
+- **文档分块处理**: 智能文档分块和向量化，提升检索精度
 
 ### 💬 实时协作系统
 - **WebSocket聊天**: 低延迟的实时消息传输
 - **多人聊天室**: 支持项目组、学习小组等多人协作场景
+- **聊天室管理**: 完整的成员管理、权限控制和加入申请流程
 - **在线状态显示**: 实时显示用户在线状态和活跃度
 
 ### 🎯 学习管理
 - **课程体系**: 完整的课程创建、管理和学习进度跟踪
 - **学习记录**: 详细的学习轨迹和成绩分析
-- **个人收藏**: 收藏重要学习资源和内容
-- **每日记录**: 学习日志和反思记录
+- **个人收藏**: 分文件夹管理收藏内容，支持星标和优先级
+- **每日记录**: 学习日志和心情记录，支持标签分类
 
 ### 🌐 社区论坛
 - **话题讨论**: 学术话题发布和深度讨论
-- **评论互动**: 支持多级评论和回复
+- **评论互动**: 支持多级嵌套评论和回复
 - **点赞关注**: 社交化的互动机制
 - **用户关系**: 好友关注和粉丝系统
+
+### ⚙️ 个性化配置
+- **多模型配置**: 支持配置多个LLM、TTS、搜索引擎
+- **MCP协议集成**: 支持Model Context Protocol标准
+- **API密钥管理**: 安全的加密存储和管理机制
 
 ## 🛠️ 技术架构
 
@@ -50,6 +59,7 @@
 - **PostgreSQL + pgvector**: 关系型数据库 + 向量数据库扩展
 - **WebSocket**: 实时双向通信协议
 - **Pydantic**: 数据验证和序列化
+- **Alembic**: 数据库迁移管理
 
 ### AI/ML技术栈
 - **Sentence Transformers**: 文本向量化模型
@@ -57,6 +67,7 @@
 - **PyTorch**: 深度学习框架
 - **OpenAI API**: 大语言模型服务
 - **gTTS**: 文本转语音功能
+- **Transformers**: HuggingFace模型库
 
 ### 文件处理
 - **python-docx**: Microsoft Word文档处理
@@ -66,7 +77,7 @@
 
 ### 安全与认证
 - **PassLib + BCrypt**: 密码加密和验证
-- **OAuth2**: 标准化认证流程
+- **cryptography**: 对称加密算法
 - **JWT**: JSON Web Token令牌管理
 
 ## 🏗️ 项目结构详解
@@ -75,26 +86,28 @@
 Create/
 ├── README.md                    # 项目说明文档
 ├── requirements.txt             # Python依赖包列表
-├── .gitignore                  # Git忽略文件配置
-├── .env                        # 环境变量配置（需创建）
+├── run.py                      # 应用启动脚本
+├── 数据库表格字段说明文档.md      # 数据库结构文档
+├── alembic/                    # 数据库迁移工具
+│   └── env.py                  # Alembic环境配置
 └── project/                    # 主要代码目录
     ├── main.py                 # FastAPI应用入口和路由定义
-    ├── models.py               # SQLAlchemy数据模型定义
+    ├── models.py               # SQLAlchemy数据模型定义(24个表)
     ├── schemas.py              # Pydantic数据验证模式
     ├── database.py             # 数据库连接和会话管理
     ├── base.py                 # SQLAlchemy基类定义
+    ├── dependencies.py         # FastAPI依赖注入
     ├── ai_core.py              # AI功能核心模块
-    ├── ai_core_MiniLM.py       # MiniLM模型专用模块
     ├── import_data.py          # 数据导入和初始化脚本
-    ├── students.csv            # 学生示例数据
-    ├── projects.csv            # 项目示例数据
+    ├── reset_sequences.py      # 数据库序列重置工具
+    ├── fix_data_serialization.py # 数据序列化修复工具
+    ├── export_tools/           # 数据导出工具
+    │   ├── export_data.py     # 导出脚本
+    │   └── data/              # 导出的CSV数据
+    │       ├── projects.csv
+    │       └── students.csv
     ├── temp_audio/             # 临时音频文件存储
     │   └── *.mp3              # TTS生成的音频文件
-    ├── uploaded_files/         # 用户上传文件存储
-    │   ├── *.docx             # Word文档
-    │   ├── *.pdf              # PDF文档
-    │   ├── *.xlsx             # Excel文档
-    │   └── *.txt              # 文本文件
     └── __pycache__/           # Python字节码缓存
 ```
 
@@ -106,7 +119,7 @@ Create/
 - Python 3.8 或更高版本
 - PostgreSQL 14+ (需安装pgvector扩展)
 - Git版本控制工具
-- 至少4GB内存和2GB磁盘空间
+- 至少4GB内存和5GB磁盘空间
 
 **PostgreSQL pgvector扩展安装:**
 ```sql
@@ -179,7 +192,11 @@ python import_data.py
 
 7. **启动开发服务器**
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# 方式1：直接启动
+python run.py
+
+# 方式2：使用uvicorn
+uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 服务启动后，访问 http://localhost:8000 查看应用状态。
@@ -202,6 +219,24 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | 实时聊天 | `/ws/chat/{room_id}` | WebSocket | 聊天室连接 |
 | 课程管理 | `/courses/` | GET | 获取课程列表 |
 | 论坛系统 | `/forum/topics/` | POST | 发布论坛话题 |
+| AI功能 | `/ai/chat` | POST | AI对话接口 |
+| TTS服务 | `/tts/speak` | POST | 文本转语音 |
+
+## 🗃️ 数据库架构
+
+平台使用PostgreSQL作为主数据库，包含**24个核心数据表**：
+
+### 核心表结构
+- **students**: 用户信息表 (含向量嵌入)
+- **projects**: 项目信息表 (含向量嵌入)
+- **chat_rooms**: 聊天室管理
+- **chat_messages**: 消息记录
+- **knowledge_bases**: 知识库管理
+- **knowledge_documents**: 文档处理
+- **forum_topics**: 论坛主题
+- **user_tts_configs**: TTS配置管理
+
+详细的数据库结构请参考：[数据库表格字段说明文档.md](数据库表格字段说明文档.md)
 
 ## 🔌 AI功能详解
 
@@ -225,6 +260,12 @@ def find_similar_students(target_student_id, top_k=5):
 - **OpenAI GPT系列**: GPT-3.5, GPT-4
 - **开源模型**: 支持本地部署的Llama、ChatGLM等
 - **嵌入模型**: all-MiniLM-L6-v2, text-embedding-ada-002
+- **TTS模型**: OpenAI TTS、Google TTS、阿里云TTS等
+
+### RAG检索增强生成
+- **文档分块**: 智能分割长文档为语义相关的片段
+- **向量检索**: 基于查询内容检索最相关的文档片段
+- **上下文生成**: 结合检索结果生成准确回答
 
 ## 🚀 生产环境部署
 
@@ -239,10 +280,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY project/ ./project/
+COPY run.py .
 COPY .env .
 
 EXPOSE 8000
-CMD ["uvicorn", "project.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "run.py"]
 ```
 
 2. **构建和运行**
@@ -265,6 +307,9 @@ services:
       - DATABASE_URL=postgresql://postgres:password@db:5432/hongqing
     depends_on:
       - db
+    volumes:
+      - ./project/uploaded_files:/app/project/uploaded_files
+      - ./project/temp_audio:/app/project/temp_audio
     
   db:
     image: pgvector/pgvector:pg14
@@ -273,7 +318,9 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     volumes:
-      - postgres_data:/var/lib/postgresql/export_tools
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
     
 volumes:
   postgres_data:
@@ -308,17 +355,28 @@ server {
 - 遵循PEP 8 Python编码规范
 - 使用类型注解提高代码可读性
 - 编写单元测试确保代码质量
+- 使用Alembic管理数据库迁移
 
 ### 添加新功能
 1. 在 `models.py` 中定义数据模型
 2. 在 `schemas.py` 中创建Pydantic模式
-3. 在 `main.py` 中添加API路由
-4. 编写测试用例验证功能
+3. 在 `routers/` 目录下创建对应的路由文件
+4. 在 `main.py` 中注册新的路由
+5. 编写测试用例验证功能
+
+### 数据库迁移
+```bash
+# 生成迁移文件
+alembic revision --autogenerate -m "Add new feature"
+
+# 应用迁移
+alembic upgrade head
+```
 
 ### 调试技巧
 ```bash
 # 启用详细日志
-uvicorn main:app --reload --log-level debug
+python run.py --log-level debug
 
 # 数据库查询日志
 # 在database.py中设置 echo=True
@@ -327,7 +385,7 @@ uvicorn main:app --reload --log-level debug
 ## ❓ 常见问题
 
 ### Q: 如何配置不同的AI模型？
-A: 在用户设置中配置API密钥和模型参数，支持OpenAI、Azure OpenAI等多种服务。
+A: 在用户设置中配置API密钥和模型参数，支持OpenAI、Azure OpenAI、本地模型等多种服务。
 
 ### Q: 上传的文件存储在哪里？
 A: 文件存储在 `project/uploaded_files/` 目录，建议生产环境使用对象存储服务。
@@ -340,6 +398,9 @@ pg_dump -U username -h localhost hongqing_platform > backup.sql
 
 ### Q: WebSocket连接失败怎么办？
 A: 检查防火墙设置，确保8000端口开放，并验证WebSocket URL格式正确。
+
+### Q: 向量搜索性能如何优化？
+A: 确保安装了pgvector扩展，并为embedding字段创建适当的索引。
 
 ## 🤝 贡献指南
 
@@ -381,6 +442,7 @@ flake8 .
 - 并发用户数: 支持1000+
 - 文件上传: 最大10MB
 - WebSocket连接: 支持500+并发
+- 向量搜索: < 100ms响应时间
 
 ### 监控工具推荐
 - **APM**: New Relic, DataDog
@@ -391,6 +453,7 @@ flake8 .
 
 ### 数据保护
 - 所有密码使用BCrypt加密存储
+- API密钥使用AES对称加密
 - API访问需要JWT令牌验证
 - 文件上传包含恶意软件检测
 - 敏感数据传输使用HTTPS加密
@@ -399,6 +462,7 @@ flake8 .
 - 用户数据仅用于平台功能提供
 - 不会与第三方分享个人信息
 - 用户可随时导出或删除个人数据
+- 向量嵌入数据匿名化处理
 
 ## 📄 许可证
 
@@ -406,10 +470,9 @@ flake8 .
 
 ## 📞 联系我们
 
-- **项目主页**: [GitHub Repository](https://github.com/your-username/hongqing-platform)
 - **问题反馈**: [GitHub Issues](https://github.com/your-username/hongqing-platform/issues)
 - **邮箱支持**: wxh1331@foxmail.com
-- **社区讨论**: [Discord服务器](https://discord.gg/your-invite)
+- **技术讨论**: 欢迎在Issues中交流技术问题
 
 ## 🗺️ 发展路线图
 
@@ -419,26 +482,32 @@ flake8 .
 - [x] 实时聊天功能
 - [x] 文档上传处理
 - [x] 向量搜索引擎
+- [x] 论坛社区功能
+- [x] 知识库管理系统
+- [x] TTS语音合成
+- [x] 多模型配置管理
 
 ### 进行中 🚧
 - [ ] 移动端适配优化
 - [ ] 高级AI对话功能
 - [ ] 多媒体内容支持
 - [ ] 性能监控仪表板
+- [ ] 数据导出工具完善
 
 ### 计划中 📋
 - [ ] 移动APP开发 (React Native)
 - [ ] 视频会议集成 (WebRTC)
-- [ ] 区块链证书系统
 - [ ] 多语言国际化支持
 - [ ] 企业级权限管理
 - [ ] API开放平台
+- [ ] 高级数据分析
 
 ### 未来愿景 🌟
 - [ ] VR/AR学习体验
 - [ ] AI个人学习助教
 - [ ] 跨平台数据同步
 - [ ] 智能学习路径推荐
+- [ ] 区块链证书系统
 
 ## 🙏 致谢
 
@@ -457,5 +526,5 @@ flake8 .
 <div align="center">
 <b>🌟 如果这个项目对你有帮助，请给我们一个Star！🌟</b>
 <br><br>
-<i>最后更新: 2025年1月</i>
+<i>最后更新: 2025年1月11日</i>
 </div>
