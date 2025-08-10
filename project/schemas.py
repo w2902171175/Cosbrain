@@ -1,8 +1,25 @@
 # project/schemas.py
 
-from pydantic import BaseModel, EmailStr, Field, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
+import json
+
+
+# --- 自定义公共Schema ---
+
+# 定义技能熟练度模型，包含古文优雅的描述
+class SkillWithProficiency(BaseModel):
+    name: str = Field(..., description="技能名称")
+    # 熟练度等级，使用 Literal 限制可选值
+    level: Literal[
+        "初窥门径", "登堂入室", "融会贯通", "炉火纯青"
+    ] = Field(..., description="熟练度等级：初窥门径, 登堂入室, 融会贯通, 炉火纯青")
+
+    class Config:
+        # 允许从ORM对象创建，但由于它通常是内嵌在其他模型中，其父模型有 from_attributes 即可
+        # 也可以在此明确指定 from_attributes = True
+        pass
 
 
 # --- Student Schemas ---
@@ -15,7 +32,7 @@ class StudentBase(BaseModel):
 
     name: Optional[str] = Field(None, description="用户真实姓名")
     major: Optional[str] = None
-    skills: Optional[str] = None
+    skills: Optional[List[SkillWithProficiency]] = Field(None, description="用户技能列表及熟练度")
     interests: Optional[str] = None
     bio: Optional[str] = None
     awards_competitions: Optional[str] = None
@@ -24,6 +41,8 @@ class StudentBase(BaseModel):
     portfolio_link: Optional[str] = None
     preferred_role: Optional[str] = None
     availability: Optional[str] = None
+    # **<<<<< 新增：学生所在地理位置字段 >>>>>**
+    location: Optional[str] = Field(None, description="学生所在地理位置，例如：广州大学城，珠海横琴")
 
 
 class StudentCreate(StudentBase):
@@ -57,14 +76,36 @@ class StudentResponse(StudentBase):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-    # --- Project Schemas ---
 
 
+class StudentUpdate(BaseModel): # StudentUpdate 一般直接继承 BaseModel
+    """更新学生信息时的模型，所有字段均为可选"""
+    username: Optional[str] = Field(None, min_length=1, max_length=50, description="用户在平台内唯一的用户名/昵称")
+    phone_number: Optional[str] = Field(None, min_length=11, max_length=11, description="用户手机号")
+    school: Optional[str] = Field(None, max_length=100, description="用户所属学校名称")
+
+    name: Optional[str] = Field(None, description="用户真实姓名")
+    major: Optional[str] = None
+    skills: Optional[List[SkillWithProficiency]] = Field(None, description="用户技能列表及熟练度")
+    interests: Optional[str] = None
+    bio: Optional[str] = None
+    awards_competitions: Optional[str] = None
+    academic_achievements: Optional[str] = None
+    soft_skills: Optional[str] = None
+    portfolio_link: Optional[str] = None
+    preferred_role: Optional[str] = None
+    availability: Optional[str] = None
+    # **<<<<< 新增：学生所在地理位置字段，在更新时可选 >>>>>**
+    location: Optional[str] = Field(None, description="学生所在地理位置，例如：广州大学城，珠海横琴")
+
+
+# --- Project Schemas ---
 class ProjectBase(BaseModel):
     """项目基础信息模型，用于创建或更新时接收数据"""
     title: str
     description: Optional[str] = None
-    required_skills: Optional[str] = None
+    required_skills: Optional[List[SkillWithProficiency]] = Field(None, description="项目所需技能列表及熟练度")
+    required_roles: Optional[List[str]] = Field(None, description="项目所需角色列表")
     keywords: Optional[str] = None
     project_type: Optional[str] = None
     expected_deliverables: Optional[str] = None
@@ -72,11 +113,16 @@ class ProjectBase(BaseModel):
     learning_outcomes: Optional[str] = None
     team_size_preference: Optional[str] = None
     project_status: Optional[str] = None
+    start_date: Optional[datetime] = Field(None, description="项目开始日期")
+    end_date: Optional[datetime] = Field(None, description="项目结束日期")
+    estimated_weekly_hours: Optional[int] = Field(None, description="项目估计每周所需投入小时数")
+    # **<<<<< 新增：项目所在地理位置字段 >>>>>**
+    location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
 
 
 class ProjectCreate(ProjectBase):
     """创建项目时的数据模型"""
-    pass
+    pass # ProjectCreate 继承 ProjectBase，自动拥有新字段
 
 
 class ProjectResponse(ProjectBase):
@@ -85,14 +131,33 @@ class ProjectResponse(ProjectBase):
     combined_text: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # ProjectResponse 继承 ProjectBase，自动拥有新字段
 
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- Note Schemas ---
+class ProjectUpdate(BaseModel): # ProjectUpdate 一般直接继承 BaseModel
+    """项目更新时的数据模型，所有字段均为可选"""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    required_skills: Optional[List[SkillWithProficiency]] = Field(None, description="项目所需技能列表及熟练度")
+    required_roles: Optional[List[str]] = Field(None, description="项目所需角色列表")
+    keywords: Optional[str] = None
+    project_type: Optional[str] = None
+    expected_deliverables: Optional[str] = None
+    contact_person_info: Optional[str] = None
+    learning_outcomes: Optional[str] = None
+    team_size_preference: Optional[str] = None
+    project_status: Optional[str] = None
+    start_date: Optional[datetime] = Field(None, description="项目开始日期")
+    end_date: Optional[datetime] = Field(None, description="项目结束日期")
+    estimated_weekly_hours: Optional[int] = Field(None, description="项目估计每周所需投入小时数")
+    # **<<<<< 新增：项目所在地理位置字段，在更新时可选 >>>>>**
+    location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
 
 
+# --- Note Schemas ---
 class NoteBase(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
@@ -180,7 +245,8 @@ class CollectedContentBase(BaseModel):
     """具体收藏内容基础信息模型，用于创建或更新时接收数据"""
     title: str
     type: Literal[
-        "document", "video", "note", "link", "file", "forum_topic", "course", "project", "knowledge_article", "daily_record"]
+        "document", "video", "note", "link", "file", "forum_topic", "course", "project", "knowledge_article",
+        "daily_record"]
     url: Optional[str] = None
     content: Optional[str] = None
     tags: Optional[str] = None
@@ -233,14 +299,16 @@ class ChatRoomMemberBase(BaseModel):
     status: str = Field("active", description="成员状态：'active', 'banned', 'left'")
     # last_read_at: Optional[datetime] = None # 如果在 models.py 中添加了此字段
 
+
 # 聊天室成员响应信息 (包含 ID 和时间戳)
 class ChatRoomMemberResponse(ChatRoomMemberBase):
     id: int
     joined_at: datetime
     member_name: Optional[str] = Field(None, description="成员的姓名")
+
     class Config:
-        from_attributes = True # Pydantic V2
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None} # 保持一致
+        from_attributes = True  # Pydantic V2
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}  # 保持一致
 
 
 # ** 用于更新成员角色的请求体**
@@ -253,10 +321,12 @@ class ChatRoomJoinRequestCreate(BaseModel):
     room_id: int = Field(..., description="目标聊天室ID")
     reason: Optional[str] = Field(None, description="入群申请理由")
 
+
 # 入群申请处理请求体 (用于管理员/群主批准或拒绝)
 class ChatRoomJoinRequestProcess(BaseModel):
-    status: str = Field(..., description="处理结果状态：'approved' 或 'rejected'") # 只能是这两个字符串
+    status: str = Field(..., description="处理结果状态：'approved' 或 'rejected'")  # 只能是这两个字符串
     # 备注：processed_by_id 和 processed_at 将由后端自动填充
+
 
 # 入群申请响应信息 (包含所有详情)
 class ChatRoomJoinRequestResponse(BaseModel):
@@ -273,12 +343,15 @@ class ChatRoomJoinRequestResponse(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
+
 class UserAdminStatusUpdate(BaseModel):
     is_admin: bool = Field(..., description="是否设置为系统管理员 (True) 或取消管理员权限 (False)")
+
 
 class ChatRoomCreate(ChatRoomBase):
     """创建聊天室时的数据模型"""
     pass
+
 
 # ** 聊天室更新请求体，所有字段均为可选**
 class ChatRoomUpdate(ChatRoomBase):
@@ -727,24 +800,26 @@ class CollectionItemResponse(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- API Response for Match Results ---
-
-
+# --- API Response for Match Results ---
 class MatchedProject(BaseModel):
     project_id: int
     title: str
     description: str
-    similarity_stage1: float
-    relevance_score: float
+    similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
+    relevance_score: float   # 最终重排后的相关性得分
+    # **<<<<< 新增：匹配理由字段 >>>>>**
+    match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
 
 
 class MatchedStudent(BaseModel):
     student_id: int
     name: str
     major: str
-    skills: str
-    similarity_stage1: float
-    relevance_score: float
+    skills: Optional[List[SkillWithProficiency]] = Field(None, description="学生的技能列表及熟练度详情")
+    similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
+    relevance_score: float   # 最终重排后的相关性得分
+    # **<<<<< 新增：匹配理由字段 >>>>>**
+    match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
 
 
 # --- 用户登录模型 ---
@@ -753,12 +828,13 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+
 # --- JWT 令牌响应模型 ---
 class Token(BaseModel):
     access_token: str
-    token_type: str = "bearer" # JWT 令牌类型，通常是 "bearer"
+    token_type: str = "bearer"  # JWT 令牌类型，通常是 "bearer"
     # 可以添加过期时间等其他信息
-    expires_in_minutes: int = 0 # 令牌过期时间，单位分钟 (可选)
+    expires_in_minutes: int = 0  # 令牌过期时间，单位分钟 (可选)
 
 
 # --- UserLLMConfigUpdate ---
