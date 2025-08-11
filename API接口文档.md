@@ -1134,11 +1134,6 @@ description: "文档描述"
 **接口：** `DELETE /forum/unfollow/`
 
 **摘要：** 取消关注一个用户
-
----
-
-## 积分与成就系统
-
 ### 1. 创建成就定义（管理员）
 **接口：** `POST /admin/achievements/definitions`
 
@@ -1157,20 +1152,14 @@ description: "文档描述"
   "conditions": {"login_count": 1}
 }
 ```
-
 ### 2. 获取成就定义列表
 **接口：** `GET /achievements/definitions`
-
 **摘要：** 获取所有可获得的成就定义
-
 ### 3. 获取成就定义详情
 **接口：** `GET /achievements/definitions/{achievement_id}`
-
 **摘要：** 获取指定成就定义详情
-
 ### 4. 更新成就定义（管理员）
 **接口：** `PUT /admin/achievements/definitions/{achievement_id}`
-
 **摘要：** 【管理员专用】更新指定成就定义
 
 ### 5. 删除成就定义（管理员）
@@ -1182,26 +1171,16 @@ description: "文档描述"
 **接口：** `GET /users/me/points`
 
 **摘要：** 获取当前用户积分余额和上次登录时间
-
-**响应体：**
-```json
-{
   "id": 1,
   "total_points": 150,
   "last_login": "2024-01-01T10:00:00"
-}
-```
-
 ### 7. 获取积分交易历史
 **接口：** `GET /users/me/points/history`
 
 **摘要：** 获取当前用户积分交易历史
-
 ### 8. 获取用户成就列表
 **接口：** `GET /users/me/achievements`
-
 **摘要：** 获取当前用户已获得的成就列表
-
 ### 9. 积分奖励（管理员）
 **接口：** `POST /admin/points/reward`
 
@@ -1215,9 +1194,6 @@ description: "文档描述"
   "reason": "完成项目里程碑"
 }
 ```
-
----
-
 ## WebSocket实时通信
 
 ### 1. 聊天室WebSocket连接
@@ -1246,39 +1222,14 @@ ws://localhost:8000/ws/chat/1?token=your_jwt_token
 ---
 
 ## 系统管理
-
-### 1. 健康检查
-**接口：** `GET /health`
-
 **摘要：** 健康检查，返回API服务状态
-
-**响应体：**
-```json
-{
-  "status": "healthy",
-  "timestamp": "2024-01-01T10:00:00",
-  "version": "0.1.0"
-}
-```
-
 ### 2. 设置用户管理员权限
 **接口：** `PUT /admin/users/{user_id}/set-admin`
-
 **摘要：** 【超级管理员专用】设置指定用户的管理员权限
-
 **认证：** 需要超级管理员权限
-
 **请求体：**
-```json
-{
   "is_admin": true
-}
-```
-
----
-
 ## 错误码说明
-
 | 状态码 | 说明 |
 |--------|------|
 | 200 | 成功 |
@@ -1291,11 +1242,6 @@ ws://localhost:8000/ws/chat/1?token=your_jwt_token
 | 409 | 资源冲突 |
 | 422 | 请求参数验证失败 |
 | 500 | 服务器内部错误 |
-
----
-
-## 更新日志
-
 ### v0.1.0 (2024-12-08)
 - 初版API文档发布
 - 包含用户认证、项目管理、课程管理等核心功能
@@ -1303,7 +1249,60 @@ ws://localhost:8000/ws/chat/1?token=your_jwt_token
 - 支持TTS语音配置和MCP服务配置
 - 实现聊天室、论坛、积分成就等社交功能
 - 添加WebSocket实时通信支持
-
 ---
 
 *本文档持续更新中，如有疑问请联系开发团队。*
+**响应体：**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-01T10:00:00",
+  "version": "0.1.0"
+}
+```
+
+---
+
+## 错误处理
+
+API使用标准HTTP状态码：
+
+- `200 OK`: 请求成功
+- `201 Created`: 资源创建成功
+- `204 No Content`: 请求成功但无返回内容
+- `400 Bad Request`: 请求参数错误
+- `401 Unauthorized`: 未授权，需要登录
+- `403 Forbidden`: 禁止访问，权限不足
+- `404 Not Found`: 资源未找到
+- `409 Conflict`: 资源冲突（如重复创建）
+- `422 Unprocessable Entity`: 请求格式正确但业务逻辑错误
+- `500 Internal Server Error`: 服务器内部错误
+
+**错误响应格式：**
+```json
+{
+  "detail": "错误详细信息"
+}
+```
+
+---
+
+## 注意事项
+
+1. **认证令牌**：所有需要认证的接口都必须在请求头中包含有效的JWT令牌
+2. **文件上传**：上传文件时使用`multipart/form-data`格式
+3. **日期格式**：所有日期时间使用ISO 8601格式（如：`2024-01-01T10:00:00`）
+4. **分页**：部分列表接口支持分页参数（`page`、`size`）
+5. **权限控制**：管理员权限接口需要`is_admin=true`的用户
+6. **API限制**：部分AI服务接口可能有调用频率限制
+
+---
+
+## 更新日志
+
+- **v0.1.0** (2024-01-01): 初始版本发布
+  - 完成用户认证系统
+  - 实现项目管理功能
+  - 添加课程学习模块
+  - 集成AI智能服务
+  - 支持知识库管理
