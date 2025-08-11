@@ -46,6 +46,12 @@
 - **点赞关注**: 社交化的互动机制
 - **用户关系**: 好友关注和粉丝系统
 
+### 🏆 积分成就系统
+- **积分机制**: 通过学习、分享、互动等行为获得积分
+- **成就系统**: 多样化的成就挑战和奖励机制
+- **排行榜**: 激励性的积分排行和成就展示
+- **每日打卡**: 培养学习习惯的签到奖励系统
+
 ### ⚙️ 个性化配置
 - **多模型配置**: 支持配置多个LLM、TTS、搜索引擎
 - **MCP协议集成**: 支持Model Context Protocol标准
@@ -56,7 +62,7 @@
 ### 后端核心
 - **FastAPI**: 高性能异步Web框架，自动生成API文档
 - **SQLAlchemy 2.0**: 现代化ORM，支持异步操作
-- **PostgreSQL + pgvector**: 关系型数据库 + 向量数据库扩展
+- **PostgreSQL + pgvector**: 关系型数据库 + 向量数据��扩展
 - **WebSocket**: 实时双向通信协议
 - **Pydantic**: 数据验证和序列化
 - **Alembic**: 数据库迁移管理
@@ -84,31 +90,37 @@
 
 ```
 Create/
-├── README.md                    # 项目说明文档
-├── requirements.txt             # Python依赖包列表
-├── run.py                      # 应用启动脚本
-├── 数据库表格字段说明文档.md      # 数据库结构文档
-├── alembic/                    # 数据库迁移工具
-│   └── env.py                  # Alembic环境配置
-└── project/                    # 主要代码目录
-    ├── main.py                 # FastAPI应用入口和路由定义
-    ├── models.py               # SQLAlchemy数据模型定义(24个表)
-    ├── schemas.py              # Pydantic数据验证模式
-    ├── database.py             # 数据库连接和会话管理
-    ├── base.py                 # SQLAlchemy基类定义
-    ├── dependencies.py         # FastAPI依赖注入
-    ├── ai_core.py              # AI功能核心模块
-    ├── import_data.py          # 数据导入和初始化脚本
-    ├── reset_sequences.py      # 数据库序列重置工具
+├── README.md                      # 项目说明文档
+├── requirements.txt               # Python依赖包列表
+├── run.py                        # 应用启动脚本
+├── 数据库表格字段说明文档.md        # 数据库结构文档
+├── alembic/                      # 数据库迁移工具
+│   └── env.py                    # Alembic环境配置
+└── project/                      # 主要代码目录
+    ├── main.py                   # FastAPI应用入口和路由定义
+    ├── models.py                 # SQLAlchemy数据模型定义(29个表)
+    ├── schemas.py                # Pydantic数据验证模式
+    ├── database.py               # 数据库连接和会话管理
+    ├── base.py                   # SQLAlchemy基类定义
+    ├── dependencies.py           # FastAPI依赖注入
+    ├── ai_core.py                # AI功能核心模块
+    ├── ai_core_MiniLM.py         # MiniLM模型集成
+    ├── import_data.py            # 数据导入和初始化脚本
+    ├── reset_sequences.py        # 数据库序列重置工具
     ├── fix_data_serialization.py # 数据序列化修复工具
-    ├── export_tools/           # 数据导出工具
-    │   ├── export_data.py     # 导出脚本
-    │   └── data/              # 导出的CSV数据
-    │       ├── projects.csv
-    │       └── students.csv
-    ├── temp_audio/             # 临时音频文件存储
-    │   └── *.mp3              # TTS生成的音频文件
-    └── __pycache__/           # Python字节码缓存
+    ├── routers/                  # API路由模块
+    │   ├── __init__.py          # 路由包初始化
+    │   ├── auth.py              # 用户认证相关
+    ├── export_tools/             # 数据导出工具
+    │   ├── export_data.py       # 导出脚本
+    │   └── data/                # 导出的CSV数据
+    │       ├── projects.csv     # 项目数据导出
+    │       └── students.csv     # 学生数据导出
+    ├── uploaded_files/           # 用户上传文件存储
+    │   └── *.{docx,pdf,xlsx,txt} # 各类型上传文件
+    ├── temp_audio/               # 临时音频文件存储
+    │   └── *.mp3                # TTS生成的音频文件
+    └── __pycache__/             # Python字节码缓存
 ```
 
 ## 📦 快速开始
@@ -199,135 +211,118 @@ python run.py
 uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-服务启动后，访问 http://localhost:8000 查看应用状态。
+8. **访问应用**
+- 应用地址: http://localhost:8000
+- API文档: http://localhost:8000/docs
+- 替代API文档: http://localhost:8000/redoc
 
-## 📚 API文档和测试
+## 📊 数据库结构
 
-### 交互式API文档
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+平台采用PostgreSQL数据库，共包含29个核��数据表：
+
+### 核心表组
+- **用户和项目**: `students`, `projects`
+- **聊天系统**: `chat_rooms`, `chat_messages`, `chat_room_members`, `chat_room_join_requests`
+- **论坛社区**: `forum_topics`, `forum_comments`, `forum_likes`, `user_follows`
+- **知识管理**: `knowledge_bases`, `knowledge_articles`, `knowledge_documents`
+- **学习���理**: `notes`, `daily_records`, `folders`, `collected_contents`
+- **课程系统**: `courses`, `course_materials`, `user_courses`
+- **积分成就**: `achievements`, `user_achievements`, `point_transactions`
+- **系统配置**: `user_mcp_configs`, `user_search_engine_configs`, `user_tts_configs`
+
+详细的数据库结构说明请参考：[数据库表格字段说明文档.md](数据库表格字段说明文档.md)
+
+## 🔌 API文档
 
 ### 主要API端点
 
-| 功能模块 | 端点 | 方法 | 描述 |
-|---------|------|------|------|
-| 用户管理 | `/students/` | POST | 创建新学生用户 |
-| 用户管理 | `/students/{id}` | GET | 获取学生详情 |
-| 智能匹配 | `/students/match/{student_id}` | GET | 获取匹配推荐 |
-| 知识库 | `/knowledge-bases/` | POST | 创建知识库 |
-| 文档上传 | `/upload-document/` | POST | 上传并解析文档 |
-| 实时聊天 | `/ws/chat/{room_id}` | WebSocket | 聊天室连接 |
-| 课程管理 | `/courses/` | GET | 获取课程列表 |
-| 论坛系统 | `/forum/topics/` | POST | 发布论坛话题 |
-| AI功能 | `/ai/chat` | POST | AI对话接口 |
-| TTS服务 | `/tts/speak` | POST | 文本转语音 |
+#### 用户认证
+- `POST /auth/register` - 用户注册
+- `POST /auth/login` - 用户登录
+- `POST /auth/refresh` - 刷新令牌
+- `POST /auth/logout` - 用户登出
 
-## 🗃️ 数据库架构
+#### 用户管理
+- `GET /users/me` - 获取当前用户信息
+- `PUT /users/me` - 更新用户信息
+- `GET /users/{user_id}` - 获取指定用户信息
+- `GET /users/` - 获取用户列表
 
-平台使用PostgreSQL作为主数据库，包含**24个核心数据表**：
+#### 项目管理
+- `GET /projects/` - 获取项目列表
+- `POST /projects/` - 创建新项目
+- `GET /projects/{project_id}` - 获取项目详情
+- `PUT /projects/{project_id}` - 更新项目信息
 
-### 核心表结构
-- **students**: 用户信息表 (含向量嵌入)
-- **projects**: 项目信息表 (含向量嵌入)
-- **chat_rooms**: 聊天室管理
-- **chat_messages**: 消息记录
-- **knowledge_bases**: 知识库管理
-- **knowledge_documents**: 文档处理
-- **forum_topics**: 论坛主题
-- **user_tts_configs**: TTS配置管理
+#### AI功能
+- `POST /ai/match-students` - 智能学生匹配
+- `POST /ai/chat` - AI对话
+- `POST /ai/tts` - 文本转语音
+- `POST /ai/search` - 语义搜索
 
-详细的数据库结构请参考：[数据库表格字段说明文档.md](数据库表格字段说明文档.md)
+#### 聊天系统
+- `WebSocket /ws/chat/{room_id}` - WebSocket聊天连接
+- `GET /chat/rooms/` - 获取聊天室列表
+- `POST /chat/rooms/` - 创建聊天室
+- `POST /chat/rooms/{room_id}/join` - 加入聊天室
 
-## 🔌 AI功能详解
+#### 知识管理
+- `GET /knowledge/bases/` - 获取知识库列表
+- `POST /knowledge/bases/` - 创建知识库
+- `POST /knowledge/documents/upload` - 上传文档
+- `GET /knowledge/search` - 知识搜索
 
-### 向量搜索引擎
-基于pgvector扩展的高性能向量数据库：
-- **文本嵌入**: 使用Sentence-BERT模型将文本转换为1024维向量
-- **相似性计算**: 余弦相似度算法计算内容相关性
-- **实时索引**: 新上传内容自动向量化并建立索引
+完整的API文档请访问: http://localhost:8000/docs
 
-### 智能匹配算法
-```python
-# 匹配算法核心逻辑示例
-def find_similar_students(target_student_id, top_k=5):
-    # 1. 获取目标学生的向量表示
-    # 2. 计算与所有其他学生的相似度
-    # 3. 返回相似度最高的K个学生
-    pass
-```
-
-### 支持的AI模型
-- **OpenAI GPT系列**: GPT-3.5, GPT-4
-- **开源模型**: 支持本地部署的Llama、ChatGLM等
-- **嵌入模型**: all-MiniLM-L6-v2, text-embedding-ada-002
-- **TTS模型**: OpenAI TTS、Google TTS、阿里云TTS等
-
-### RAG检索增强生成
-- **文档分块**: 智能分割长文档为语义相关的片段
-- **向量检索**: 基于查询内容检索最相关的文档片段
-- **上下文生成**: 结合检索结果生成准确回答
-
-## 🚀 生产环境部署
+## 🚀 部署指南
 
 ### Docker部署（推荐）
 
-1. **创建Dockerfile**
-```dockerfile
-FROM python:3.8-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY project/ ./project/
-COPY run.py .
-COPY .env .
-
-EXPOSE 8000
-CMD ["python", "run.py"]
-```
-
-2. **构建和运行**
+1. **构建Docker镜像**
 ```bash
 docker build -t hongqing-platform .
-docker run -p 8000:8000 --env-file .env hongqing-platform
 ```
 
-### 使用Docker Compose
-
-创建 `docker-compose.yml`:
+2. **使用Docker Compose**
 ```yaml
 version: '3.8'
 services:
-  web:
+  app:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/hongqing
+      - DATABASE_URL=postgresql://user:password@db:5432/hongqing
     depends_on:
       - db
-    volumes:
-      - ./project/uploaded_files:/app/project/uploaded_files
-      - ./project/temp_audio:/app/project/temp_audio
-    
+  
   db:
     image: pgvector/pgvector:pg14
     environment:
-      - POSTGRES_DB=hongqing
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
+      POSTGRES_DB: hongqing
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    
+
 volumes:
   postgres_data:
 ```
 
-### Nginx反向代理配置
+3. **启动服务**
+```bash
+docker-compose up -d
+```
 
+### 生产环境部署
+
+1. **使用Gunicorn**
+```bash
+pip install gunicorn
+gunicorn project.main:app -w 4 -k uvicorn.workers.UvicornWorker
+```
+
+2. **Nginx配置示例**
 ```nginx
 server {
     listen 80;
@@ -337,10 +332,9 @@ server {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
     
-    location /ws {
+    location /ws/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -349,182 +343,148 @@ server {
 }
 ```
 
-## 🔧 开发指南
+## 🧪 测试
 
-### 代码规范
-- 遵循PEP 8 Python编码规范
-- 使用类型注解提高代码可读性
-- 编写单元测试确保代码质量
-- 使用Alembic管理数据库迁移
-
-### 添加新功能
-1. 在 `models.py` 中定义数据模型
-2. 在 `schemas.py` 中创建Pydantic模式
-3. 在 `routers/` 目录下创建对应的路由文件
-4. 在 `main.py` 中注册新的路由
-5. 编写测试用例验证功能
-
-### 数据库迁移
+### 运行测试
 ```bash
-# 生成迁移文件
-alembic revision --autogenerate -m "Add new feature"
+# 安装测试依赖
+pip install pytest pytest-asyncio
 
-# 应用迁移
-alembic upgrade head
+# 运行所有测试
+pytest
+
+# 运行特定测试文件
+pytest tests/test_auth.py
+
+# 生成覆盖率报告
+pytest --cov=project tests/
 ```
 
-### 调试技巧
+### 测试数据库
+```bash
+# 创建测试数据库
+createdb hongqing_test
+
+# 运行测试时使用测试数据库
+TEST_DATABASE_URL=postgresql://user:password@localhost/hongqing_test pytest
+```
+
+## 🐛 故障排除
+
+### 常见问题
+
+1. **数据库连接问题**
+```bash
+# 检查PostgreSQL服务状态
+sudo systemctl status postgresql
+
+# 检查pgvector扩展
+psql -d your_database -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
+```
+
+2. **依赖安装问题**
+```bash
+# 清理pip缓存
+pip cache purge
+
+# 重新安装依赖
+pip install --no-cache-dir -r requirements.txt
+```
+
+3. **文件上传问题**
+```bash
+# 检查上传目录权限
+chmod 755 project/uploaded_files/
+```
+
+### 日志调试
 ```bash
 # 启用详细日志
-python run.py --log-level debug
-
-# 数据库查询日志
-# 在database.py中设置 echo=True
+export LOG_LEVEL=DEBUG
+python run.py
 ```
-
-## ❓ 常见问题
-
-### Q: 如何配置不同的AI模型？
-A: 在用户设置中配置API密钥和模型参数，支持OpenAI、Azure OpenAI、本地模型等多种服务。
-
-### Q: 上传的文件存储在哪里？
-A: 文件存储在 `project/uploaded_files/` 目录，建议生产环境使用对象存储服务。
-
-### Q: 如何备份数据库？
-A: 使用PostgreSQL的pg_dump工具：
-```bash
-pg_dump -U username -h localhost hongqing_platform > backup.sql
-```
-
-### Q: WebSocket连接失败怎么办？
-A: 检查防火墙设置，确保8000端口开放，并验证WebSocket URL格式正确。
-
-### Q: 向量搜索性能如何优化？
-A: 确保安装了pgvector扩展，并为embedding字段创建适当的索引。
 
 ## 🤝 贡献指南
 
 我们欢迎所有形式的贡献！
 
-### 贡献流程
-1. Fork本项目到你的GitHub账户
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交你的修改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建Pull Request
+### 开发流程
 
-### 开发环境设置
+1. **Fork项目**
+2. **创建功能分支**
 ```bash
-# 安装开发依赖
-pip install pytest pytest-asyncio black flake8
-
-# 运行测试
-pytest
-
-# 代码格式化
-black .
-
-# 代码检查
-flake8 .
+git checkout -b feature/your-feature-name
 ```
 
-### Issue报告
-发现bug或有功能建议？请在GitHub Issues中详细描述：
-- 问题描述和重现步骤
-- 预期行为和实际行为
-- 系统环境信息
-- 相关日志和错误信息
+3. **提交代码**
+```bash
+git commit -m "Add: 新功能描述"
+```
 
-## 📊 性能监控
+4. **推送分支**
+```bash
+git push origin feature/your-feature-name
+```
 
-### 关键指标
-- API响应时间: < 200ms
-- 并发用户数: 支持1000+
-- 文件上传: 最大10MB
-- WebSocket连接: 支持500+并发
-- 向量搜索: < 100ms响应时间
+5. **创建Pull Request**
 
-### 监控工具推荐
-- **APM**: New Relic, DataDog
-- **日志**: ELK Stack (Elasticsearch, Logstash, Kibana)
-- **性能**: Prometheus + Grafana
+### 代码规范
 
-## 🔒 安全说明
+- **Python代码**: 遵循PEP 8规范
+- **提交信息**: 使用约定式提交格式
+- **文档**: 重要功能需要编写文档
+- **测试**: 新功能需要编写对应测试
 
-### 数据保护
-- 所有密码使用BCrypt加密存储
-- API密钥使用AES对称加密
-- API访问需要JWT令牌验证
-- 文件上传包含恶意软件检测
-- 敏感数据传输使用HTTPS加密
+### 提交类型
+- `feat:` 新功能
+- `fix:` 问题修复
+- `docs:` 文档更新
+- `style:` 代码格式调整
+- `refactor:` 重构
+- `test:` 测试相关
+- `chore:` 其他变更
 
-### 隐私政策
-- 用户数据仅用于平台功能提供
-- 不会与第三方分享个人信息
-- 用户可随时导出或删除个人数据
-- 向量嵌入数据匿名化处理
+## 📝 版本历史
+
+### v1.0.0 (Current)
+- ✅ 基础用户认证系统
+- ✅ 智能学生匹配功能
+- ✅ 实时聊天系统
+- ✅ 知识管理系统
+- ✅ 文档上传和解析
+- ✅ AI对话集成
+- ✅ 论坛社区功能
+- ✅ 积分成就系统
+- ✅ 多模型配置支持
+
+### 计划功能
+- 🔄 移动端适配
+- 🔄 多语言支持
+- 🔄 高级数据分析
+- 🔄 视频会议集成
+- 🔄 更多AI模型支持
 
 ## 📄 许可证
 
-本项目采用 [MIT许可证](LICENSE) - 查看LICENSE文件了解详细信息。
+本项目采用 [MIT License](LICENSE) 许可证。
 
 ## 📞 联系我们
 
-- **问题反馈**: [GitHub Issues](https://github.com/your-username/hongqing-platform/issues)
-- **邮箱支持**: wxh1331@foxmail.com
-- **技术讨论**: 欢迎在Issues中交流技术问题
-
-## 🗺️ 发展路线图
-
-### 已完成 ✅
-- [x] 基础用户管理系统
-- [x] AI智能匹配算法
-- [x] 实时聊天功能
-- [x] 文档上传处理
-- [x] 向量搜索引擎
-- [x] 论坛社区功能
-- [x] 知识库管理系统
-- [x] TTS语音合成
-- [x] 多模型配置管理
-
-### 进行中 🚧
-- [ ] 移动端适配优化
-- [ ] 高级AI对话功能
-- [ ] 多媒体内容支持
-- [ ] 性能监控仪表板
-- [ ] 数据导出工具完善
-
-### 计划中 📋
-- [ ] 移动APP开发 (React Native)
-- [ ] 视频会议集成 (WebRTC)
-- [ ] 多语言国际化支持
-- [ ] 企业级权限管理
-- [ ] API开放平台
-- [ ] 高级数据分析
-
-### 未来愿景 🌟
-- [ ] VR/AR学习体验
-- [ ] AI个人学习助教
-- [ ] 跨平台数据同步
-- [ ] 智能学习路径推荐
-- [ ] 区块链证书系统
+- **项目主页**: [GitHub Repository]
+- **问题反馈**: [Issues]
+- **文档**: [Wiki]
+- **邮箱**: your-email@example.com
 
 ## 🙏 致谢
 
-感谢以下开源项目和社区的支持：
+感谢所有为这个项目做出贡献的开发者和用户！
 
-- [FastAPI](https://fastapi.tiangolo.com/) - 现代化Web框架
-- [SQLAlchemy](https://sqlalchemy.org/) - Python ORM框架
+特别感谢以下开源项目：
+- [FastAPI](https://fastapi.tiangolo.com/) - 现代化的Web框架
+- [SQLAlchemy](https://www.sqlalchemy.org/) - Python SQL工具包
 - [pgvector](https://github.com/pgvector/pgvector) - PostgreSQL向量扩展
-- [Sentence Transformers](https://sentence-transformers.net/) - 文本嵌入模型
-- [OpenAI](https://openai.com/) - AI语言模型服务
-
-特别感谢所有贡献者和用户的支持与反馈！
+- [Sentence Transformers](https://www.sbert.net/) - 句子嵌入模型
 
 ---
 
-<div align="center">
-<b>🌟 如果这个项目对你有帮助，请给我们一个Star！🌟</b>
-<br><br>
-<i>最后更新: 2025年1月11日</i>
-</div>
+⭐ 如果这个项目对你有帮助，请给我们一个star！

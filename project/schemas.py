@@ -802,9 +802,8 @@ class KnowledgeDocumentChunkResponse(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- Course Schemas ---
 
-
+# --- Course Schemas ---
 class CourseBase(BaseModel):
     title: str
     description: Optional[str] = None
@@ -812,13 +811,13 @@ class CourseBase(BaseModel):
     category: Optional[str] = None
     total_lessons: Optional[int] = 0
     avg_rating: Optional[float] = 0.0
-
+    cover_image_url: Optional[str] = Field(None, description="课程封面图片的URL链接")
+    required_skills: Optional[List[SkillWithProficiency]] = Field(None, description="课程所需基础技能列表及熟练度，或学习该课程所需前置技能")
 
 class CourseCreate(CourseBase):
     pass
 
-
-class CourseResponse(CourseBase):
+class CourseResponse(CourseBase): # CourseResponse 继承 CourseBase，所以新增字段会自动包含
     id: int
     combined_text: Optional[str] = None
     created_at: datetime
@@ -828,9 +827,19 @@ class CourseResponse(CourseBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- UserCourse Schemas ---
+class CourseUpdate(BaseModel):
+    """更新课程信息时的数据模型，所有字段均为可选"""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    instructor: Optional[str] = None
+    category: Optional[str] = None
+    total_lessons: Optional[int] = None
+    avg_rating: Optional[float] = None
+    cover_image_url: Optional[str] = Field(None, description="课程封面图片的URL链接")
+    required_skills: Optional[List[SkillWithProficiency]] = Field(None, description="课程所需基础技能列表及熟练度，或学习该课程所需前置技能")
 
 
+# --- UserCourse Schemas ---
 class UserCourseBase(BaseModel):
     student_id: int
     course_id: int
@@ -850,9 +859,72 @@ class UserCourseResponse(UserCourseBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- CollectionItem Schemas (旧版，可以考虑重构或废弃) ---
+
+# --- CourseMaterial Schemas ---
+class CourseMaterialBase(BaseModel):
+    title: str = Field(..., description="课程材料标题")
+    type: Literal["file", "link", "text"] = Field(...,
+                                                  description="材料类型：'file' (上传文件), 'link' (外部链接), 'text' (少量文本内容)")
+
+    # 根据类型提供相应的数据
+    url: Optional[str] = Field(None, description="当类型为'link'时，提供外部链接URL")
+    content: Optional[str] = Field(None, description="当类型为'text'时，提供少量文本内容，或作为文件/链接的补充描述")
+
+    # 仅在需要更新文件时（PUT操作中替换文件）使用，POST上传文件时不需要客户端提供这些
+    original_filename: Optional[str] = Field(None, description="原始上传文件名")
+    file_type: Optional[str] = Field(None, description="文件MIME类型")  # 例如：'application/pdf', 'video/mp4'
+    size_bytes: Optional[int] = Field(None, description="文件大小（字节）")
+
+    # 验证逻辑：根据 `type` 字段，强制要求 `url` 或 `content`
+    @field_validator('url', 'content', 'original_filename', 'file_type', 'size_bytes', mode='before')
+    def validate_material_fields(cls, v, info):
+        # 仅在创建时（即没有实例）进行严格检查
+        if not info.data.get('type'):  # 如果type字段都没有，则跳过更深层次的验证
+            return v
+
+        material_type = info.data['type']
+        field_name = info.field_name
+
+        if material_type == "link":
+            if field_name == "url" and not v:
+                raise ValueError("类型为 'link' 时，'url' 字段为必填。")
+            if field_name in ['original_filename', 'file_type', 'size_bytes'] and v is not None:
+                raise ValueError(f"类型为 'link' 时，'{field_name}' 字段不应提供。")
+        elif material_type == "text":
+            if field_name == "content" and not v:
+                raise ValueError("类型为 'text' 时，'content' 字段为必填。")
+            if field_name in ['url', 'original_filename', 'file_type', 'size_bytes'] and v is not None:
+                raise ValueError(f"类型为 'text' 时，'{field_name}' 字段不应提供。")
+        # 对于 "file" 类型，这些字段会在后端处理，客户端通常不必提供
+
+        return v
 
 
+class CourseMaterialCreate(CourseMaterialBase):
+    # 创建时 title 和 type 必须提供
+    title: str
+    type: Literal["file", "link", "text"]
+
+
+class CourseMaterialUpdate(CourseMaterialBase):
+    # 更新时所有字段均为可选
+    title: Optional[str] = None
+    type: Optional[Literal["file", "link", "text"]] = None
+
+
+class CourseMaterialResponse(CourseMaterialBase):
+    id: int
+    course_id: int
+    combined_text: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+# --- CollectionItem Schemas (旧版，可以考虑重构或废弃) ---
 class CollectionItemBase(BaseModel):
     user_id: int
     item_type: str
@@ -883,6 +955,18 @@ class MatchedProject(BaseModel):
     relevance_score: float   # 最终重排后的相关性得分
     # **<<<<< 新增：匹配理由字段 >>>>>**
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
+
+
+class MatchedCourse(BaseModel):
+    course_id: int
+    title: str
+    description: str
+    instructor: Optional[str] = None
+    category: Optional[str] = None
+    cover_image_url: Optional[str] = None
+    similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
+    relevance_score: float   # 最终重排后的相关性得分
+    match_rationale: Optional[str] = Field(None, description="AI生成的用户与课程匹配理由及建议")
 
 
 class MatchedStudent(BaseModel):
