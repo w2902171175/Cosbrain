@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session,joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Literal, Union
 import numpy as np
-from datetime import timedelta, datetime, timezone
+from datetime import timedelta, datetime, timezone, date
 from sqlalchemy.sql import func
 from sqlalchemy import and_,or_,ForeignKey
 from jose import JWTError, jwt
@@ -20,9 +20,9 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest
 # 导入重构后的 ai_core 模块
 import ai_core
 
@@ -102,6 +102,20 @@ async def get_current_user_id(
             detail="认证过程中发生服务器错误"
         )
 
+
+# --- 依赖项：验证用户是否为管理员 ---
+async def is_admin_user(current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    """
+    验证当前用户是否是系统管理员。如果不是，则抛出403 Forbidden异常。
+    返回完整的 Student 对象，方便后续操作。
+    """
+    print(f"DEBUG_ADMIN_AUTH: 验证用户 {current_user_id} 是否为管理员。")
+    user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not user or not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权操作，此功能仅限系统管理员。")
+    return user # 返回整个用户对象，方便需要用户详情的接口
+
+
 # **<<<<< 用于设置活跃TTS配置的辅助依赖函数 >>>>>**
 async def get_active_tts_config(
     current_user_id: int = Depends(get_current_user_id),
@@ -112,6 +126,175 @@ async def get_active_tts_config(
         UserTTSConfig.owner_id == current_user_id,
         UserTTSConfig.is_active == True
     ).first()
+
+
+# --- 辅助函数：积分奖励和成就检查 ---
+async def _award_points(
+        db: Session,
+        user: Student,
+        amount: int,
+        reason: str,
+        transaction_type: Literal["EARN", "CONSUME", "ADMIN_ADJUST"],
+        related_entity_type: Optional[str] = None,
+        related_entity_id: Optional[int] = None
+):
+    """
+    奖励或扣除用户积分，并记录积分交易日志。
+    """
+    if amount == 0:
+        return
+
+    user.total_points += amount
+    if user.total_points < 0:  # 确保积分不为负（如果业务不允许）
+        user.total_points = 0
+
+    db.add(user)
+
+    transaction = PointTransaction(
+        user_id=user.id,
+        amount=amount,
+        reason=reason,
+        transaction_type=transaction_type,
+        related_entity_type=related_entity_type,
+        related_entity_id=related_entity_id
+    )
+    db.add(transaction)
+
+    print(f"DEBUG_POINTS_PENDING: 用户 {user.id} 积分变动：{amount}，当前总积分（提交前）：{user.total_points}，原因：{reason}。")
+
+
+async def _check_and_award_achievements(db: Session, user_id: int):
+    """
+    检查用户是否达到了任何成就条件，并授予未获得的成就。
+    此函数会定期或在关键事件后调用。它只添加对象到会话，不进行commit。
+    """
+    print(f"DEBUG_ACHIEVEMENT: 检查用户 {user_id} 的成就。")
+    user = db.query(Student).filter(Student.id == user_id).first()
+    if not user:
+        print(f"WARNING_ACHIEVEMENT: 用户 {user_id} 不存在。")
+        return
+
+    # 获取所有活跃且未被该用户获取的成就定义
+    unearned_achievements_query = db.query(Achievement).outerjoin(
+        UserAchievement,
+        and_(
+            UserAchievement.achievement_id == Achievement.id,
+            UserAchievement.user_id == user_id
+        )
+    ).filter(
+        Achievement.is_active == True,  # 仅检查活跃的成就
+        UserAchievement.id.is_(None)  # 用户的 UserAchievement 记录不存在（即尚未获得）
+    )
+
+    unearned_achievements = unearned_achievements_query.all()
+    print(
+        f"DEBUG_ACHIEVEMENT_RAW_QUERY: Raw query result for unearned achievements for user {user_id}: {unearned_achievements}")
+
+    if not unearned_achievements:
+        print(f"DEBUG_ACHIEVEMENT: 用户 {user_id} 没有未获得的活跃成就。")
+        return
+
+    # 预先计算用户相关数据，避免在循环中重复查询
+    user_data_for_achievements = {
+        "PROJECT_COMPLETED_COUNT": db.query(Project.id).filter(
+            Project.creator_id == user_id,
+            Project.project_status == "已完成"
+        ).count(),
+        "COURSE_COMPLETED_COUNT": db.query(UserCourse.course_id).filter(
+            UserCourse.student_id == user_id,
+            UserCourse.status == "completed"
+        ).count(),
+        "FORUM_LIKES_RECEIVED": db.query(ForumLike).filter(
+            or_(
+                # 用户的话题获得的点赞
+                ForumLike.topic_id.in_(db.query(ForumTopic.id).filter(ForumTopic.owner_id == user_id)),
+                # 用户的评论获得的点赞
+                ForumLike.comment_id.in_(db.query(ForumComment.id).filter(ForumComment.owner_id == user_id))
+            )
+        ).count(),
+        "FORUM_POSTS_COUNT": db.query(ForumTopic).filter(ForumTopic.owner_id == user_id).count(),
+        "CHAT_MESSAGES_SENT_COUNT": db.query(ChatMessage).filter(ChatMessage.sender_id == user_id).count(),
+        "LOGIN_COUNT": user.login_count
+    }
+
+    # **<<<<< NEW DEBUG PRINT for all counts >>>>>**
+    print(f"DEBUG_ACHIEVEMENT_DATA: User {user_id} counts: {user_data_for_achievements}")
+
+    awarded_count = 0
+    for achievement in unearned_achievements:
+        is_achieved = False
+        criteria_value = achievement.criteria_value
+
+        # **<<<<< NEW DEBUG PRINT: Achievement being checked >>>>>**
+        print(
+            f"DEBUG_ACHIEVEMENT_CHECK: Checking achievement '{achievement.name}' (Criteria: {achievement.criteria_type}={criteria_value}) for user {user_id}")
+
+        if achievement.criteria_type == "PROJECT_COMPLETED_COUNT":
+            if user_data_for_achievements["PROJECT_COMPLETED_COUNT"] >= criteria_value:
+                is_achieved = True
+        elif achievement.criteria_type == "COURSE_COMPLETED_COUNT":
+            if user_data_for_achievements["COURSE_COMPLETED_COUNT"] >= criteria_value:
+                is_achieved = True
+        elif achievement.criteria_type == "FORUM_LIKES_RECEIVED":
+            if user_data_for_achievements["FORUM_LIKES_RECEIVED"] >= criteria_value:
+                is_achieved = True
+        elif achievement.criteria_type == "FORUM_POSTS_COUNT":
+            if user_data_for_achievements["FORUM_POSTS_COUNT"] >= criteria_value:
+                is_achieved = True
+        elif achievement.criteria_type == "CHAT_MESSAGES_SENT_COUNT":
+            if user_data_for_achievements["CHAT_MESSAGES_SENT_COUNT"] >= criteria_value:
+                is_achieved = True
+        elif achievement.criteria_type == "LOGIN_COUNT":
+            # **<<<<< MODIFICATION: Add explicit float casting and clear debug for LOGIN_COUNT >>>>>**
+            user_login_count_val = user_data_for_achievements["LOGIN_COUNT"]
+            crit_val_float = float(criteria_value)  # 确保是浮点数进行比较
+            user_count_float = float(user_login_count_val)  # 确保是浮点数进行比较
+
+            print(
+                f"DEBUG_ACHIEVEMENT_LOGIN_VALUE_TYPE: Achievement '{achievement.name}' criteria_value = {crit_val_float} (Type: {type(crit_val_float)})")
+            print(
+                f"DEBUG_ACHIEVEMENT_LOGIN_VALUE_TYPE: User LOGIN_COUNT = {user_count_float} (Type: {type(user_count_float)})")
+
+            if user_count_float >= crit_val_float:
+                is_achieved = True
+
+            print(
+                f"DEBUG_ACHIEVEMENT_LOGIN_CHECK: Comparison result: {user_count_float} >= {crit_val_float} is {is_achieved}")
+        elif achievement.criteria_type == "DAILY_LOGIN_STREAK":
+            # 对于 DAILY_LOGIN_STREAK，它需要一个独立的机制来计算连续登录天数，
+            # 而不是简单的 login_count。这里暂时不实现其具体判断逻辑，
+            # 保持 is_achieved 为 False (除非额外开发连续登录计数器)。
+            pass
+
+        # **<<<<< CRITICAL MODIFICATION: 修正 `if is_achieved:` 块的缩进！它现在在正确的位置了！ >>>>>**
+        if is_achieved:
+            user_achievement = UserAchievement(
+                user_id=user_id,
+                achievement_id=achievement.id,
+                earned_at=func.now(),
+                is_notified=False  # 默认设置为未通知，等待后续推送
+            )
+            db.add(user_achievement)  # Add, but don't commit here
+
+            # 奖励积分 - _award_points 现在也不进行 commit
+            if achievement.reward_points > 0:
+                await _award_points(
+                    db=db,
+                    user=user,  # 传递已经存在于会话中的 user 对象
+                    amount=achievement.reward_points,
+                    reason=f"获得成就：{achievement.name}",
+                    transaction_type="EARN",
+                    related_entity_type="achievement",
+                    related_entity_id=achievement.id
+                )  # _award_points 内部不执行 commit
+
+            print(
+                f"SUCCESS_ACHIEVEMENT_PENDING: 用户 {user_id} 获得成就: {achievement.name}！奖励 {achievement.reward_points} 积分 (待提交)。")
+            awarded_count += 1
+    # **<<<<< CRITICAL MODIFICATION: 修正 `if awarded_count > 0:` 块的缩进！它现在在正确的位置了！ >>>>>**
+    if awarded_count > 0:
+        print(f"INFO_ACHIEVEMENT: 用户 {user_id} 本次共获得 {awarded_count} 个成就 (待提交)。")
+
 
 # --- WebSocket 连接管理：为每个聊天室分配一个管理器 ---
 class ConnectionManager:
@@ -1173,6 +1356,9 @@ async def register_user(
     return db_user
 
 
+# project/main.py
+
+# ... (所有其他导入和辅助函数保持不变) ...
 
 @app.post("/token", response_model=schemas.Token, summary="用户登录并获取JWT令牌")
 async def login_for_access_token(
@@ -1180,28 +1366,24 @@ async def login_for_access_token(
         db: Session = Depends(get_db)
 ):
     """
-    通过邮箱或手机号和密码获取 JWT 访问令牌。
+    通过邮箱或手机号或手机号和密码获取 JWT 访问令牌。
     - username (实际上可以是邮箱或手机号): 用户邮箱或手机号
     - password: 用户密码
     """
-    credential = form_data.username # 获取用户输入的凭证 (可能是邮箱或手机号)
+    credential = form_data.username  # 获取用户输入的凭证 (可能是邮箱或手机号)
     password = form_data.password
 
     print(f"DEBUG_AUTH: 尝试用户登录: {credential}")
 
     user = None
-    # **<<<<< 关键修复：新增：尝试通过邮箱或手机号查找用户 >>>>>**
-    # 简单的判断，如果包含 '@' 符号，认为是邮箱
+    # 尝试通过邮箱或手机号查找用户
     if "@" in credential:
         user = db.query(Student).filter(Student.email == credential).first()
         print(f"DEBUG_AUTH: 尝试通过邮箱 '{credential}' 查找用户。")
-    # 否则，尝试通过手机号查找 (可以增加更严格的手机号正则表达式验证)
-    # 这里使用了一个简化的纯数字和长度判断，确保至少与真实手机号有一点区分
-    elif credential.isdigit() and len(credential) >= 7 and len(credential) <= 15: # 假设手机号是纯数字且合理长度，如7-15位
+    elif credential.isdigit() and len(credential) >= 7 and len(credential) <= 15:  # 假设手机号是纯数字且合理长度
         user = db.query(Student).filter(Student.phone_number == credential).first()
         print(f"DEBUG_AUTH: 尝试通过手机号 '{credential}' 查找用户。")
     else:
-        # 如果既不是邮箱也不是有效手机号格式，直接拒绝
         print(f"DEBUG_AUTH: 凭证 '{credential}' 格式不正确，登录失败。")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1210,29 +1392,85 @@ async def login_for_access_token(
         )
 
     # 密码验证
-    # 如果用户没找到，或者找到但密码不正确，都拒绝登录
     if not user or not pwd_context.verify(password, user.password_hash):
         print(f"DEBUG_AUTH: 用户 '{credential}' 登录失败：不正确的邮箱/手机号或密码。")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="不正确的邮箱/手机号或密��",
+            detail="不正确的邮箱/手机号或密码",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # **<<<<< 新增：每日登录打卡和积分奖励逻辑 >>>>>**
+    # 获取用户最初的积分和登录次数，用于对比和调试
+    initial_total_points = user.total_points
+    initial_login_count = user.login_count
+
+    # 检查是否需要每日打卡奖励
+    today = date.today()
+    if user.last_login_at is None or user.last_login_at.date() < today:
+        daily_points = 10  # 每日登录奖励积分
+        # _award_points 现在只往 session 里 add，不 commit
+        await _award_points(
+            db=db,
+            user=user,  # 传递会话中的 user 对象
+            amount=daily_points,
+            reason="每日登录打卡",
+            transaction_type="EARN",
+            related_entity_type="login_daily"
+        )
+        user.last_login_at = func.now()  # 更新上次登录时间
+        user.login_count += 1  # 增加登录计数
+        # db.add(user) # user对象已经在session中被跟踪和修改，无需再次add了
+
+        print(
+            f"DEBUG_LOGIN_PENDING: 用户 {user.id} 成功完成每日打卡，获得 {daily_points} 积分。总登录天数: {user.login_count} (待提交)")
+
+        # 触发成就检查 (例如，总登录次数类的成就)
+        # _check_and_award_achievements 也会将对象 add 到 session
+        await _check_and_award_achievements(db, user.id)
+    else:
+        print(f"DEBUG_LOGIN: 用户 {user.id} 今日已打卡。")
+
     # 登录成功，创建访问令牌
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    # 将用户ID作为 subject 编码到 token 中
     access_token = create_access_token(
-        data={"sub": str(user.id)},  # 必须是字符串
+        data={"sub": str(user.id)},
         expires_delta=access_token_expires
     )
 
-    print(f"DEBUG_AUTH: 用户 {user.email} (ID: {user.id}) 登录成功，颁发JWT令牌。")
-    return schemas.Token(
-        access_token=access_token,
-        token_type="bearer",
-        expires_in_minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    # **<<<<< MODIFICATION: 显式提交事务，并确保总积分在提交后更新 >>>>>**
+    try:
+        db.commit()  # 提交所有待处理的数据库更改（包括 User, PointTransaction, UserAchievement）
+        # db.refresh(user) # **<<<<< REMOVED: 不再在这里 refresh，避免状态覆盖 >>>>>**
+
+        # 在所有更改提交后，重新从数据库载入 user 对象，确保准确显示最终的 total_points
+        # 这确保我们看到的是所有奖励（包括成就奖励）都生效后的总积分。
+        final_user_state = db.query(Student).filter(Student.id == user.id).first()
+        if final_user_state:
+            print(
+                f"DEBUG_AUTH_FINAL: 用户 {final_user_state.email if final_user_state.email else final_user_state.phone_number} (ID: {final_user_state.id}) 登录成功，颁发JWT令牌。**最终积分: {final_user_state.total_points}, 登录次数: {final_user_state.login_count}**")
+            # 也可以在这里验证一下是否有新成就
+            earned_achievements_count = db.query(UserAchievement).filter(
+                UserAchievement.user_id == final_user_state.id).count()
+            print(f"DEBUG_AUTH_FINAL: 用户 {final_user_state.id} 现有成就数量: {earned_achievements_count}")
+        else:
+            print(f"WARNING_AUTH_FINAL: 无法在提交后重新加载用户 {user.id} 的最终状态。")
+
+        return schemas.Token(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in_minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+        )
+    except Exception as e:
+        db.rollback()  # 如果提交过程中发生任何错误，回滚事务
+        print(f"ERROR_LOGIN_COMMIT: 用户 {user.id} 登录事务提交失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="登录成功但数据保存失败，请重试或联系管理员。",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        # ... (文件其余部分保持不变) ...
+
 
 
 @app.get("/users/me", response_model=schemas.StudentResponse, summary="获取当前登录用户详情")
@@ -1600,7 +1838,6 @@ async def create_project(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建项目失败: {e}")
 
 
-# project/main.py
 @app.put("/projects/{project_id}", response_model=schemas.ProjectResponse, summary="更新指定项目")
 async def update_project(
         project_id: int,
@@ -1631,39 +1868,69 @@ async def update_project(
 
     update_data = project_data.dict(exclude_unset=True)
 
+    old_project_status = db_project.project_status
+    new_project_status = update_data.get("project_status")
+
+    # **<<<<< MODIFICATION: 提前提交项目状态更改 >>>>>**
+    # 将项目状态的更新和提交移到这里，确保后续的成就检查能看到最新状态
+    has_status_changed_to_completed = False
+    if new_project_status == "已完成" and old_project_status != "已完成":
+        has_status_changed_to_completed = True
+        print(
+            f"DEBUG_PROJECT_STATUS: detecting status change from '{old_project_status}' to '{new_project_status}' for project {project_id}.")
+
+    # 在这里应用所有传入的更新，并立即提交
+    processed_fields = []  # 用于标记已手动处理的字段
     if "required_skills" in update_data:
-        new_required_skills_data_for_db = update_data["required_skills"]
-        db_project.required_skills = new_required_skills_data_for_db
-        print(f"DEBUG: 项目 {project_id} 所需技能更新为: {db_project.required_skills}")
-        del update_data["required_skills"]
-
+        db_project.required_skills = update_data["required_skills"]
+        processed_fields.append("required_skills")
     if "required_roles" in update_data:
-        new_required_roles_data_for_db = update_data["required_roles"]
-        db_project.required_roles = new_required_roles_data_for_db
-        print(f"DEBUG: 项目 {project_id} 所需角色更新为: {db_project.required_roles}")
-        del update_data["required_roles"]
+        db_project.required_roles = update_data["required_roles"]
+        processed_fields.append("required_roles")
 
-    # 通用循环处理其余字段，包括时间与投入度字段 和 新增的 location 字段
-    processed_fields = ["required_skills", "required_roles"]
+    # 应用其他字段更新 (包括 project_status)
     for key, value in update_data.items():
         if key in processed_fields:
             continue
+        if hasattr(db_project, key):
+            setattr(db_project, key, value)  # 确保 project_status 也在此处被更新到db_project对象
 
-        if hasattr(db_project, key) and value is not None:
-            setattr(db_project, key, value)
-            if key in ["start_date", "end_date", "estimated_weekly_hours"]:
-                print(f"DEBUG: 更新字段 {key}: {_get_text_part(value)}")
-            else:
-                print(f"DEBUG: 更新字段 {key}: {value}")
-        elif hasattr(db_project, key) and value is None:
-            if key in ["description", "keywords", "project_type", "expected_deliverables",
-                       "contact_person_info", "learning_outcomes", "team_size_preference",
-                       "project_status", "start_date", "end_date", "estimated_weekly_hours",
-                       "location"]: # 移除 combined_text 和 embedding，它们不应被直接清空
-                setattr(db_project, key, value)
-                print(f"DEBUG: 清空字段 {key}")
+    db.add(db_project)  # 将修改后的db_project添加到会话中
 
-    # 重建 combined_text
+    try:
+        db.commit()  # **<<<<< 提前提交！确保项目状态已写入 DB >>>>>**
+        db.refresh(db_project)  # 刷新db_project对象以获取其最新持久化状态
+        print(f"DEBUG_PROJECT_UPDATE: 项目 {project_id} 状态和其他信息已初步提交。当前状态: {db_project.project_status}")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_PROJECT_UPDATE_COMMIT: 项目 {project_id} 状态更新提交失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"项目更新失败：{e}")
+
+    # **<<<<< 只有在项目状态成功提交为“已完成”之后，才进行积分奖励和成就检查 >>>>>**
+    if has_status_changed_to_completed:
+        project_creator_user = db.query(Student).filter(Student.id == db_project.creator_id).first()
+        if project_creator_user:
+            # 奖励项目创建者积分
+            project_completion_points = 50  # 完成项目奖励50积分
+            await _award_points(
+                db=db,
+                user=project_creator_user,
+                amount=project_completion_points,
+                reason=f"完成项目：'{db_project.title}'",
+                transaction_type="EARN",
+                related_entity_type="project",
+                related_entity_id=db_project.id
+            )
+            # 检查项目创建者的成就 (现在_check_and_award_achievements能看到最新的完成项目数了)
+            await _check_and_award_achievements(db, db_project.creator_id)
+            print(
+                f"DEBUG_POINTS_ACHIEVEMENT: 项目 {db_project.id} 已完成，项目创建者 {db_project.creator_id} 获得 {project_completion_points} 积分并检查成就 (待提交)。")
+        else:
+            print(f"WARNING: 项目 {db_project.id} 完成，但项目创建者 {db_project.creator_id} 未找到，无法奖励积分。")
+    # **<<<<< 新增结束 >>>>>**
+
+    # 重建 combined_text - **确保在所有字段都已更新到 db_project 对象后执行此操作**
+    # 由于我们在上面已经遍历并设置了字段，这里直接用 db_project 的最新状态来生成即可
     current_skills_for_text = db_project.required_skills
     parsed_skills_for_text = []
     if isinstance(current_skills_for_text, str):
@@ -1709,11 +1976,9 @@ async def update_project(
         _get_text_part(db_project.location)
     ])).strip()
 
-    # **<<<<< 新增: 获取项目创建者配置的硅基流动 API 密钥用于生成嵌入向量 >>>>>**
-    # 注意：这里应该使用 db_project.creator 来获取创建者的API Key，而不是 current_user
-    # 因为 current_user 只是当前操作的用户，不一定是项目的创建者，只有创建者能影响项目的嵌入生成
-    project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
     siliconflow_api_key_for_embedding = None
+    # 重新从数据库查询创建者，确保获取最新状态
+    project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
     if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
         try:
             siliconflow_api_key_for_embedding = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
@@ -1724,14 +1989,11 @@ async def update_project(
     else:
         print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
 
-
-    # 更新 embedding
     if db_project.combined_text:
         try:
-            # **<<<<< MODIFICATION: 将获取到的密钥传递给 ai_core.get_embeddings_from_api >>>>>**
             new_embedding = await ai_core.get_embeddings_from_api(
                 [db_project.combined_text],
-                api_key=siliconflow_api_key_for_embedding # 使用创建者配置的密钥
+                api_key=siliconflow_api_key_for_embedding
             )
             if new_embedding:
                 db_project.embedding = new_embedding[0]
@@ -1739,28 +2001,16 @@ async def update_project(
         except Exception as e:
             print(f"ERROR: 更新项目 {project_id} 嵌入向量失败: {e}")
 
-    db.add(db_project)
-    db.commit()
-    db.refresh(db_project)
+    db.add(db_project)  # 再次添加，这次是为了保存 combined_text 和 embedding 的更新
+    # 注意：最终的 commit 是由 get_db 依赖项在整个请求结束后自动处理。
+    # 这确保了所有在这次 `/projects/` PUT 请求中发生的数据库操作（除了项目状态提前提交的那部分）都是原子性的。
 
-    if isinstance(db_project.required_skills, str):
-        try:
-            db_project.required_skills = json.loads(db_project.required_skills)
-        except json.JSONDecodeError:
-            db_project.required_skills = []
-    elif db_project.required_skills is None:
-        db_project.required_skills = []
+    # **<<<<< 由于主要逻辑已在前面的 commit 中完成，这里不需要额外的 db.refresh(db_project) >>>>>**
+    # 并且，不再尝试直接修改 `db_project.required_skills`/`required_roles` 的类型，因为它们在ORM层面就是JSONB
+    # FastAPI 会自动处理响应时的序列化。
 
-    if isinstance(db_project.required_roles, str):
-        try:
-            db_project.required_roles = json.loads(db_project.required_roles)
-        except json.JSONDecodeError:
-            db_project.required_roles = []
-    elif db_project.required_roles is None:
-        db_project.required_roles = []
-
-    print(f"DEBUG: 项目 {project_id} 信息更新成功。")
-    return db_project
+    print(f"DEBUG: 项目 {project_id} 信息更新请求处理完毕。")
+    return db_project  # 返回 ProjectResponse 时会从数据库中获取最新状态
 
 
 # --- AI匹配接口 ---
@@ -2840,6 +3090,73 @@ async def delete_daily_record(
     db.commit()
     print(f"DEBUG: 随手记录 {record_id} 删除成功。")
     return {"message": "Daily record deleted successfully"}
+
+
+# --- 用户课程管理接口 (新增) ---
+@app.put("/users/me/courses/{course_id}", response_model=schemas.UserCourseResponse,
+         summary="更新当前用户课程学习进度和状态")
+async def update_user_course_progress(
+        course_id: int,
+        # 假设这里只接收进度和状态，可以根据需要扩展 schemas.UserCourseBase 来定义更新模型
+        # 或者直接使用 Dict[str, Any] + 内部校验
+        update_data: Dict[str, Any],  # 例如 {"progress": 0.8, "status": "completed"}
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 用户 {current_user_id} 尝试更新课程 {course_id} 的进度。")
+
+    user_course = db.query(UserCourse).filter(
+        UserCourse.student_id == current_user_id,
+        UserCourse.course_id == course_id
+    ).first()
+
+    if not user_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未注册该课程或课程未找到。")
+
+    # **<<<<< 新增：检查课程状态是否变为“已完成”，并奖励积分 >>>>>**
+    old_status = user_course.status
+    new_status = update_data.get("status")
+
+    if new_status == "completed" and old_status != "completed":
+        user = db.query(Student).filter(Student.id == current_user_id).first()
+        if user:
+            # 奖励课程完成积分
+            course_completion_points = 30  # 完成课程奖励30积分
+            await _award_points(
+                db=db,
+                user=user,
+                amount=course_completion_points,
+                reason=f"完成课程：'{user_course.course.title if user_course.course else course_id}'",  # 尝试获取课程标题
+                transaction_type="EARN",
+                related_entity_type="course",
+                related_entity_id=course_id
+            )
+            # 检查学生的成就
+            await _check_and_award_achievements(db, current_user_id)
+            print(
+                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 完成课程 {course_id}，获得 {course_completion_points} 积分并检查成就。")
+    # **<<<<< 新增结束 >>>>>**
+
+    # 更新进度和状态
+    if "progress" in update_data and isinstance(update_data["progress"], (int, float)):
+        user_course.progress = update_data["progress"]
+    if "status" in update_data and isinstance(update_data["status"], str):
+        # 简化：假设传入的状态都是合法的，实际应该校验 Literal
+        user_course.status = update_data["status"]
+
+    user_course.last_accessed = func.now()  # 更新上次访问时间
+
+    db.add(user_course)
+    db.commit()
+    db.refresh(user_course)
+
+    # 填充 UserCourseResponse 中的 Course 标题，如果需要的话
+    if user_course.course is None:  # 如果没有通过joinedload加载或者没这个关系，手动查一下
+        user_course.course = db.query(Course).filter(Course.id == user_course.course_id).first()
+
+    print(f"DEBUG: 用户 {current_user_id} 课程 {course_id} 进度更新成功。")
+    return user_course  # 返回 user_course 才能映射到 UserCourseResponse
+
 
 # --- 文件夹管理接口 ---
 @app.post("/folders/", response_model=schemas.FolderResponse, summary="创建新文件夹")
@@ -4378,6 +4695,26 @@ async def create_forum_topic(
     db.add(db_topic)
     db.commit()
     db.refresh(db_topic)
+    topic_author = db.query(Student).filter(Student.id == current_user_id).first()
+    if topic_author:
+        topic_post_points = 15  # 发布话题奖励15积分
+        await _award_points(
+            db=db,
+            user=topic_author,
+            amount=topic_post_points,
+            reason=f"发布论坛话题：'{db_topic.title}'",
+            transaction_type="EARN",
+            related_entity_type="forum_topic",
+            related_entity_id=db_topic.id
+        )
+        # 检查作者的成就
+        await _check_and_award_achievements(db, current_user_id)
+        print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就。")
+    # **<<<<< 新增结束 >>>>>**
+
+    # 填充 owner_name
+    owner_name = db.query(Student).filter(Student.id == current_user_id).first().name or "未知用户"
+    db_topic.owner_name = owner_name
 
     # 填充 owner_name
     owner_name = db.query(Student).filter(Student.id == current_user_id).first().name or "未知用户"
@@ -4617,6 +4954,29 @@ async def add_forum_comment(
     db.commit()
     db.refresh(db_comment)
 
+    # **<<<<< 发布评论奖励积分 >>>>>**
+    comment_author = db.query(Student).filter(Student.id == current_user_id).first()
+    if comment_author:
+        comment_post_points = 5  # 发布评论奖励5积分
+        await _award_points(
+            db=db,
+            user=comment_author,
+            amount=comment_post_points,
+            reason=f"发布论坛评论：'{db_comment.content[:20]}...'",
+            transaction_type="EARN",
+            related_entity_type="forum_comment",
+            related_entity_id=db_comment.id
+        )
+        # 检查作者的成就
+        await _check_and_award_achievements(db, current_user_id)
+        print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布评论，获得 {comment_post_points} 积分并检查成就。")
+    # **<<<<< 新增结束 >>>>>**
+
+    # 填充 owner_name
+    owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    db_comment._owner_name = owner_obj.name  # Access private attribute to set
+    db_comment.is_liked_by_current_user = False  # Default state
+
     # 填充 owner_name
     owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
     db_comment._owner_name = owner_obj.name  # Access private attribute to set
@@ -4756,16 +5116,20 @@ async def like_forum_item(
     """
     点赞一个论坛话题或评论。
     必须提供 topic_id 或 comment_id 中的一个。同一用户不能重复点赞同一项。
+    点赞成功后，为被点赞的话题/评论的作者奖励积分，并检查其成就。
     """
     topic_id = like_data.get("topic_id")
     comment_id = like_data.get("comment_id")
 
     if not topic_id and not comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either topic_id or comment_id must be provided.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Either topic_id or comment_id must be provided.")
     if topic_id and comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only one of topic_id or comment_id can be provided.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Only one of topic_id or comment_id can be provided.")
 
     existing_like = None
+    target_item_owner_id = None
     if topic_id:
         existing_like = db.query(ForumLike).filter(ForumLike.owner_id == current_user_id,
                                                    ForumLike.topic_id == topic_id).first()
@@ -4775,6 +5139,9 @@ async def like_forum_item(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
             target_item.likes_count += 1
             db.add(target_item)
+            target_item_owner_id = target_item.owner_id  # 获取话题作者ID
+            related_entity_type = "forum_topic"
+            related_entity_id = topic_id
     elif comment_id:
         existing_like = db.query(ForumLike).filter(ForumLike.owner_id == current_user_id,
                                                    ForumLike.comment_id == comment_id).first()
@@ -4784,6 +5151,9 @@ async def like_forum_item(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum comment not found.")
             target_item.likes_count += 1
             db.add(target_item)
+            target_item_owner_id = target_item.owner_id  # 获取评论作者ID
+            related_entity_type = "forum_comment"
+            related_entity_id = comment_id
 
     if existing_like:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already liked this item.")
@@ -4795,8 +5165,28 @@ async def like_forum_item(
     )
 
     db.add(db_like)
-    db.commit()
+    db.commit()  # 提交点赞和likes_count的更新
     db.refresh(db_like)
+
+    # **<<<<< 新增：为被点赞的作者奖励积分和检查成就 >>>>>**
+    if target_item_owner_id and target_item_owner_id != current_user_id:  # 奖励积分，但不能点赞自己给自己加分
+        owner_user = db.query(Student).filter(Student.id == target_item_owner_id).first()
+        if owner_user:
+            like_points = 5  # 每次获得一个点赞奖励5积分
+            await _award_points(
+                db=db,
+                user=owner_user,
+                amount=like_points,
+                reason=f"获得点赞：{target_item.title if topic_id else target_item.content[:20]}...",  # 简要描述被点赞内容
+                transaction_type="EARN",
+                related_entity_type=related_entity_type,
+                related_entity_id=related_entity_id
+            )
+            # 检查被点赞作者的成就
+            await _check_and_award_achievements(db, target_item_owner_id)
+            print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {target_item_owner_id} 因获得点赞奖励 {like_points} 积分并检查成就。")
+    # **<<<<< 新增结束 >>>>>**
+
     print(f"DEBUG: 用户 {current_user_id} 点赞成功 (Topic ID: {topic_id or 'N/A'}, Comment ID: {comment_id or 'N/A'})。")
     return db_like
 
@@ -5336,4 +5726,268 @@ async def websocket_endpoint(
         # 确保在任何情况下都从管理器中移除连接
         if current_user_id_int is not None:
             manager.disconnect(room_id, current_user_id_int)
+
+
+# --- 成就定义管理接口 (管理员专用) ---
+@app.post("/admin/achievements/definitions", response_model=AchievementResponse, summary="【管理员专用】创建新的成就定义")
+async def create_achievement_definition(
+        achievement_data: AchievementCreate,
+        # 只有管理员才能访问此接口
+        current_admin_user: Student = Depends(is_admin_user),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG_ADMIN_ACHIEVEMENT: 管理员 {current_admin_user.id} 尝试创建成就：{achievement_data.name}")
+
+    # 检查成就名称是否已存在
+    existing_achievement = db.query(Achievement).filter(Achievement.name == achievement_data.name).first()
+    if existing_achievement:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"成就名称 '{achievement_data.name}' 已存在。")
+
+    new_achievement = Achievement(
+        name=achievement_data.name,
+        description=achievement_data.description,
+        criteria_type=achievement_data.criteria_type,
+        criteria_value=achievement_data.criteria_value,
+        badge_url=achievement_data.badge_url,
+        reward_points=achievement_data.reward_points,
+        is_active=achievement_data.is_active
+    )
+
+    db.add(new_achievement)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建成就定义发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建成就定义失败，可能存在名称冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 创建成就定义失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建成就定义失败: {e}")
+
+    db.refresh(new_achievement)
+    print(
+        f"DEBUG_ADMIN_ACHIEVEMENT: 管理员 {current_admin_user.id} 成功创建成就：{new_achievement.name} (ID: {new_achievement.id})")
+    return new_achievement
+
+
+@app.get("/achievements/definitions", response_model=List[AchievementResponse],
+         summary="获取所有成就定义（可供所有用户查看）")
+async def get_all_achievement_definitions(
+        db: Session = Depends(get_db),
+        is_active: Optional[bool] = None,  # 过滤条件：只获取启用或禁用的成就
+        criteria_type: Optional[str] = None  # 过滤条件：按类型过滤
+):
+    """
+    获取平台所有成就的定义列表。非管理员用户也可访问此接口以了解成就体系。
+    可选择按激活状态和条件类型过滤。
+    """
+    print("DEBUG_ACHIEVEMENT: 获取所有成就定义。")
+    query = db.query(Achievement)
+
+    if is_active is not None:
+        query = query.filter(Achievement.is_active == is_active)
+    if criteria_type:
+        query = query.filter(Achievement.criteria_type == criteria_type)
+
+    achievements = query.order_by(Achievement.name).all()
+    print(f"DEBUG_ACHIEVEMENT: 获取到 {len(achievements)} 条成就定义。")
+    return achievements
+
+
+@app.get("/achievements/definitions/{achievement_id}", response_model=AchievementResponse,
+         summary="获取指定成就定义详情")
+async def get_achievement_definition_by_id(
+        achievement_id: int,
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定ID的成就定义详情。非管理员用户也可访问。
+    """
+    print(f"DEBUG_ACHIEVEMENT: 获取成就定义 ID: {achievement_id} 的详情。")
+    achievement = db.query(Achievement).filter(Achievement.id == achievement_id).first()
+    if not achievement:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成就定义未找到。")
+    return achievement
+
+
+@app.put("/admin/achievements/definitions/{achievement_id}", response_model=AchievementResponse,
+         summary="【管理员专用】更新指定成就定义")
+async def update_achievement_definition(
+        achievement_id: int,
+        achievement_data: AchievementUpdate,
+        current_admin_user: Student = Depends(is_admin_user),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG_ADMIN_ACHIEVEMENT: 管理员 {current_admin_user.id} 尝试更新成就 ID: {achievement_id}")
+
+    db_achievement = db.query(Achievement).filter(Achievement.id == achievement_id).first()
+    if not db_achievement:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成就定义未找到。")
+
+    update_data = achievement_data.dict(exclude_unset=True)
+
+    # 如果尝试改变名称，检查新名称是否冲突
+    if "name" in update_data and update_data["name"] is not None and update_data["name"] != db_achievement.name:
+        existing_name_achievement = db.query(Achievement).filter(
+            Achievement.name == update_data["name"],
+            Achievement.id != achievement_id
+        ).first()
+        if existing_name_achievement:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"成就名称 '{update_data['name']}' 已被使用。")
+
+    for key, value in update_data.items():
+        setattr(db_achievement, key, value)
+
+    db.add(db_achievement)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新成就定义发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新成就定义失败，可能存在名称冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 更新成就定义失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新成就定义失败: {e}")
+
+    db.refresh(db_achievement)
+    print(f"DEBUG_ADMIN_ACHIEVEMENT: 管理员 {current_admin_user.id} 成功更新成就 ID: {achievement_id}.")
+    return db_achievement
+
+
+@app.delete("/admin/achievements/definitions/{achievement_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="【管理员专用】删除指定成就定义")
+async def delete_achievement_definition(
+        achievement_id: int,
+        current_admin_user: Student = Depends(is_admin_user),
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG_ADMIN_ACHIEVEMENT: 管理员 {current_admin_user.id} 尝试删除成就 ID: {achievement_id}")
+
+    db_achievement = db.query(Achievement).filter(Achievement.id == achievement_id).first()
+    if not db_achievement:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成就定义未找到。")
+
+    # 警告：删除成就定义也将删除所有用户获得的该成就记录 (UserAchievement)
+    # 如果希望保留用户获得的成就记录但禁用成就，应使用 PUT 接口将 is_active 设为 False
+    db.delete(db_achievement)
+    db.commit()
+    print(f"DEBUG_ADMIN_ACHIEVEMENT: 管理员 {current_admin_user.id} 成功删除成就 ID: {achievement_id}。")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- 用户积分和成就查询接口 ---
+
+@app.get("/users/me/points", response_model=schemas.StudentResponse, summary="获取当前用户积分余额和上次登录时间")
+async def get_my_points_and_login_status(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取当前用户总积分余额和上次登录时间。
+    """
+    print(f"DEBUG_POINTS_QUERY: 获取用户 {current_user_id} 的积分信息。")
+    user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未找到。")
+    return user  # StudentResponse 会自动包含 total_points 和 last_login_at
+
+
+@app.get("/users/me/points/history", response_model=List[PointTransactionResponse], summary="获取当前用户积分交易历史")
+async def get_my_points_history(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        transaction_type: Optional[Literal["EARN", "CONSUME", "ADMIN_ADJUST"]] = None,
+        limit: int = 20,
+        offset: int = 0
+):
+    """
+    获取当前用户的积分交易历史记录。
+    可按交易类型过滤，并支持分页。
+    """
+    print(f"DEBUG_POINTS_QUERY: 获取用户 {current_user_id} 的积分历史。")
+    query = db.query(PointTransaction).filter(PointTransaction.user_id == current_user_id)
+
+    if transaction_type:
+        query = query.filter(PointTransaction.transaction_type == transaction_type)
+
+    transactions = query.order_by(PointTransaction.created_at.desc()).offset(offset).limit(limit).all()
+    print(f"DEBUG_POINTS_QUERY: 获取到 {len(transactions)} 条积分交易记录。")
+    return transactions
+
+
+@app.get("/users/me/achievements", response_model=List[UserAchievementResponse], summary="获取当前用户已获得的成就列表")
+async def get_my_achievements(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取当前用户已获得的成就列表，包含成就的详细元数据。
+    """
+    print(f"DEBUG_ACHIEVEMENT_QUERY: 获取用户 {current_user_id} 的已获得成就列表。")
+    # 使用 joinedload 预加载关联的 Achievement 对象，避免 N+1 查询问题
+    user_achievements = db.query(UserAchievement).options(
+        joinedload(UserAchievement.achievement)  # 预加载成就定义
+    ).filter(UserAchievement.user_id == current_user_id).all()
+
+    # 填充 UserAchievementResponse 中的成就详情字段
+    response_list = []
+    for ua in user_achievements:
+        response_data = UserAchievementResponse(
+            id=ua.id,
+            user_id=ua.user_id,
+            achievement_id=ua.achievement_id,
+            earned_at=ua.earned_at,
+            is_notified=ua.is_notified,
+            # 从关联的 achievement 对象中获取数据
+            achievement_name=ua.achievement.name if ua.achievement else None,
+            achievement_description=ua.achievement.description if ua.achievement else None,
+            badge_url=ua.achievement.badge_url if ua.achievement else None,
+            reward_points=ua.achievement.reward_points if ua.achievement else 0
+        )
+        response_list.append(response_data)
+
+    print(f"DEBUG_ACHIEVEMENT_QUERY: 用户 {current_user_id} 获取到 {len(response_list)} 个成就。")
+    return response_list
+
+
+@app.post("/admin/points/reward", response_model=PointTransactionResponse,
+          summary="【管理员专用】为指定用户手动发放/扣除积分")
+async def admin_reward_or_deduct_points(
+        reward_request: PointsRewardRequest,  # 接收积分变动请求
+        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能操作
+        db: Session = Depends(get_db)
+):
+    """
+    管理员可以手动为指定用户发放或扣除积分。
+    """
+    print(
+        f"DEBUG_ADMIN_POINTS: 管理员 {current_admin_user.id} 尝试为用户 {reward_request.user_id} 手动调整积分：{reward_request.amount}")
+
+    target_user = db.query(Student).filter(Student.id == reward_request.user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户未找到。")
+
+    # 调用积分奖励辅助函数
+    await _award_points(
+        db=db,
+        user=target_user,
+        amount=reward_request.amount,
+        reason=reward_request.reason or f"管理员手动调整 (由{current_admin_user.username})",
+        transaction_type=reward_request.transaction_type,
+        related_entity_type=reward_request.related_entity_type,
+        related_entity_id=reward_request.related_entity_id
+    )
+
+    # 刷新并获取最新的交易记录（或直接返回 _award_points 生成的 transaction 对象）
+    # 这里为了返回 PointsRewardRequest 的响应类型，通常需要重新查询或构建
+    # 假设 _award_points 内部会commit并生成事务对象，这里查询最新的那个
+    latest_transaction = db.query(PointTransaction).filter(
+        PointTransaction.user_id == target_user.id
+    ).order_by(PointTransaction.created_at.desc()).first()
+
+    print(f"DEBUG_ADMIN_POINTS: 管理员 {current_admin_user.id} 成功调整用户 {target_user.id} 积分。")
+    return latest_transaction  # 返回最新的交易记录
 

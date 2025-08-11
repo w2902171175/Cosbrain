@@ -9,6 +9,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy.schema import UniqueConstraint
 from base import Base
 import json
+from datetime import datetime # 额外导入datetime，用于后续使用，尽管func.now()已引入
 
 
 class Student(Base):
@@ -46,6 +47,14 @@ class Student(Base):
     updated_at = Column(DateTime, onupdate=func.now())
     is_admin = Column(Boolean, default=False, nullable=False)
 
+    # **<<<<< 新增：积分和成就相关字段和关系 >>>>>**
+    total_points = Column(Integer, default=0, nullable=False, comment="用户当前总积分")
+    last_login_at = Column(DateTime, nullable=True, comment="用户上次登录时间，用于每日打卡")
+
+    achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
+    point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
+    # **<<<<< 新增字段和关系结束 >>>>>**
+
     # Relationships
     created_chat_rooms = relationship("ChatRoom", back_populates="creator")
     chat_room_memberships = relationship("ChatRoomMember", back_populates="member")
@@ -76,10 +85,18 @@ class Student(Base):
     search_engine_configs = relationship("UserSearchEngineConfig", back_populates="owner", cascade="all, delete-orphan")
     uploaded_documents = relationship("KnowledgeDocument", back_populates="owner",
                                       cascade="all, delete-orphan")
-    # **<<<<< 新增：用户TTS配置关系 >>>>>**
     tts_configs = relationship("UserTTSConfig", back_populates="owner", cascade="all, delete-orphan")
 
     projects_created = relationship("Project", back_populates="creator")
+
+    # **<<<<< 积分和成就相关字段和关系 >>>>>**
+    total_points = Column(Integer, default=0, nullable=False, comment="用户当前总积分")
+    last_login_at = Column(DateTime, nullable=True, comment="用户上次登录时间，用于每日打卡")
+    login_count = Column(Integer, default=0, nullable=False,
+                         comment="用户总登录天数（完成每日打卡的次数）")  # **<<<<< 新增此行 >>>>>**
+
+    achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
+    point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Student(id={self.id}, email='{self.email}', username='{self.username}')>"
@@ -458,7 +475,6 @@ class UserSearchEngineConfig(Base):
     owner = relationship("Student", back_populates="search_engine_configs")
 
 
-# **<<<<< 新增：用户TTS配置模型 >>>>>**
 class UserTTSConfig(Base):
     __tablename__ = "user_tts_configs"
 
@@ -483,7 +499,6 @@ class UserTTSConfig(Base):
         # 注意：为了确保每个用户只有一个激活的TTS配置，需要在应用层面处理
         # UniqueConstraint('owner_id', 'is_active', name='_owner_id_active_tts_config_uc'),
     )
-# **<<<<< 新增TTS配置模型结束 >>>>>**
 
 
 # --- 知识库相关模型 ---
@@ -617,3 +632,68 @@ class CollectionItem(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     user = relationship("Student", back_populates="collection_items")
+
+
+# **<<<<< 新增：成就系统和积分系统相关模型 >>>>>**
+class Achievement(Base):
+    __tablename__ = "achievements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, comment="成就名称")
+    description = Column(Text, nullable=False, comment="成就描述")
+    # 成就达成条件类型，例如：PROJECT_COMPLETED_COUNT, COURSE_COMPLETED_COUNT, FORUM_LIKES_RECEIVED, DAILY_LOGIN_STREAK
+    criteria_type = Column(String, nullable=False, comment="达成成就的条件类型")
+    criteria_value = Column(Float, nullable=False, comment="达成成就所需的数值门槛") # 使用Float以支持小数，如平均分
+    badge_url = Column(String, nullable=True, comment="勋章图片或图标URL")
+    reward_points = Column(Integer, default=0, nullable=False, comment="达成此成就额外奖励的积分")
+    is_active = Column(Boolean, default=True, nullable=False, comment="该成是否启用")
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    earned_by_users = relationship("UserAchievement", back_populates="achievement", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Achievement(id={self.id}, name='{self.name}', criteria_type='{self.criteria_type}')>"
+
+
+class UserAchievement(Base):
+    __tablename__ = "user_achievements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    achievement_id = Column(Integer, ForeignKey("achievements.id"), nullable=False)
+    earned_at = Column(DateTime, server_default=func.now(), nullable=False)
+    is_notified = Column(Boolean, default=False, nullable=False)
+
+    user = relationship("Student", back_populates="achievements")
+    achievement = relationship("Achievement", back_populates="earned_by_users")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'achievement_id', name='_user_achievement_uc'), # 确保一个用户不会重复获得同一个成就
+    )
+
+    def __repr__(self):
+        return f"<UserAchievement(user_id={self.user_id}, achievement_id={self.achievement_id})>"
+
+
+class PointTransaction(Base):
+    __tablename__ = "point_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    amount = Column(Integer, nullable=False, comment="积分变动金额（正数获得，负数消耗）")
+    reason = Column(String, nullable=True, comment="积分变动理由描述")
+    # 交易类型：EARN, CONSUME, ADMIN_ADJUST 等
+    transaction_type = Column(String, nullable=False, comment="积分交易类型")
+    # 可选：关联的实体信息，例如 project_id, course_id, forum_topic_id 等
+    related_entity_type = Column(String, nullable=True, comment="关联的实体类型")
+    related_entity_id = Column(Integer, nullable=True, comment="关联实体的ID")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    user = relationship("Student", back_populates="point_transactions")
+
+    def __repr__(self):
+        return f"<PointTransaction(user_id={self.user_id}, amount={self.amount}, type='{self.transaction_type}')>"
+# **<<<<< 新增成就系统和积分系统相关模型结束 >>>>>**
