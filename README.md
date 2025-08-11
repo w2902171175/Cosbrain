@@ -211,11 +211,6 @@ python run.py
 uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-8. **访问应用**
-- 应用地址: http://localhost:8000
-- API文档: http://localhost:8000/docs
-- 替代API文档: http://localhost:8000/redoc
-
 ## 📊 数据库结构
 
 平台采用PostgreSQL数据库，共包含29个核��数据表：
@@ -473,18 +468,7 @@ git push origin feature/your-feature-name
 - **项目主页**: [GitHub Repository]
 - **问题反馈**: [Issues]
 - **文档**: [Wiki]
-- **邮箱**: your-email@example.com
+- **邮箱**: wxh1331@foxmail.com
 
-## 🙏 致谢
-
-感谢所有为这个项目做出贡献的开发者和用户！
-
-特别感谢以下开源项目：
-- [FastAPI](https://fastapi.tiangolo.com/) - 现代化的Web框架
-- [SQLAlchemy](https://www.sqlalchemy.org/) - Python SQL工具包
-- [pgvector](https://github.com/pgvector/pgvector) - PostgreSQL向量扩展
-- [Sentence Transformers](https://www.sbert.net/) - 句子嵌入模型
-
----
 
 ⭐ 如果这个项目对你有帮助，请给我们一个star！
