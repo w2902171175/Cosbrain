@@ -567,7 +567,7 @@ async def create_search_engine_config(
         api_key_encrypted=encrypted_key,
         is_active=config_data.is_active,
         description=config_data.description,
-        base_url=config_data.base_url  # **确保 base_url 被正确存储**
+        base_url=config_data.base_url
     )
 
     db.add(db_config)
@@ -1028,80 +1028,6 @@ async def set_active_user_tts_config(
     db.refresh(db_tts_config_to_activate)
     print(f"DEBUG: 用户 {current_user_id} 成功设置TTS配置 ID: {config_id} 为激活状态。")
     return db_tts_config_to_activate
-
-
-@app.post("/audio/tts", summary="将文本转换为语音")
-async def text_to_speech(
-        tts_request: schemas.TTSTextRequest,
-        current_user_id: int = Depends(get_current_user_id), # 已认证的用户ID，用于获取其TTS配置
-        db: Session = Depends(get_db) # 引入数据库会话
-) -> Dict[str, str]:
-    """
-    将提供的文本转换为语音文件，并返回可访问的MP3文件URL。
-    根据用户的激活TTS配置，支持不同的语音提供商和语言代码。
-    """
-    print(f"DEBUG: 用户 {current_user_id} 请求将文本 '{tts_request.text[:50]}...' 转换为语音。")
-
-    # 1. 获取当前用户的激活TTS配置
-    active_tts_config = db.query(UserTTSConfig).filter(
-        UserTTSConfig.owner_id == current_user_id,
-        UserTTSConfig.is_active == True
-    ).first()
-
-    if not active_tts_config:
-        print(f"WARNING: 用户 {current_user_id} 没有激活的TTS配置。将尝试使用默认的 gTTS。")
-        # 即使没有激活配置，ai_core.synthesize_speech 也应该有一个默认的fallback。
-        # 这里，我们传递 None 给 api_key 和其他配置，让 ai_core 内部处理。
-        config_params = {
-            "tts_type": "default_gtts", # 明确标记为使用 gTTS
-            "api_key": None,
-            "base_url": None,
-            "model_id": None,
-            "voice_name": None
-        }
-    else:
-        # 2. 解密API密钥
-        decrypted_api_key = None
-        if active_tts_config.api_key_encrypted:
-            try:
-                decrypted_api_key = ai_core.decrypt_key(active_tts_config.api_key_encrypted)
-                print(f"DEBUG_TTS_CONFIG: 成功解密用户 {current_user_id} 的TTS API密钥。")
-            except Exception as e:
-                print(f"ERROR_TTS_CONFIG: 用户 {current_user_id} 解密TTS API密钥失败: {e}。将跳过使用该密钥。")
-
-        config_params = {
-            "tts_type": active_tts_config.tts_type,
-            "api_key": decrypted_api_key,
-            "base_url": active_tts_config.base_url,
-            "model_id": active_tts_config.model_id,
-            "voice_name": active_tts_config.voice_name
-        }
-        print(f"DEBUG_TTS_CONFIG: 找到用户 {current_user_id} 的激活TTS配置: {active_tts_config.name} (类型: {config_params['tts_type']})")
-
-
-    try:
-        # 3. 调用 ai_core 中的 TTS 核心逻辑，并传递配置参数
-        # ai_core.synthesize_speech 返回的是文件系统路径
-        filepath = await ai_core.synthesize_speech(
-            text=tts_request.text,
-            lang=tts_request.lang,
-            tts_type=config_params['tts_type'],
-            api_key=config_params["api_key"],
-            base_url=config_params["base_url"],
-            model_id=config_params["model_id"],
-            voice_name=config_params["voice_name"]
-        )
-
-        # 将文件系统路径转换为可访问的HTTP URL
-        audio_url = f"/audio/{os.path.basename(filepath)}" # 假设 /audio/* 路由已配置用于提供静态文件
-
-        print(f"DEBUG: TTS 转换成功，音频URL: {audio_url}")
-        return {"audio_url": audio_url}
-    except HTTPException: # 如果 ai_core 抛出 HTTPException，直接向上层传递
-        raise
-    except Exception as e:
-        print(f"ERROR: TTS 转换失败: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文本转语音失败: {e}")
 
 
 # --- 健康检查接口 ---
