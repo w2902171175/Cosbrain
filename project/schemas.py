@@ -574,12 +574,12 @@ class UserSearchEngineConfigBase(BaseModel):
     api_key: Optional[str] = None
     is_active: Optional[bool] = True
     description: Optional[str] = None
+    base_url: Optional[str] = Field(None, description="搜索引擎API的基础URL，例如：https://api.tavily.com")
 
 
 class UserSearchEngineConfigCreate(UserSearchEngineConfigBase):
     name: str
     engine_type: Literal["bing", "tavily", "baidu", "google_cse", "custom"]
-    base_url: Optional[str] = None
     pass
 
 class UserSearchEngineConfigResponse(UserSearchEngineConfigBase):
