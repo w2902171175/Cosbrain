@@ -1848,169 +1848,164 @@ async def update_project(
     current_user_id_int = int(current_user_id)
     print(f"DEBUG: 用户 {current_user_id_int} 尝试更新项目 ID: {project_id}。")
 
-    db_project = db.query(Project).filter(Project.id == project_id).first()
-    if not db_project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+    try:  # 将整个接口逻辑包裹在一个 try 块中，统一提交
+        db_project = db.query(Project).filter(Project.id == project_id).first()
+        if not db_project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
 
-    current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
-    if not current_user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+        current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    is_creator = (db_project.creator_id == current_user_id_int)
-    is_system_admin = current_user.is_admin
+        is_creator = (db_project.creator_id == current_user_id_int)
+        is_system_admin = current_user.is_admin
 
-    print(
-        f"DEBUG_PERM_PROJECT: Project Creator ID: {db_project.creator_id}, Current User ID: {current_user_id_int}, Is Creator: {is_creator}, Is System Admin: {is_system_admin}")
-
-    if not (is_creator or is_system_admin):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="无权更新此项目。只有项目创建者或系统管理员可以修改。")
-
-    update_data = project_data.dict(exclude_unset=True)
-
-    old_project_status = db_project.project_status
-    new_project_status = update_data.get("project_status")
-
-    # **<<<<< MODIFICATION: 提前提交项目状态更改 >>>>>**
-    # 将项目状态的更新和提交移到这里，确保后续的成就检查能看到最新状态
-    has_status_changed_to_completed = False
-    if new_project_status == "已完成" and old_project_status != "已完成":
-        has_status_changed_to_completed = True
         print(
-            f"DEBUG_PROJECT_STATUS: detecting status change from '{old_project_status}' to '{new_project_status}' for project {project_id}.")
+            f"DEBUG_PERM_PROJECT: Project Creator ID: {db_project.creator_id}, Current User ID: {current_user_id_int}, Is Creator: {is_creator}, Is System Admin: {is_system_admin}")
 
-    # 在这里应用所有传入的更新，并立即提交
-    processed_fields = []  # 用于标记已手动处理的字段
-    if "required_skills" in update_data:
-        db_project.required_skills = update_data["required_skills"]
-        processed_fields.append("required_skills")
-    if "required_roles" in update_data:
-        db_project.required_roles = update_data["required_roles"]
-        processed_fields.append("required_roles")
+        if not (is_creator or is_system_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权更新此项目。只有项目创建者或系统管理员可以修改。")
 
-    # 应用其他字段更新 (包括 project_status)
-    for key, value in update_data.items():
-        if key in processed_fields:
-            continue
-        if hasattr(db_project, key):
-            setattr(db_project, key, value)  # 确保 project_status 也在此处被更新到db_project对象
+        update_data = project_data.dict(exclude_unset=True)
 
-    db.add(db_project)  # 将修改后的db_project添加到会话中
+        old_project_status = db_project.project_status
+        new_project_status = update_data.get("project_status")
 
-    try:
-        db.commit()  # **<<<<< 提前提交！确保项目状态已写入 DB >>>>>**
-        db.refresh(db_project)  # 刷新db_project对象以获取其最新持久化状态
-        print(f"DEBUG_PROJECT_UPDATE: 项目 {project_id} 状态和其他信息已初步提交。当前状态: {db_project.project_status}")
-    except Exception as e:
-        db.rollback()
-        print(f"ERROR_PROJECT_UPDATE_COMMIT: 项目 {project_id} 状态更新提交失败: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"项目更新失败：{e}")
-
-    # **<<<<< 只有在项目状态成功提交为“已完成”之后，才进行积分奖励和成就检查 >>>>>**
-    if has_status_changed_to_completed:
-        project_creator_user = db.query(Student).filter(Student.id == db_project.creator_id).first()
-        if project_creator_user:
-            # 奖励项目创建者积分
-            project_completion_points = 50  # 完成项目奖励50积分
-            await _award_points(
-                db=db,
-                user=project_creator_user,
-                amount=project_completion_points,
-                reason=f"完成项目：'{db_project.title}'",
-                transaction_type="EARN",
-                related_entity_type="project",
-                related_entity_id=db_project.id
-            )
-            # 检查项目创建者的成就 (现在_check_and_award_achievements能看到最新的完成项目数了)
-            await _check_and_award_achievements(db, db_project.creator_id)
+        has_status_changed_to_completed = False
+        if new_project_status == "已完成" and old_project_status != "已完成":
+            has_status_changed_to_completed = True
             print(
-                f"DEBUG_POINTS_ACHIEVEMENT: 项目 {db_project.id} 已完成，项目创建者 {db_project.creator_id} 获得 {project_completion_points} 积分并检查成就 (待提交)。")
-        else:
-            print(f"WARNING: 项目 {db_project.id} 完成，但项目创建者 {db_project.creator_id} 未找到，无法奖励积分。")
-    # **<<<<< 新增结束 >>>>>**
+                f"DEBUG_PROJECT_STATUS: detecting status change from '{old_project_status}' to '{new_project_status}' for project {project_id}.")
 
-    # 重建 combined_text - **确保在所有字段都已更新到 db_project 对象后执行此操作**
-    # 由于我们在上面已经遍历并设置了字段，这里直接用 db_project 的最新状态来生成即可
-    current_skills_for_text = db_project.required_skills
-    parsed_skills_for_text = []
-    if isinstance(current_skills_for_text, str):
-        try:
-            parsed_skills_for_text = json.loads(current_skills_for_text)
-        except json.JSONDecodeError:
-            parsed_skills_for_text = []
-    elif current_skills_for_text is None:
+        # 应用所有传入的更新到db_project对象
+        processed_fields = []
+        if "required_skills" in update_data:
+            db_project.required_skills = update_data["required_skills"]
+            processed_fields.append("required_skills")
+        if "required_roles" in update_data:
+            db_project.required_roles = update_data["required_roles"]
+            processed_fields.append("required_roles")
+
+        for key, value in update_data.items():
+            if key in processed_fields:
+                continue
+            if hasattr(db_project, key):
+                setattr(db_project, key, value)
+
+        db.add(db_project)  # 将修改后的db_project添加到会话中，此处是将其标记为脏
+
+        # **<<<<< 新增：在检查成就前，强制刷新会话，使db_project的最新状态对查询可见！ >>>>>**
+        # 仅当状态改变时才需要刷新，因为这是触发成就检查的条件
+        if has_status_changed_to_completed:
+            db.flush()
+            print(f"DEBUG_FLUSH: 项目 {project_id} 状态更新已刷新到会话，以便后续查询可见。")
+
+        # 如果状态变为已完成，则进行积分奖励和成就检查
+        # _check_and_award_achievements 现在可以查询到 db_project 的最新 project_status 了
+        if has_status_changed_to_completed:
+            project_creator_user = db.query(Student).filter(Student.id == db_project.creator_id).first()
+            if project_creator_user:
+                project_completion_points = 50
+                await _award_points(
+                    db=db,
+                    user=project_creator_user,
+                    amount=project_completion_points,
+                    reason=f"完成项目：'{db_project.title}'",
+                    transaction_type="EARN",
+                    related_entity_type="project",
+                    related_entity_id=db_project.id
+                )
+                await _check_and_award_achievements(db, db_project.creator_id)
+                print(
+                    f"DEBUG_POINTS_ACHIEVEMENT: 项目 {db_project.id} 已完成，项目创建者 {db_project.creator_id} 获得 {project_completion_points} 积分并检查成就 (待提交)。")
+            else:
+                print(f"WARNING: 项目 {db_project.id} 完成，但项目创建者 {db_project.creator_id} 未找到，无法奖励积分。")
+
+        # 重建 combined_text 和更新 embedding (这些操作依赖 db_project 的最新内存状态)
+        current_skills_for_text = db_project.required_skills
         parsed_skills_for_text = []
-    skills_text = ""
-    if isinstance(parsed_skills_for_text, list):
-        skills_text = ", ".join(
-            [s.get("name", "") for s in parsed_skills_for_text if isinstance(s, dict) and s.get("name")])
+        if isinstance(current_skills_for_text, str):
+            try:
+                parsed_skills_for_text = json.loads(current_skills_for_text)
+            except json.JSONDecodeError:
+                parsed_skills_for_text = []
+        elif current_skills_for_text is None:
+            parsed_skills_for_text = []
+        skills_text = ""
+        if isinstance(parsed_skills_for_text, list):
+            skills_text = ", ".join(
+                [s.get("name", "") for s in parsed_skills_for_text if isinstance(s, dict) and s.get("name")])
 
-    current_roles_for_text = db_project.required_roles
-    parsed_roles_for_text = []
-    if isinstance(current_roles_for_text, str):
-        try:
-            parsed_roles_for_text = json.loads(current_roles_for_text)
-        except json.JSONDecodeError:
-            parsed_roles_for_text = []
-    elif current_roles_for_text is None:
+        current_roles_for_text = db_project.required_roles
         parsed_roles_for_text = []
-    roles_text = ""
-    if isinstance(parsed_roles_for_text, list):
-        roles_text = "、".join(parsed_roles_for_text)
+        if isinstance(current_roles_for_text, str):
+            try:
+                parsed_roles_for_text = json.loads(current_roles_for_text)
+            except json.JSONDecodeError:
+                parsed_roles_for_text = []
+        elif current_roles_for_text is None:
+            parsed_roles_for_text = []
+        roles_text = ""
+        if isinstance(parsed_roles_for_text, list):
+            roles_text = "、".join(parsed_roles_for_text)
 
-    db_project.combined_text = ". ".join(filter(None, [
-        _get_text_part(db_project.title),
-        _get_text_part(db_project.description),
-        _get_text_part(skills_text),
-        _get_text_part(roles_text),
-        _get_text_part(db_project.keywords),
-        _get_text_part(db_project.project_type),
-        _get_text_part(db_project.expected_deliverables),
-        _get_text_part(db_project.contact_person_info),
-        _get_text_part(db_project.learning_outcomes),
-        _get_text_part(db_project.team_size_preference),
-        _get_text_part(db_project.project_status),
-        _get_text_part(db_project.start_date),
-        _get_text_part(db_project.end_date),
-        _get_text_part(db_project.estimated_weekly_hours),
-        _get_text_part(db_project.location)
-    ])).strip()
+        db_project.combined_text = ". ".join(filter(None, [
+            _get_text_part(db_project.title),
+            _get_text_part(db_project.description),
+            _get_text_part(skills_text),
+            _get_text_part(roles_text),
+            _get_text_part(db_project.keywords),
+            _get_text_part(db_project.project_type),
+            _get_text_part(db_project.expected_deliverables),
+            _get_text_part(db_project.contact_person_info),
+            _get_text_part(db_project.learning_outcomes),
+            _get_text_part(db_project.team_size_preference),
+            _get_text_part(db_project.project_status),
+            _get_text_part(db_project.start_date),
+            _get_text_part(db_project.end_date),
+            _get_text_part(db_project.estimated_weekly_hours),
+            _get_text_part(db_project.location)
+        ])).strip()
 
-    siliconflow_api_key_for_embedding = None
-    # 重新从数据库查询创建者，确保获取最新状态
-    project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
-    if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
-        try:
-            siliconflow_api_key_for_embedding = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
-            print(f"DEBUG_EMBEDDING_KEY: 使用项目创建者配置的硅基流动 API 密钥更新项目嵌入。")
-        except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密项目创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用占位符。")
-            siliconflow_api_key_for_embedding = None
-    else:
-        print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
+        siliconflow_api_key_for_embedding = None
+        # 重新从数据库查询创建者，确保获取最新状态
+        project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
+        if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
+            try:
+                siliconflow_api_key_for_embedding = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
+                print(f"DEBUG_EMBEDDING_KEY: 使用项目创建者配置的硅基流动 API 密钥更新项目嵌入。")
+            except Exception as e:
+                print(f"ERROR_EMBEDDING_KEY: 解密项目创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用占位符。")
+                siliconflow_api_key_for_embedding = None
+        else:
+            print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
 
-    if db_project.combined_text:
-        try:
-            new_embedding = await ai_core.get_embeddings_from_api(
-                [db_project.combined_text],
-                api_key=siliconflow_api_key_for_embedding
-            )
-            if new_embedding:
-                db_project.embedding = new_embedding[0]
-            print(f"DEBUG: 项目 {project_id} 嵌入向量已更新。")
-        except Exception as e:
-            print(f"ERROR: 更新项目 {project_id} 嵌入向量失败: {e}")
+        if db_project.combined_text:
+            try:
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [db_project.combined_text],
+                    api_key=siliconflow_api_key_for_embedding
+                )
+                if new_embedding:
+                    db_project.embedding = new_embedding[0]
+                print(f"DEBUG: 项目 {project_id} 嵌入向量已更新。")
+            except Exception as e:
+                print(f"ERROR: 更新项目 {project_id} 嵌入向量失败: {e}")
 
-    db.add(db_project)  # 再次添加，这次是为了保存 combined_text 和 embedding 的更新
-    # 注意：最终的 commit 是由 get_db 依赖项在整个请求结束后自动处理。
-    # 这确保了所有在这次 `/projects/` PUT 请求中发生的数据库操作（除了项目状态提前提交的那部分）都是原子性的。
+        db.add(db_project)  # 再次添加，确保 combined_text 和 embedding 的更新被会话跟踪
 
-    # **<<<<< 由于主要逻辑已在前面的 commit 中完成，这里不需要额外的 db.refresh(db_project) >>>>>**
-    # 并且，不再尝试直接修改 `db_project.required_skills`/`required_roles` 的类型，因为它们在ORM层面就是JSONB
-    # FastAPI 会自动处理响应时的序列化。
+        db.commit()  # 现在，这里是唯一也是最终的提交！
+        print(f"DEBUG: 项目 {project_id} 信息更新请求处理完毕，所有事务已提交。")
+        return db_project  # 返回 ProjectResponse 时会自动从会话或数据库中获取最新状态
 
-    print(f"DEBUG: 项目 {project_id} 信息更新请求处理完毕。")
-    return db_project  # 返回 ProjectResponse 时会从数据库中获取最新状态
+    except Exception as e:  # 捕获所有异常并回滚
+        db.rollback()
+        print(f"ERROR_PROJECT_UPDATE_GLOBAL: 项目 {project_id} 更新过程中发生错误，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"项目更新失败：{e}",
+        )
 
 
 # --- AI匹配接口 ---
@@ -3092,70 +3087,79 @@ async def delete_daily_record(
     return {"message": "Daily record deleted successfully"}
 
 
-# --- 用户课程管理接口 (新增) ---
+# --- 用户课程管理接口 ---
 @app.put("/users/me/courses/{course_id}", response_model=schemas.UserCourseResponse,
          summary="更新当前用户课程学习进度和状态")
 async def update_user_course_progress(
         course_id: int,
-        # 假设这里只接收进度和状态，可以根据需要扩展 schemas.UserCourseBase 来定义更新模型
-        # 或者直接使用 Dict[str, Any] + 内部校验
         update_data: Dict[str, Any],  # 例如 {"progress": 0.8, "status": "completed"}
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG: 用户 {current_user_id} 尝试更新课程 {course_id} 的进度。")
 
-    user_course = db.query(UserCourse).filter(
-        UserCourse.student_id == current_user_id,
-        UserCourse.course_id == course_id
-    ).first()
+    try:  # 将整个接口逻辑包裹在一个 try 块中，统一提交
+        user_course = db.query(UserCourse).filter(
+            UserCourse.student_id == current_user_id,
+            UserCourse.course_id == course_id
+        ).first()
 
-    if not user_course:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未注册该课程或课程未找到。")
+        if not user_course:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未注册该课程或课程未找到。")
 
-    # **<<<<< 新增：检查课程状态是否变为“已完成”，并奖励积分 >>>>>**
-    old_status = user_course.status
-    new_status = update_data.get("status")
+        old_status = user_course.status
+        new_status = update_data.get("status")
 
-    if new_status == "completed" and old_status != "completed":
-        user = db.query(Student).filter(Student.id == current_user_id).first()
-        if user:
-            # 奖励课程完成积分
-            course_completion_points = 30  # 完成课程奖励30积分
-            await _award_points(
-                db=db,
-                user=user,
-                amount=course_completion_points,
-                reason=f"完成课程：'{user_course.course.title if user_course.course else course_id}'",  # 尝试获取课程标题
-                transaction_type="EARN",
-                related_entity_type="course",
-                related_entity_id=course_id
-            )
-            # 检查学生的成就
-            await _check_and_award_achievements(db, current_user_id)
-            print(
-                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 完成课程 {course_id}，获得 {course_completion_points} 积分并检查成就。")
-    # **<<<<< 新增结束 >>>>>**
+        # 更新进度和状态 (先更新到ORM对象，等待最终提交)
+        if "progress" in update_data and isinstance(update_data["progress"], (int, float)):
+            user_course.progress = update_data["progress"]
+        if "status" in update_data and isinstance(update_data["status"], str):
+            user_course.status = update_data["status"]
 
-    # 更新进度和状态
-    if "progress" in update_data and isinstance(update_data["progress"], (int, float)):
-        user_course.progress = update_data["progress"]
-    if "status" in update_data and isinstance(update_data["status"], str):
-        # 简化：假设传入的状态都是合法的，实际应该校验 Literal
-        user_course.status = update_data["status"]
+        user_course.last_accessed = func.now()  # 更新上次访问时间
 
-    user_course.last_accessed = func.now()  # 更新上次访问时间
+        db.add(user_course)  # 将修改后的user_course对象添加到会话中
 
-    db.add(user_course)
-    db.commit()
-    db.refresh(user_course)
+        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 UserCourse 的最新状态对查询可见！ >>>>>**
+        if new_status == "completed" and old_status != "completed":
+            db.flush()  # 确保 user_course 的 completed 状态已刷新到数据库会话，供 _check_and_award_achievements 查询
+            print(f"DEBUG_FLUSH: 用户 {current_user_id} 课程 {course_id} 状态更新已刷新到会话。")
 
-    # 填充 UserCourseResponse 中的 Course 标题，如果需要的话
-    if user_course.course is None:  # 如果没有通过joinedload加载或者没这个关系，手动查一下
-        user_course.course = db.query(Course).filter(Course.id == user_course.course_id).first()
+        # 检查课程状态是否变为“已完成”，并奖励积分
+        if new_status == "completed" and old_status != "completed":
+            user = db.query(Student).filter(Student.id == current_user_id).first()
+            if user:
+                course_completion_points = 30
+                await _award_points(
+                    db=db,
+                    user=user,
+                    amount=course_completion_points,
+                    reason=f"完成课程：'{user_course.course.title if user_course.course else course_id}'",
+                    transaction_type="EARN",
+                    related_entity_type="course",
+                    related_entity_id=course_id
+                )
+                await _check_and_award_achievements(db, current_user_id)
+                print(
+                    f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 完成课程 {course_id}，获得 {course_completion_points} 积分并检查成就 (待提交)。")
 
-    print(f"DEBUG: 用户 {current_user_id} 课程 {course_id} 进度更新成功。")
-    return user_course  # 返回 user_course 才能映射到 UserCourseResponse
+        db.commit()  # 现在，这里是唯一也是最终的提交！
+
+        # 填充 UserCourseResponse 中的 Course 标题，如果需要的话
+        if user_course.course is None:
+            user_course.course = db.query(Course).filter(Course.id == user_course.course_id).first()
+
+        print(f"DEBUG: 用户 {current_user_id} 课程 {course_id} 进度更新成功，所有事务已提交。")
+        return user_course  # 返回 user_course 才能映射到 UserCourseResponse
+
+    except Exception as e:  # 捕获所有异常并回滚
+        db.rollback()
+        print(
+            f"ERROR_USER_COURSE_UPDATE_GLOBAL: 用户 {current_user_id} 课程 {course_id} 更新过程中发生错误，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"课程更新失败：{e}",
+        )
 
 
 # --- 文件夹管理接口 ---
@@ -4643,85 +4647,93 @@ async def create_forum_topic(
     """
     print(f"DEBUG: 用户 {current_user_id} 尝试发布话题: {topic_data.title}")
 
-    # 验证共享内容是否存在 (如果提供了 shared_item_type 和 shared_item_id)
-    if topic_data.shared_item_type and topic_data.shared_item_id:
-        model = None
-        if topic_data.shared_item_type == "note":
-            model = Note
-        elif topic_data.shared_item_type == "daily_record":
-            model = DailyRecord
-        elif topic_data.shared_item_type == "course":
-            model = Course
-        elif topic_data.shared_item_type == "project":
-            model = Project
-        elif topic_data.shared_item_type == "knowledge_article":
-            model = KnowledgeArticle
-        # Add more types if needed
+    try: # 将整个接口逻辑包裹在一个 try 块中，统一提交
+        # 验证共享内容是否存在 (如果提供了 shared_item_type 和 shared_item_id)
+        if topic_data.shared_item_type and topic_data.shared_item_id:
+            model = None
+            if topic_data.shared_item_type == "note":
+                model = Note
+            elif topic_data.shared_item_type == "daily_record":
+                model = DailyRecord
+            elif topic_data.shared_item_type == "course":
+                model = Course
+            elif topic_data.shared_item_type == "project":
+                model = Project
+            elif topic_data.shared_item_type == "knowledge_article":
+                model = KnowledgeArticle
 
-        if model:
-            shared_item = db.query(model).filter(model.id == topic_data.shared_item_id).first()
-            if not shared_item:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                    detail=f"Shared item of type {topic_data.shared_item_type} with ID {topic_data.shared_item_id} not found.")
+            if model:
+                shared_item = db.query(model).filter(model.id == topic_data.shared_item_id).first()
+                if not shared_item:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                        detail=f"Shared item of type {topic_data.shared_item_type} with ID {topic_data.shared_item_id} not found.")
 
-    # 组合文本用于嵌入
-    combined_text = (
-            (topic_data.title or "") + ". " +
-            (topic_data.content or "") + ". " +
-            (topic_data.tags or "") + ". " +
-            (topic_data.shared_item_type or "")
-    ).strip()
+        # 组合文本用于嵌入
+        combined_text = (
+                (topic_data.title or "") + ". " +
+                (topic_data.content or "") + ". " +
+                (topic_data.tags or "") + ". " +
+                (topic_data.shared_item_type or "")
+        ).strip()
 
-    embedding = [0.0] * 1024  # 默认零向量
-    if combined_text:
-        try:
-            new_embedding = ai_core.get_embeddings_from_api([combined_text])
-            embedding = new_embedding[0]
-            print(f"DEBUG: 话题嵌入向量已生成。")
-        except Exception as e:
-            print(f"ERROR: 生成话题嵌入向量失败: {e}")
+        embedding = [0.0] * 1024  # 默认零向量
+        if combined_text:
+            try:
+                new_embedding = ai_core.get_embeddings_from_api([combined_text])
+                embedding = new_embedding[0]
+                print(f"DEBUG: 话题嵌入向量已生成。")
+            except Exception as e:
+                print(f"ERROR: 生成话题嵌入向量失败: {e}")
 
-    db_topic = ForumTopic(
-        owner_id=current_user_id,
-        title=topic_data.title,
-        content=topic_data.content,
-        shared_item_type=topic_data.shared_item_type,
-        shared_item_id=topic_data.shared_item_id,
-        tags=topic_data.tags,
-        combined_text=combined_text,
-        embedding=embedding
-    )
-
-    db.add(db_topic)
-    db.commit()
-    db.refresh(db_topic)
-    topic_author = db.query(Student).filter(Student.id == current_user_id).first()
-    if topic_author:
-        topic_post_points = 15  # 发布话题奖励15积分
-        await _award_points(
-            db=db,
-            user=topic_author,
-            amount=topic_post_points,
-            reason=f"发布论坛话题：'{db_topic.title}'",
-            transaction_type="EARN",
-            related_entity_type="forum_topic",
-            related_entity_id=db_topic.id
+        db_topic = ForumTopic(
+            owner_id=current_user_id,
+            title=topic_data.title,
+            content=topic_data.content,
+            shared_item_type=topic_data.shared_item_type,
+            shared_item_id=topic_data.shared_item_id,
+            tags=topic_data.tags,
+            combined_text=combined_text,
+            embedding=embedding
         )
-        # 检查作者的成就
-        await _check_and_award_achievements(db, current_user_id)
-        print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就。")
-    # **<<<<< 新增结束 >>>>>**
 
-    # 填充 owner_name
-    owner_name = db.query(Student).filter(Student.id == current_user_id).first().name or "未知用户"
-    db_topic.owner_name = owner_name
+        db.add(db_topic)
+        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 db_topic 对查询可见！ >>>>>**
+        db.flush() # 确保话题已刷新到数据库会话，供 _check_and_award_achievements 查询
+        print(f"DEBUG_FLUSH: 话题 {db_topic.id} 已刷新到会话。")
 
-    # 填充 owner_name
-    owner_name = db.query(Student).filter(Student.id == current_user_id).first().name or "未知用户"
-    db_topic.owner_name = owner_name
+        # 发布话题奖励积分
+        topic_author = db.query(Student).filter(Student.id == current_user_id).first()
+        if topic_author:
+            topic_post_points = 15
+            await _award_points(
+                db=db,
+                user=topic_author,
+                amount=topic_post_points,
+                reason=f"发布论坛话题：'{db_topic.title}'",
+                transaction_type="EARN",
+                related_entity_type="forum_topic",
+                related_entity_id=db_topic.id
+            )
+            await _check_and_award_achievements(db, current_user_id)
+            print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就 (待提交)。")
 
-    print(f"DEBUG: 话题 '{db_topic.title}' (ID: {db_topic.id}) 发布成功。")
-    return db_topic
+        db.commit() # 现在，这里是唯一也是最终的提交！
+        db.refresh(db_topic) # 提交后刷新db_topic，确保返回完整的对象
+
+        # 填充 owner_name
+        owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
+        db_topic.owner_name = owner_obj.name if owner_obj else "未知用户"
+
+        print(f"DEBUG: 话题 '{db_topic.title}' (ID: {db_topic.id}) 发布成功，所有事务已提交。")
+        return db_topic
+
+    except Exception as e: # 捕获所有异常并回滚
+        db.rollback()
+        print(f"ERROR_CREATE_TOPIC_GLOBAL: 创建论坛话题失败，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"创建论坛话题失败: {e}",
+        )
 
 
 # 辅助函数：获取话题列表并填充动态信息
@@ -4926,64 +4938,72 @@ async def add_forum_comment(
     """
     print(f"DEBUG: 用户 {current_user_id} 尝试为话题 {topic_id} 添加评论。")
 
-    # 验证话题是否存在
-    db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id).first()
-    if not db_topic:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
+    try: # 将整个接口逻辑包裹在一个 try 块中，统一提交
+        # 验证话题是否存在
+        db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id).first()
+        if not db_topic:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
 
-    # 验证父评论是否存在 (如果提供了 parent_comment_id)
-    if comment_data.parent_comment_id:
-        parent_comment = db.query(ForumComment).filter(
-            ForumComment.id == comment_data.parent_comment_id,
-            ForumComment.topic_id == topic_id  # 确保父评论属于同一话题
-        ).first()
-        if not parent_comment:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parent comment not found in this topic.")
+        # 验证父评论是否存在 (如果提供了 parent_comment_id)
+        if comment_data.parent_comment_id:
+            parent_comment = db.query(ForumComment).filter(
+                ForumComment.id == comment_data.parent_comment_id,
+                ForumComment.topic_id == topic_id  # 确保父评论属于同一话题
+            ).first()
+            if not parent_comment:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parent comment not found in this topic.")
 
-    db_comment = ForumComment(
-        topic_id=topic_id,
-        owner_id=current_user_id,
-        content=comment_data.content,
-        parent_comment_id=comment_data.parent_comment_id
-    )
-
-    db.add(db_comment)
-    # 更新话题的评论数
-    db_topic.comments_count += 1
-    db.add(db_topic)  # SQLAlchemy会自动识别这是更新
-    db.commit()
-    db.refresh(db_comment)
-
-    # **<<<<< 发布评论奖励积分 >>>>>**
-    comment_author = db.query(Student).filter(Student.id == current_user_id).first()
-    if comment_author:
-        comment_post_points = 5  # 发布评论奖励5积分
-        await _award_points(
-            db=db,
-            user=comment_author,
-            amount=comment_post_points,
-            reason=f"发布论坛评论：'{db_comment.content[:20]}...'",
-            transaction_type="EARN",
-            related_entity_type="forum_comment",
-            related_entity_id=db_comment.id
+        db_comment = ForumComment(
+            topic_id=topic_id,
+            owner_id=current_user_id,
+            content=comment_data.content,
+            parent_comment_id=comment_data.parent_comment_id
         )
-        # 检查作者的成就
-        await _check_and_award_achievements(db, current_user_id)
-        print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布评论，获得 {comment_post_points} 积分并检查成就。")
-    # **<<<<< 新增结束 >>>>>**
 
-    # 填充 owner_name
-    owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
-    db_comment._owner_name = owner_obj.name  # Access private attribute to set
-    db_comment.is_liked_by_current_user = False  # Default state
+        db.add(db_comment)
+        # 更新话题的评论数 (这是一个在会话中修改的操作，等待最终提交)
+        db_topic.comments_count += 1
+        db.add(db_topic)  # SQLAlchemy会自动识别这是更新
 
-    # 填充 owner_name
-    owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
-    db_comment._owner_name = owner_obj.name  # Access private attribute to set
-    db_comment.is_liked_by_current_user = False  # Default state
+        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 db_comment 和 db_topic 对查询可见！ >>>>>**
+        db.flush() # 确保评论和话题的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
+        print(f"DEBUG_FLUSH: 评论 {db_comment.id} 和话题 {db_topic.id} 更新已刷新到会话。")
 
-    print(f"DEBUG: 话题 {db_topic.id} 收到评论 (ID: {db_comment.id})。")
-    return db_comment
+        # 发布评论奖励积分
+        comment_author = db.query(Student).filter(Student.id == current_user_id).first()
+        if comment_author:
+            comment_post_points = 5
+            await _award_points(
+                db=db,
+                user=comment_author,
+                amount=comment_post_points,
+                reason=f"发布论坛评论：'{db_comment.content[:20]}...'",
+                transaction_type="EARN",
+                related_entity_type="forum_comment",
+                related_entity_id=db_comment.id
+            )
+            await _check_and_award_achievements(db, current_user_id)
+            print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布评论，获得 {comment_post_points} 积分并检查成就 (待提交)。")
+
+        db.commit() # 现在，这里是唯一也是最终的提交！
+        db.refresh(db_comment) # 提交后刷新db_comment以返回完整对象
+
+        # 填充 owner_name
+        owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
+        db_comment._owner_name = owner_obj.name # Access private attribute to set
+        db_comment.is_liked_by_current_user = False # Default state
+
+        print(f"DEBUG: 话题 {db_topic.id} 收到评论 (ID: {db_comment.id})，所有事务已提交。")
+        return db_comment
+
+    except Exception as e: # 捕获所有异常并回滚
+        db.rollback()
+        print(f"ERROR_ADD_COMMENT_GLOBAL: 添加论坛评论失败，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"添加论坛评论失败: {e}",
+        )
+
 
 
 @app.get("/forum/topics/{topic_id}/comments/", response_model=List[schemas.ForumCommentResponse],
@@ -5118,77 +5138,92 @@ async def like_forum_item(
     必须提供 topic_id 或 comment_id 中的一个。同一用户不能重复点赞同一项。
     点赞成功后，为被点赞的话题/评论的作者奖励积分，并检查其成就。
     """
-    topic_id = like_data.get("topic_id")
-    comment_id = like_data.get("comment_id")
+    print(f"DEBUG: 用户 {current_user_id} 尝试点赞。")
+    try: # 将整个接口逻辑包裹在一个 try 块中，统一提交
+        topic_id = like_data.get("topic_id")
+        comment_id = like_data.get("comment_id")
 
-    if not topic_id and not comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Either topic_id or comment_id must be provided.")
-    if topic_id and comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Only one of topic_id or comment_id can be provided.")
+        if not topic_id and not comment_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either topic_id or comment_id must be provided.")
+        if topic_id and comment_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only one of topic_id or comment_id can be provided.")
 
-    existing_like = None
-    target_item_owner_id = None
-    if topic_id:
-        existing_like = db.query(ForumLike).filter(ForumLike.owner_id == current_user_id,
-                                                   ForumLike.topic_id == topic_id).first()
-        if not existing_like:
-            target_item = db.query(ForumTopic).filter(ForumTopic.id == topic_id).first()
-            if not target_item:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
-            target_item.likes_count += 1
-            db.add(target_item)
-            target_item_owner_id = target_item.owner_id  # 获取话题作者ID
-            related_entity_type = "forum_topic"
-            related_entity_id = topic_id
-    elif comment_id:
-        existing_like = db.query(ForumLike).filter(ForumLike.owner_id == current_user_id,
-                                                   ForumLike.comment_id == comment_id).first()
-        if not existing_like:
-            target_item = db.query(ForumComment).filter(ForumComment.id == comment_id).first()
-            if not target_item:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum comment not found.")
-            target_item.likes_count += 1
-            db.add(target_item)
-            target_item_owner_id = target_item.owner_id  # 获取评论作者ID
-            related_entity_type = "forum_comment"
-            related_entity_id = comment_id
+        existing_like = None
+        target_item_owner_id = None
+        related_entity_type = None
+        related_entity_id = None
 
-    if existing_like:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already liked this item.")
+        if topic_id:
+            existing_like = db.query(ForumLike).filter(ForumLike.owner_id == current_user_id,
+                                                       ForumLike.topic_id == topic_id).first()
+            if not existing_like:
+                target_item = db.query(ForumTopic).filter(ForumTopic.id == topic_id).first()
+                if not target_item:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
+                target_item.likes_count += 1
+                db.add(target_item) # 在会话中更新点赞数
+                target_item_owner_id = target_item.owner_id # 获取话题作者ID
+                related_entity_type = "forum_topic"
+                related_entity_id = topic_id
+        elif comment_id:
+            existing_like = db.query(ForumLike).filter(ForumLike.owner_id == current_user_id,
+                                                       ForumLike.comment_id == comment_id).first()
+            if not existing_like:
+                target_item = db.query(ForumComment).filter(ForumComment.id == comment_id).first()
+                if not target_item:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum comment not found.")
+                target_item.likes_count += 1
+                db.add(target_item) # 在会话中更新点赞数
+                target_item_owner_id = target_item.owner_id # 获取评论作者ID
+                related_entity_type = "forum_comment"
+                related_entity_id = comment_id
 
-    db_like = ForumLike(
-        owner_id=current_user_id,
-        topic_id=topic_id,
-        comment_id=comment_id
-    )
+        if existing_like:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already liked this item.")
 
-    db.add(db_like)
-    db.commit()  # 提交点赞和likes_count的更新
-    db.refresh(db_like)
+        db_like = ForumLike(
+            owner_id=current_user_id,
+            topic_id=topic_id,
+            comment_id=comment_id
+        )
 
-    # **<<<<< 新增：为被点赞的作者奖励积分和检查成就 >>>>>**
-    if target_item_owner_id and target_item_owner_id != current_user_id:  # 奖励积分，但不能点赞自己给自己加分
-        owner_user = db.query(Student).filter(Student.id == target_item_owner_id).first()
-        if owner_user:
-            like_points = 5  # 每次获得一个点赞奖励5积分
-            await _award_points(
-                db=db,
-                user=owner_user,
-                amount=like_points,
-                reason=f"获得点赞：{target_item.title if topic_id else target_item.content[:20]}...",  # 简要描述被点赞内容
-                transaction_type="EARN",
-                related_entity_type=related_entity_type,
-                related_entity_id=related_entity_id
-            )
-            # 检查被点赞作者的成就
-            await _check_and_award_achievements(db, target_item_owner_id)
-            print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {target_item_owner_id} 因获得点赞奖励 {like_points} 积分并检查成就。")
-    # **<<<<< 新增结束 >>>>>**
+        db.add(db_like) # 将点赞记录添加到会话
 
-    print(f"DEBUG: 用户 {current_user_id} 点赞成功 (Topic ID: {topic_id or 'N/A'}, Comment ID: {comment_id or 'N/A'})。")
-    return db_like
+        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 db_like 和 target_item 对查询可见！ >>>>>**
+        db.flush() # 确保点赞记录和被点赞项的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
+        print(f"DEBUG_FLUSH: 点赞记录 {db_like.id} 和被点赞项更新已刷新到会话。")
+
+        # 为被点赞的作者奖励积分和检查成就
+        if target_item_owner_id and target_item_owner_id != current_user_id: # 奖励积分，但不能点赞自己给自己加分
+            owner_user = db.query(Student).filter(Student.id == target_item_owner_id).first()
+            if owner_user:
+                like_points = 5
+                await _award_points(
+                    db=db,
+                    user=owner_user,
+                    amount=like_points,
+                    reason=f"获得点赞：{target_item.title if topic_id else target_item.content[:20]}...",
+                    transaction_type="EARN",
+                    related_entity_type=related_entity_type,
+                    related_entity_id=related_entity_id
+                )
+                await _check_and_award_achievements(db, target_item_owner_id)
+                print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {target_item_owner_id} 因获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
+
+        db.commit() # 现在，这里是唯一也是最终的提交！
+        db.refresh(db_like) # 提交后刷新db_like以返回完整对象
+
+        print(f"DEBUG: 用户 {current_user_id} 点赞成功 (Topic ID: {topic_id or 'N/A'}, Comment ID: {comment_id or 'N/A'})。所有事务已提交。")
+        return db_like
+
+    except Exception as e: # 捕获所有异常并回滚
+        db.rollback()
+        print(f"ERROR_LIKE_FORUM_GLOBAL: 点赞失败，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"点赞失败: {e}",
+        )
+
 
 
 @app.delete("/forum/likes/", summary="取消点赞论坛话题或评论")
