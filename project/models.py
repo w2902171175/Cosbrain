@@ -594,6 +594,9 @@ class Course(Base):
     category = Column(String)
     total_lessons = Column(Integer)
     avg_rating = Column(Float)
+    cover_image_url = Column(String, nullable=True, comment="课程封面图片URL")
+    required_skills = Column(JSONB, nullable=False, server_default='[]',
+                             comment="学习该课程所需基础技能列表及熟练度，或课程教授的技能")
 
     combined_text = Column(Text)
     embedding = Column(Vector(1024))
@@ -604,6 +607,7 @@ class Course(Base):
     notes_made = relationship("Note", back_populates="course")
     user_courses = relationship("UserCourse", back_populates="course")
     chat_room = relationship("ChatRoom", back_populates="course", uselist=False, cascade="all, delete-orphan")
+    materials = relationship("CourseMaterial", back_populates="course", cascade="all, delete-orphan")
 
 
 class UserCourse(Base):
@@ -618,6 +622,42 @@ class UserCourse(Base):
 
     student = relationship("Student", back_populates="user_courses")
     course = relationship("Course", back_populates="user_courses")
+
+
+class CourseMaterial(Base):
+    __tablename__ = "course_materials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+
+    title = Column(String, nullable=False, comment="材料标题，如：Lecture 1 Introduction to AI")
+    # 材料类型: 'file' (本地上传文件), 'link' (外部链接), 'text' (少量文本内容)
+    type = Column(String, nullable=False, comment="材料类型：'file', 'link', 'text'")
+
+    # 如果是 'file' 类型，存储本地路径和原始文件名、文件类型、大小
+    file_path = Column(String, nullable=True, comment="本地文件存储路径")
+    original_filename = Column(String, nullable=True, comment="原始上传文件名")
+    file_type = Column(String, nullable=True, comment="文件MIME类型")
+    size_bytes = Column(Integer, nullable=True, comment="文件大小（字节）")
+
+    # 如果是 'link' 类型，存储URL
+    url = Column(String, nullable=True, comment="外部链接URL")
+
+    # 如果是 'text' 类型，或作为其他类型的补充描述
+    content = Column(Text, nullable=True, comment="材料的文本内容或简要描述")
+
+    # 嵌入相关，用于未来搜索或匹配
+    combined_text = Column(Text, nullable=True)
+    embedding = Column(Vector(1024), nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    # Relationships
+    course = relationship("Course", back_populates="materials")
+
+    UniqueConstraint('course_id', 'title', name='_course_material_title_uc'),  # 确保同一课程下材料标题唯一
+    UniqueConstraint('file_path', name='_course_material_file_path_uc'),  # 确保文件路径唯一，防止重复上传同一个文件
 
 
 # --- 旧的 CollectionItem (可以考虑未来删除或重构到 CollectedContent) ---

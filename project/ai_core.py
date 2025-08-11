@@ -24,9 +24,9 @@ from docx import Document as DocxDocument
 import PyPDF2
 
 from models import Student, Project, KnowledgeBase, KnowledgeArticle, Note, Course, KnowledgeDocument, \
-    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig
+    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial
 from schemas import WebSearchResult, WebSearchResponse, McpToolDefinition, McpStatusResponse, MatchedProject, \
-    MatchedStudent
+    MatchedStudent, MatchedCourse
 
 # --- 全局常量 ---
 INITIAL_CANDIDATES_K = 50
@@ -1555,33 +1555,32 @@ def _calculate_location_match_score(student_location: Optional[str], project_loc
     return score
 
 
-# --- 辅助函数：识别增强机会 ---
 def _identify_enhancement_opportunities(
         student: Student,
-        project: Project,
-        match_type: Literal["student_to_project", "project_to_student"]
+        match_type: Literal["student_to_project", "project_to_student", "student_to_course"],
+        project: Optional[Project] = None,
+        course: Optional["Course"] = None
 ) -> Dict[str, Any]:
     """
-    识别学生-项目匹配中的增强机会，例如学生缺失的技能、项目需要的角色。
+    识别学生-项目/课程匹配中的增强机会，例如学生缺失的技能、项目需要的角色。
     返回一个字典，包含建议信息，供LLM生成行动建议。
     """
     enhancements = {
         "missing_skills_for_student": [],  # 学生需要提升的技能
         "missing_proficiency_for_student": [],  # 学生熟练度不足的技能
-        "required_roles_not_covered_by_student": [],  # 项目所需但学生未声称扮演的角色
+        "required_roles_not_covered_by_student": [],  # 项目/课程所需但学生未声称扮演的角色
         "student_learn_suggestion": "",  # 针对学生的学习建议文本
-        "project_recruit_suggestion": ""  # 针对项目的招聘建议文本
+        "project_recruit_suggestion": ""  # 针对项目的招聘建议文本 (对课程不适用)
     }
 
-    # --- 拷贝 _calculate_proficiency_match_score 中的强健解析函数 ---
-    # 定义在局部，只供此函数使用，避免全局污染或交叉依赖过深
+    # 用于本地解析技能数据的辅助函数 (与_calculate_proficiency_match_score中的一致)
     default_skill_level = "初窥门径"
     valid_skill_levels = ["初窥门径", "登堂入室", "融会贯通", "炉火纯青"]
 
     def _parse_single_skill_entry_to_dict_local(single_skill_raw_data: Any) -> Optional[Dict]:
         """
         尝试将各种原始技能条目格式 (dict, str, list) 规范化为 {'name': '...', 'level': '...'}.
-        特别处理异常字符串化和嵌套的情况。(本地副本，与_calculate_proficiency_match_score中的一致)
+        特别处理异常字符串化和嵌套的情况。(本地副本)
         """
         if isinstance(single_skill_raw_data, dict):
             name = single_skill_raw_data.get("name")
@@ -1621,27 +1620,19 @@ def _identify_enhancement_opportunities(
                         for item in parsed_content:
                             recursively_parsed_item = _parse_single_skill_entry_to_dict_local(item)
                             if recursively_parsed_item:
-                                # print(f"WARNING_MATCH_SKILLS_LOCAL: Skill string '{processed_str}' parsed by {parser_name} to a list. Recursively extracted valid dict: {recursively_parsed_item.get('name', 'N/A')}.")
                                 return recursively_parsed_item
                 except (json.JSONDecodeError, ValueError, SyntaxError):
                     pass
-
             if processed_str.strip():
-                # print(f"WARNING_MATCH_SKILLS_LOCAL: SKILL_PARSE_FALLBACK: '{processed_str}' not parsable. Treating as simple name.")
                 return {"name": processed_str.strip(), "level": default_skill_level}
             return None
-
         elif isinstance(single_skill_raw_data, list):
-            # print(f"WARNING_MATCH_SKILLS_LOCAL: Received a list as a single skill entry: '{single_skill_raw_data}'. Attempting to extract valid dict by iterating.")
             for item in single_skill_raw_data:
                 parsed_item = _parse_single_skill_entry_to_dict_local(item)
                 if parsed_item and "name" in parsed_item and parsed_item["name"].strip():
                     return parsed_item
-            # print(f"WARNING_MATCH_SKILLS_LOCAL: No valid skill dict found within the received list: {single_skill_raw_data}.")
             return None
-
         else:
-            # print(f"WARNING_MATCH_SKILLS_LOCAL: Unexpected single skill entry type: {type(single_skill_raw_data)} -> '{single_skill_raw_data}'.")
             return None
 
     def _ensure_top_level_list_local(raw_input: Any) -> List[Any]:
@@ -1670,36 +1661,50 @@ def _identify_enhancement_opportunities(
                 if isinstance(parsed, list): return parsed
             except (ValueError, SyntaxError):
                 pass
-            return []  # Cannot parse as a list
+            return []
 
         if raw_input is None: return []
 
-        return []  # Unexpected data type
+        return []
+
+    # 确定目标项和其所需技能/角色
+    target_item_for_skills = None
+    target_item_required_roles = []
+
+    if project:
+        target_item_for_skills = project
+        target_item_required_roles = _ensure_top_level_list_local(project.required_roles)
+    elif course:
+        target_item_for_skills = course
+        # 课程通常没有“角色”，这里将其清空，或者可以扩展为“学习小组角色”等
+        target_item_required_roles = []
+    else:
+        # 如果既不是项目也不是课程，无法识别目标
+        print(f"WARNING_ENHANCE: _identify_enhancement_opportunities called without a valid project or course target.")
+        return enhancements
 
     # 1. 解析技能数据 (确保它们是可迭代的列表，内部元素是字典)
-    # 使用本地健壮解析函数处理原始JSONB字段可能返回的字符串或列表
     student_skills_processed = [
         _parse_single_skill_entry_to_dict_local(s_item)
         for s_item in _ensure_top_level_list_local(student.skills)
-        if _parse_single_skill_entry_to_dict_local(s_item) is not None  # Only add if successfully parsed to dict
+        if _parse_single_skill_entry_to_dict_local(s_item) is not None
     ]
 
-    project_required_skills_processed = [
+    target_item_required_skills_processed = [
         _parse_single_skill_entry_to_dict_local(r_item)
-        for r_item in _ensure_top_level_list_local(project.required_skills)
-        if _parse_single_skill_entry_to_dict_local(r_item) is not None  # Only add if successfully parsed to dict
+        for r_item in _ensure_top_level_list_local(target_item_for_skills.required_skills)
+        if _parse_single_skill_entry_to_dict_local(r_item) is not None
     ]
 
     # 构建学生技能映射 (name -> level_weight)
     student_skill_map = {s['name']: _get_skill_level_weight(s['level']) for s in student_skills_processed if
                          'name' in s and 'level' in s}
     student_skill_raw_level_map = {s['name']: s['level'] for s in student_skills_processed if
-                                   'name' in s and 'level' in s}  # 用于获取原始熟练度文本
+                                   'name' in s and 'level' in s}
 
     # 2. 识别缺失技能和熟练度不足
-    for req_skill in project_required_skills_processed:
+    for req_skill in target_item_required_skills_processed:
         if 'name' not in req_skill or 'level' not in req_skill:
-            # print(f"DEBUG_ENHANCE: Warn: Required skill entry missing name/level after parsing: {req_skill}")
             continue
 
         req_name = req_skill['name']
@@ -1709,35 +1714,27 @@ def _identify_enhancement_opportunities(
             enhancements["missing_skills_for_student"].append(req_name)
         else:
             student_level_weight = student_skill_map[req_name]
-            if student_level_weight < req_level_weight:  # 学生熟练度低于项目要求
+            if student_level_weight < req_level_weight:
                 enhancements["missing_proficiency_for_student"].append({
                     "skill": req_name,
                     "student_level": student_skill_raw_level_map.get(req_name, default_skill_level),
                     "project_level": req_skill['level']
                 })
 
-    # 3. 识别角色空缺
-    # 先处理项目的 required_roles，确保它是 List[str]
-    project_required_roles_processed = _ensure_top_level_list_local(project.required_roles)  # 可以直接复用列表解析器
+    # 3. 识别角色空缺 (仅对项目适用，对课程一般不适用)
+    if project:
+        student_preferred_role_lower = (student.preferred_role or "").lower()
 
-    student_preferred_role_lower = (student.preferred_role or "").lower()
+        for req_role in target_item_required_roles:
+            if not isinstance(req_role, str) or not req_role.strip():
+                continue
 
-    for req_role in project_required_roles_processed:
-        if not isinstance(req_role, str) or not req_role.strip():  # 确保识别到的角色是有效的字符串
-            continue
-
-        # 检查学生偏好角色是否明确覆盖了此所需角色
-        if req_role.lower() not in student_preferred_role_lower:
-            # 更精准的判断：如果学生的 preferred_role 是一个复合字符串，但我们这里是单角色对比
-            # 如果学生的 preferred_role 是类似 "前端开发，UI设计"，这里可以做更复杂的匹配
-            # 简化处理：只要项目所需角色不在学生明确偏好中，就视为未覆盖。
-            # 除非学生首选角色包含了所需角色的任何部分（如"全栈开发"可以覆盖"前端开发"）
-            # 对于简单的字符串匹配，只要不完全包含，即算缺失
-            if req_role not in enhancements["required_roles_not_covered_by_student"]:  # 避免重复添加
-                enhancements["required_roles_not_covered_by_student"].append(req_role)
+            if req_role.lower() not in student_preferred_role_lower:
+                if req_role not in enhancements["required_roles_not_covered_by_student"]:
+                    enhancements["required_roles_not_covered_by_student"].append(req_role)
 
     # 4. 生成文本建议 (供LLM使用)
-    if match_type == "student_to_project":
+    if match_type == "student_to_project" or match_type == "student_to_course":
         skill_suggestions = []
         if enhancements["missing_skills_for_student"]:
             skill_suggestions.append(f"学习或提升 {'、'.join(enhancements['missing_skills_for_student'])}")
@@ -1747,12 +1744,14 @@ def _identify_enhancement_opportunities(
                     f"将 {item['skill']} 技能从 {item['student_level']} 提升到 {item['project_level']} ")
 
         if skill_suggestions:
-            enhancements["student_learn_suggestion"] = f"为更好地匹配该项目，建议您：{'. '.join(skill_suggestions)}。"
+            item_type_str = "项目" if project else ("课程" if course else "目标")  # 根据哪个对象非None来确定
+            enhancements[
+                "student_learn_suggestion"] = f"为更好地匹配该{item_type_str}，建议您：{'. '.join(skill_suggestions)}。"  # [14]
 
-        if enhancements["required_roles_not_covered_by_student"]:
+        if enhancements["required_roles_not_covered_by_student"] and project:
             if enhancements["student_learn_suggestion"]:
                 enhancements["student_learn_suggestion"] += (
-                    f" 此外，您可以拓展您的角色能力，尝试承担 {'、'.join(enhancements['required_roles_not_covered_by_student'])} 等角色职能。")
+                    f" 此外，您可以拓展您的角色能力，尝试承担 {'、'.join(enhancements['required_roles_not_covered_by_student'])} 等角色职能。")  # [30]
             else:
                 enhancements["student_learn_suggestion"] = (
                     f" 建议您拓展您的角色能力，尝试承担 {'、'.join(enhancements['required_roles_not_covered_by_student'])} 等角色职能。")
@@ -1760,7 +1759,7 @@ def _identify_enhancement_opportunities(
     else:  # project_to_student
         recruit_suggestions = []
         if enhancements["missing_skills_for_student"]:
-            recruit_suggestions.append(f"学生缺少 {'、'.join(enhancements['missing_skills_for_student'])} 技能")
+            recruit_suggestions.append(f"学生缺少 {'、'.join(enhancements['missing_skills_for_student'])} 技能")  # [8]
         if enhancements["missing_proficiency_for_student"]:
             for item in enhancements["missing_proficiency_for_student"]:
                 recruit_suggestions.append(
@@ -1768,7 +1767,7 @@ def _identify_enhancement_opportunities(
 
         if recruit_suggestions:
             enhancements[
-                "project_recruit_suggestion"] = f"该项目与 {student.name} 的匹配度可以在技能方面通过以下方式提升：{'. '.join(recruit_suggestions)}。"
+                "project_recruit_suggestion"] = f"该项目与 {student.name} 的匹配度可以在技能方面通过以下方式提升：{'. '.join(recruit_suggestions)}。"  # [8]
 
         if enhancements["required_roles_not_covered_by_student"]:
             if enhancements["project_recruit_suggestion"]:
@@ -1787,17 +1786,17 @@ def _identify_enhancement_opportunities(
 # --- 辅助函数：使用LLM生成匹配理由 (包含行动建议和地理位置信息) ---
 async def _generate_match_rationale_llm(
         student: Student,
-        project: Project,
+        target_item: Union[Project, "Course"], # <-- MODIFICATION: 接受 Project 或 Course 对象
         sim_score: float,
         proficiency_score: float,
         time_score: float,
-        location_score: float, # <-- 新增：接收地理位置得分
+        location_score: float,
         enhancement_opportunities: Dict[str, Any],
-        match_type: Literal["student_to_project", "project_to_student"],
+        match_type: Literal["student_to_project", "project_to_student", "student_to_course"], # <-- MODIFICATION: 新增 student_to_course
         llm_api_key: Optional[str] = None
 ) -> str:
     """
-    根据学生和项目的详细信息、匹配分数、地理位置得分以及识别出的增强机会，利用LLM生成匹配理由和可行动建议。
+    根据学生、目标项目/课程的详细信息、匹配分数、地理位置得分以及识别出的增强机会，利用LLM生成匹配理由和可行动建议。
     """
     rationale_text = "AI匹配理由暂不可用。"
 
@@ -1808,25 +1807,25 @@ async def _generate_match_rationale_llm(
     # 构建 LLM 提示
     system_prompt = """
     你是一个智能匹配推荐系统的AI助手，需要为用户提供简洁、有说服力的匹配理由和可行动的建议。
-    请根据提供的学生和项目信息，以及各项匹配得分（嵌入相似度、技能熟练度、时间匹配、**地理位置匹配**），总结为什么他们是匹配的。
-    强调匹配度高的方面，并对匹配度低的部分提出可行的改进建议（例如学习特定技能、项目方考虑补充特定人才）。
+    请根据提供的学生和目标（项目或课程）信息，以及各项匹配得分（内容相关性、技能熟练度、时间匹配、地理位置匹配），总结为什么他们是匹配的。
+    强调匹配度高的方面，并对匹配度低的部分提出可行的改进建议（例如学习特定技能、寻找特定人才）。
     回复应简洁精炼，重点突出，不超过250字。建议以“**匹配理由**：...”开头，若有建议以“**行动建议**：...”结尾。
     """
 
     # 提取增强机会文本
     student_learn_suggestion = enhancement_opportunities.get("student_learn_suggestion", "")
-    project_recruit_suggestion = enhancement_opportunities.get("project_recruit_suggestion", "")
+    project_recruit_suggestion = enhancement_opportunities.get("project_recruit_suggestion", "") # 对项目有效，对课程可能不适用
 
     common_info_section = f"""
     匹配得分:
     内容相关性 (嵌入相似度): {sim_score:.2f}
     技能熟练度匹配: {proficiency_score:.2f}
     时间与投入度匹配: {time_score:.2f}
-    地理位置匹配: {location_score:.2f} # <-- 新增：地理位置得分
-    综合得分 (未标准化): {sim_score * 0.5 + proficiency_score * 0.3 + time_score * 0.1 + location_score * 0.1:.2f} # <-- 更新综合得分计算，权重请在主函数中保持一致
+    地理位置匹配: {location_score:.2f}
+    综合得分 (未标准化): {sim_score * 0.5 + proficiency_score * 0.3 + time_score * 0.1 + location_score * 0.1:.2f}
     """
 
-    if match_type == "student_to_project":
+    if match_type == "student_to_project": # [17]
         user_prompt = f"""
         学生信息:
         姓名: {student.name}, 专业: {student.major}
@@ -1834,31 +1833,31 @@ async def _generate_match_rationale_llm(
         兴趣: {student.interests or '无'}
         偏好角色: {student.preferred_role or '无'}
         可用时间: {student.availability or '未指定'}
-        地理位置: {student.location or '未指定'} # <-- 新增：学生地理位置
+        地理位置: {student.location or '未指定'}
 
         项目信息:
-        标题: {project.title}, 描述: {project.description}
-        所需技能: {json.dumps(project.required_skills, ensure_ascii=False)}
-        所需角色: {json.dumps(project.required_roles, ensure_ascii=False)}
-        时间范围: {project.start_date.strftime('%Y-%m-%d') if project.start_date else '未指定'} 至 {project.end_date.strftime('%Y-%m-%d') if project.end_date else '未指定'}
-        每周预计投入: {project.estimated_weekly_hours or '未指定'}小时
-        地理位置: {project.location or '未指定'} # <-- 新增：项目地理位置
+        标题: {target_item.title}, 描述: {target_item.description}
+        所需技能: {json.dumps(target_item.required_skills, ensure_ascii=False)}
+        所需角色: {json.dumps(target_item.required_roles, ensure_ascii=False)}
+        时间范围: {target_item.start_date.strftime('%Y-%m-%d') if target_item.start_date else '未指定'} 至 {target_item.end_date.strftime('%Y-%m-%d') if target_item.end_date else '未指定'}
+        每周预计投入: {target_item.estimated_weekly_hours or '未指定'}小时
+        地理位置: {target_item.location or '未指定'}
 
         {common_info_section}
 
         **针对学生的学习/提升建议**：{student_learn_suggestion if student_learn_suggestion else '无特殊建议。'}
 
-        请根据以上信息，为学生'{student.name}'推荐项目 '{project.title}' 提供匹配理由和可行动的建议。
+        请根据以上信息，为学生'{student.name}'推荐项目 '{target_item.title}' 提供匹配理由和可行动的建议。
         """
-    else: # project_to_student
+    elif match_type == "project_to_student":
         user_prompt = f"""
         项目信息:
-        标题: {project.title}, 描述: {project.description}
-        所需技能: {json.dumps(project.required_skills, ensure_ascii=False)}
-        所需角色: {json.dumps(project.required_roles, ensure_ascii=False)}
-        时间范围: {project.start_date.strftime('%Y-%m-%d') if project.start_date else '未指定'} 至 {project.end_date.strftime('%Y-%m-%d') if project.end_date else '未指定'}
-        每周预计投入: {project.estimated_weekly_hours or '未指定'}小时
-        地理位置: {project.location or '未指定'} # <-- 新增：项目地理位置
+        标题: {target_item.title}, 描述: {target_item.description}
+        所需技能: {json.dumps(target_item.required_skills, ensure_ascii=False)}
+        所需角色: {json.dumps(target_item.required_roles, ensure_ascii=False)}
+        时间范围: {target_item.start_date.strftime('%Y-%m-%d') if target_item.start_date else '未指定'} 至 {target_item.end_date.strftime('%Y-%m-%d') if target_item.end_date else '未指定'}
+        每周预计投入: {target_item.estimated_weekly_hours or '未指定'}小时
+        地理位置: {target_item.location or '未指定'}
 
         学生信息:
         姓名: {student.name}, 专业: {student.major}
@@ -1866,14 +1865,40 @@ async def _generate_match_rationale_llm(
         兴趣: {student.interests or '无'}
         偏好角色: {student.preferred_role or '无'}
         可用时间: {student.availability or '未指定'}
-        地理位置: {student.location or '未指定'} # <-- 新增：学生地理位置
+        地理位置: {student.location or '未指定'}
 
         {common_info_section}
 
         **针对项目方的招聘/补充建议**：{project_recruit_suggestion if project_recruit_suggestion else '无特殊建议。'}
 
-        请根据以上信息，为项目'{project.title}'推荐学生 '{student.name}' 提供匹配理由和可行动的建议。
+        请根据以上信息，为项目'{target_item.title}'推荐学生 '{student.name}' 提供匹配理由和可行动的建议。
         """
+    # 新增 Course 推荐的子类型
+    elif match_type == "student_to_course":
+        user_prompt = f"""
+        学生信息:
+        姓名: {student.name}, 专业: {student.major}
+        技能: {json.dumps(student.skills, ensure_ascii=False)}
+        兴趣: {student.interests or '无'}
+        可用时间: {student.availability or '未指定'}
+        地理位置: {student.location or '未指定'}
+
+        课程信息:
+        标题: {target_item.title}, 描述: {target_item.description}
+        课程类型: {target_item.category or '无'}
+        所需/教授技能: {json.dumps(target_item.required_skills, ensure_ascii=False)}
+        讲师: {target_item.instructor or '未指定'}
+        图片链接: {target_item.cover_image_url or '无'}
+
+        {common_info_section}
+
+        **针对学生的学习/提升建议**：{student_learn_suggestion if student_learn_suggestion else '无特殊建议。'}
+
+        请根据以上信息，为学生'{student.name}'推荐课程 '{target_item.title}' 提供匹配理由和可行动的建议。
+        """
+    else:
+        raise ValueError(f"不支持的匹配类型: {match_type}")
+
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -1897,11 +1922,11 @@ async def _generate_match_rationale_llm(
     except Exception as e:
         print(f"ERROR_LLM_RATIONALE: 调用LLM生成匹配理由失败: {e}. 将返回通用理由。")
         rationale_text = (
-            f"基于AI分析，{student.name} 与 '{project.title}' 项目在以下方面有所匹配：\n"
+            f"基于AI分析，{student.name} 与 '{target_item.title}' 在以下方面有所匹配：\n"
             f"- 内容相关性得分：{sim_score:.2f}\n"
             f"- 技能匹配得分：{proficiency_score:.2f}\n"
             f"- 时间投入匹配得分：{time_score:.2f}\n"
-            f"- 地理位置匹配得分：{location_score:.2f}\n" # <-- 更新通用理由
+            f"- 地理位置匹配得分：{location_score:.2f}\n"
             "具体细节请参考各维度得分。若要获得更详细解释，请确保LLM服务可用。"
         )
 
@@ -2198,7 +2223,291 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     return final_recommendations
 
 
-# project/ai_core.py
+async def find_matching_courses_for_student(db: Session, student_id: int,
+                                            initial_k: int = INITIAL_CANDIDATES_K,
+                                            final_k: int = FINAL_TOP_K) -> List[MatchedCourse]: # <-- 返回 MatchedCourse 列表
+    """
+    为指定学生推荐课程。
+    """
+    print(f"INFO_AI_MATCHING: 为学生 {student_id} 推荐课程。")
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="学生未找到。")
+
+    # 获取学生自己的 API Key，而不是依赖外部传入
+    student_api_key_for_embedding_and_rerank = None
+    if student.llm_api_type == "siliconflow" and student.llm_api_key_encrypted:
+        try:
+            student_api_key_for_embedding_and_rerank = decrypt_key(
+                student.llm_api_key_encrypted)  # 使用ai_core内部的decrypt_key
+            print(f"DEBUG_EMBEDDING_KEY: 学生 {student.id} 配置了硅基流动 API 密钥。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密学生 {student.id} 的硅基流动 API 密钥失败: {e}。将不使用其密钥。")
+            student_api_key_for_embedding_and_rerank = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 学生 {student.id} 未配置硅基流动 API 类型或密钥。")
+
+    student_embedding_np = _get_safe_embedding_np(student.embedding, "学生", student_id)
+    if student_embedding_np is None or (student_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+        # 如果学生嵌入向量为None或全零，尝试用提供的API Key重新生成
+        print(f"WARNING_AI_MATCHING: 学生 {student_id} 嵌入向量为None或全零，尝试使用学生自己的API Key重新生成。")
+        if student_api_key_for_embedding_and_rerank:
+            try:
+                re_generated_embedding = await get_embeddings_from_api(
+                    [student.combined_text], api_key=student_api_key_for_embedding_and_rerank
+                )
+                if re_generated_embedding and len(re_generated_embedding) > 0:
+                    student_embedding_np = np.array(re_generated_embedding[0], dtype=np.float32)
+                    print(f"DEBUG_AI_MATCHING: 学生 {student_id} 嵌入向量已临时重新生成。")
+            except Exception as e:
+                print(f"ERROR_AI_MATCHING: 临时重新生成学生 {student_id} 嵌入向量失败: {e}。将继续使用零向量。")
+        if student_embedding_np is None or (student_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            return []  # 如果重试后仍是None或全零，则无法匹配
+
+    student_embedding = student_embedding_np.reshape(1, -1)
+    print(f"DEBUG_EMBED_SHAPE: 学生 {student_id} 嵌入向量 shape: {student_embedding.shape}, dtype: {student_embedding.dtype}")
+
+    all_courses = db.query(Course).all() # <-- MODIFICATION: 查询所有课程
+    if not all_courses:
+        print(f"WARNING_AI_MATCHING: 数据库中没有课程可供推荐。")
+        return []
+
+    course_embeddings = []
+    valid_courses = []
+
+    for c in all_courses: # <-- MODIFICATION: 遍历课程
+        safe_c_embedding_np = _get_safe_embedding_np(c.embedding, "课程", c.id) # <-- MODIFICATION: 针对课程的日志和类型
+        if safe_c_embedding_np is None or (safe_c_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            # 如果课程嵌入向量为None或全零，尝试用学生或一个通用API Key临时重新生成
+            key_to_use_for_course_embedding = student_api_key_for_embedding_and_rerank # <-- 可以用学生自己的密钥生成课程嵌入
+
+            if key_to_use_for_course_embedding:
+                print(f"WARNING_AI_MATCHING: 课程 {c.id} 嵌入向量为None或全零，尝试使用API Key (学生)重新生成。")
+                try:
+                    re_generated_embedding = await get_embeddings_from_api(
+                        [c.combined_text], api_key=key_to_use_for_course_embedding
+                    )
+                    if re_generated_embedding and len(re_generated_embedding) > 0:
+                        safe_c_embedding_np = np.array(re_generated_embedding[0], dtype=np.float32)
+                        print(f"DEBUG_AI_MATCHING: 课程 {c.id} 嵌入向量已临时重新生成。")
+                except Exception as e:
+                    print(f"ERROR_AI_MATCHING: 临时重新生成课程 {c.id} 嵌入向量失败: {e}。将继续使用零向量。")
+
+        if safe_c_embedding_np is None or (safe_c_embedding_np == np.zeros(1024, dtype=np.float32)).all():
+            # 如果即使重试后仍然无效，则跳过此课程
+            continue
+
+        course_embeddings.append(safe_c_embedding_np)
+        valid_courses.append(c) # <-- MODIFICATION: 添加有效课程
+        print(f"DEBUG_EMBED_SHAPE: 添加课程 {c.id} 嵌入向量 shape: {safe_c_embedding_np.shape}, dtype: {safe_c_embedding_np.dtype}")
+
+    if not valid_courses: # <-- MODIFICATION: 检查有效课程
+        print(f"WARNING_AI_MATCHING: 所有课程都没有有效嵌入向量可供匹配。")
+        return []
+
+    try:
+        course_embeddings_array = np.array(course_embeddings, dtype=np.float32) # <-- MODIFICATION: 课程嵌入数组
+    except Exception as e:
+        print(f"ERROR_AI_MATCHING: 课程嵌入向量列表转换为大型 NumPy 数组失败: {e}")
+        return []
+
+    print(f"DEBUG_EMBED_SHAPE: 所有课程嵌入数组 shape: {course_embeddings_array.shape}, dtype: {course_embeddings_array.dtype}")
+
+    # **<<<<< 阶段 1: 基于嵌入向量的初步筛选 >>>>>**
+    try:
+        cosine_sims = cosine_similarity(student_embedding, course_embeddings_array)[0] # <-- MODIFICATION: 学生 vs 课程相似度
+    except Exception as e:
+        print(f"ERROR_AI_MATCHING: 计算余弦相似度失败: {e}. 请检查嵌入向量的尺寸或内容。")
+        return []
+
+    initial_candidates_indices = cosine_sims.argsort()[-initial_k:][::-1]
+    initial_candidates = [(valid_courses[i], cosine_sims[i]) for i in initial_candidates_indices] # <-- MODIFICATION: 课程候选
+    print(f"DEBUG_AI_MATCHING: 初步筛选 {len(initial_candidates)} 个候选课程。")
+
+    # **<<<<< 阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素) >>>>>**
+    refined_candidates = []
+    student_skills_data = student.skills
+    if isinstance(student_skills_data, str):
+        try:
+            student_skills_data = json.loads(student_skills_data)
+        except json.JSONDecodeError:
+            student_skills_data = []
+    if student_skills_data is None:
+        student_skills_data = []
+
+    for course, sim_score in initial_candidates: # <-- MODIFICATION: 遍历课程
+        course_required_skills_data = course.required_skills # <-- MODIFICATION: 课程的 required_skills
+        if isinstance(course_required_skills_data, str):
+            try:
+                course_required_skills_data = json.loads(course_required_skills_data)
+            except json.JSONDecodeError:
+                course_required_skills_data = []
+        if course_required_skills_data is None:
+            course_required_skills_data = []
+
+        proficiency_score = _calculate_proficiency_match_score(
+            student_skills_data,
+            course_required_skills_data # <-- MODIFICATION: 学生技能 vs 课程所需技能
+        )
+
+        time_score = _calculate_time_match_score(student, course) # <-- MODIFICATION: 学生 vs 课程时间匹配 (如果课程有相关字段)
+        # 注意：课程通常没有 estimated_weekly_hours 和 start_date/end_date。
+        # _calculate_time_match_score 会根据这些字段缺失返回默认分数 [5.2.4]_calculate_time_match_score。
+        print(f"DEBUG_MATCH: 课程 {course.id} ({course.title}) - 时间得分: {time_score:.4f}")
+
+        location_score = _calculate_location_match_score(student.location, course.category) # <-- MODIFICATION: 简化：学生所在地 vs 课程类别 (可能更有用，或直接用课程地点 if exists)
+        # 注意：Course 模型目前没有 location 字段，这里简化为用 category 作为文本匹配。
+        # 如果需要更精准的地点，需要给 Course model 添加 location 字段
+        print(f"DEBUG_MATCH: 课程 {course.id} ({course.title}) - 地理位置得分: {location_score:.4f}")
+
+        # 调整权重，课程推荐可能更注重内容和技能，时间/地点权重可以更低
+        # 0.5 (embedding) + 0.3 (skills) + 0.1 (time) + 0.1 (location) 保持和项目推荐一致，或者可以调整
+        combined_score = (sim_score * 0.5) + \
+                         (proficiency_score * 0.3) + \
+                         (time_score * 0.1) + \
+                         (location_score * 0.1)
+
+        print(
+            f"DEBUG_MATCH: 课程 {course.id} ({course.title}) - 嵌入相似度: {sim_score:.4f}, 熟练度得分: {proficiency_score:.4f}, 时间得分: {time_score:.4f}, 地理位置得分: {location_score:.4f}, 综合得分: {combined_score:.4f}")
+
+        enhancement_opportunities = _identify_enhancement_opportunities(student=student, project=None, course=course,
+                                                                        match_type="student_to_course") # <-- MODIFICATION: project 设为 None，传入 course [10]
+
+        refined_candidates.append({
+            "course": course, # <-- MODIFICATION: 存储课程对象
+            "combined_score": combined_score,
+            "sim_score": sim_score,
+            "proficiency_score": proficiency_score,
+            "time_score": time_score,
+            "location_score": location_score,
+            "enhancement_opportunities": enhancement_opportunities
+        })
+
+    refined_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # **<<<<< 阶段 3: Reranking with specialized model >>>>>**
+    reranker_documents = [candidate["course"].combined_text or "" for candidate in refined_candidates[:final_k * 2] if
+                          candidate["course"].combined_text and candidate["course"].combined_text.strip()] # <-- MODIFICATION: 课程的 combined_text
+    reranker_query = student.combined_text or ""
+
+    final_recommendations = []
+    if reranker_documents and reranker_query and reranker_query.strip():
+        try:
+            rerank_scores = await get_rerank_scores_from_api(
+                reranker_query,
+                reranker_documents,
+                api_key=student_api_key_for_embedding_and_rerank
+            )
+
+            reranked_courses_with_scores = []
+            rerank_doc_to_full_candidate_map = {
+                (c["course"].combined_text or ""): c  # Ensure key is non-None
+                for c in refined_candidates[:final_k * 2]
+                if c["course"].combined_text and c["course"].combined_text.strip()
+            }
+
+            for score_idx, score_val in enumerate(rerank_scores):
+                original_candidate_info = rerank_doc_to_full_candidate_map.get(reranker_documents[score_idx])
+                if original_candidate_info:
+                    reranked_courses_with_scores.append({
+                        "course": original_candidate_info["course"],
+                        "relevance_score": score_val,
+                        "combined_score_stage2": original_candidate_info["combined_score"],
+                        "sim_score": original_candidate_info["sim_score"],
+                        "proficiency_score": original_candidate_info["proficiency_score"],
+                        "time_score": original_candidate_info["time_score"],
+                        "location_score": original_candidate_info["location_score"],
+                        "enhancement_opportunities": original_candidate_info["enhancement_opportunities"]
+                    })
+
+            reranked_courses_with_scores.sort(key=lambda x: x["relevance_score"], reverse=True)
+
+            for rec in reranked_courses_with_scores[:final_k]:
+                rationale = await _generate_match_rationale_llm(
+                    student=student,
+                    target_item=rec["course"], # <-- MODIFICATION: 传入课程对象
+                    sim_score=rec["sim_score"],
+                    proficiency_score=rec["proficiency_score"],
+                    time_score=rec["time_score"],
+                    location_score=rec["location_score"],
+                    enhancement_opportunities=rec["enhancement_opportunities"],
+                    match_type="student_to_course", # <-- MODIFICATION: 匹配类型
+                    llm_api_key=student_api_key_for_embedding_and_rerank
+                )
+                final_recommendations.append(
+                    MatchedCourse( # <-- MODIFICATION: 返回 MatchedCourse
+                        course_id=rec["course"].id,
+                        title=rec["course"].title,
+                        description=rec["course"].description,
+                        instructor=rec["course"].instructor,
+                        category=rec["course"].category,
+                        cover_image_url=rec["course"].cover_image_url, # 新增
+                        similarity_stage1=rec["combined_score_stage2"],
+                        relevance_score=rec["relevance_score"],
+                        match_rationale=rationale
+                    )
+                )
+            print(f"INFO_AI_MATCHING: 为学生 {student_id} 推荐了 {len(final_recommendations)} 个课程 (Reranked)。")
+        except Exception as e:
+            print(f"ERROR_AI_MATCHING: 课程Rerank失败: {e}. 将退回至初步筛选结果。")
+            import traceback
+            traceback.print_exc()
+            for rec in refined_candidates[:final_k]:
+                rationale = await _generate_match_rationale_llm(
+                    student=student,
+                    target_item=rec["course"], # <-- MODIFICATION: 传入课程对象
+                    sim_score=rec["sim_score"],
+                    proficiency_score=rec["proficiency_score"],
+                    time_score=rec["time_score"],
+                    location_score=rec["location_score"],
+                    enhancement_opportunities=rec["enhancement_opportunities"],
+                    match_type="student_to_course", # <-- MODIFICATION: 匹配类型
+                    llm_api_key=student_api_key_for_embedding_and_rerank
+                )
+                final_recommendations.append(
+                    MatchedCourse( # <-- MODIFICATION: 返回 MatchedCourse
+                        course_id=rec["course"].id,
+                        title=rec["course"].title,
+                        description=rec["course"].description,
+                        instructor=rec["course"].instructor,
+                        category=rec["course"].category,
+                        cover_image_url=rec["course"].cover_image_url,
+                        similarity_stage1=rec["combined_score"],
+                        relevance_score=rec["combined_score"],
+                        match_rationale=rationale
+                    )
+                )
+    else:
+        print(f"WARNING_AI_MATCHING: 无有效文本进行课程 Rerank (query: '{reranker_query[:50]}', docs_len: {len(reranker_documents)}). 将返回初步筛选结果。")
+        for rec in refined_candidates[:final_k]:
+            rationale = await _generate_match_rationale_llm(
+                student=student,
+                target_item=rec["course"], # <-- MODIFICATION: 传入课程对象
+                sim_score=rec["sim_score"],
+                proficiency_score=rec["proficiency_score"],
+                time_score=rec["time_score"],
+                location_score=rec["location_score"],
+                enhancement_opportunities=rec["enhancement_opportunities"],
+                match_type="student_to_course", # <-- MODIFICATION: 匹配类型
+                llm_api_key=student_api_key_for_embedding_and_rerank
+            )
+            final_recommendations.append(
+                MatchedCourse( # <-- MODIFICATION: 返回 MatchedCourse
+                    course_id=rec["course"].id,
+                    title=rec["course"].title,
+                    description=rec["course"].description,
+                    instructor=rec["course"].instructor,
+                    category=rec["course"].category,
+                    cover_image_url=rec["course"].cover_image_url,
+                    similarity_stage1=rec["combined_score"],
+                    relevance_score=rec["combined_score"],
+                    match_rationale=rationale
+                )
+            )
+
+    return final_recommendations
+
+
 async def find_matching_students_for_project(db: Session, project_id: int,
                                              project_creator_api_key: Optional[str] = None,  # <-- 新增参数：项目创建者API Key
                                              initial_k: int = INITIAL_CANDIDATES_K,

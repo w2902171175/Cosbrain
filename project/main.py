@@ -20,7 +20,7 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest
 # 导入重构后的 ai_core 模块
@@ -32,6 +32,9 @@ app = FastAPI(
     description="为学生提供智能匹配、知识管理、课程学习和协作支持的综合平台。",
     version="0.1.0",
 )
+
+# 挂载静态文件服务，用于提供上传的课程材料
+app.mount("/course_materials", StaticFiles(directory=ai_core.UPLOAD_DIRECTORY), name="course_materials")
 
 # 令牌认证方案
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
@@ -511,7 +514,6 @@ async def check_search_engine_connectivity(engine_type: str, api_key: str,
             timestamp=datetime.now()
         )
 
-
 # --- 辅助函数：安全地获取文本部分 ---
 def _get_text_part(value: Any) -> str:
     """
@@ -523,11 +525,10 @@ def _get_text_part(value: Any) -> str:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d")  # 格式化日期，只保留年月日
     if isinstance(value, (int, float)):
-        # 为小时数添加单位，或根据需要返回原始字符串表示
-        # 这里的判断可以根据实际情况更细致，例如如果 key 是 'estimated_weekly_hours'
-        return str(value) + "小时"  # 简单地为数字加上“小时”单位，用于combined_text
+        # **<<<<< MODIFICATION: 对于数字，只返回字符串，不再强制添加“小时”单位 >>>>>**
+        # 因为这个函数是通用的，不是所有数字都代表小时
+        return str(value)
     return str(value).strip() if str(value).strip() else ""
-
 
 
 # --- 搜索引擎配置管理接口 ---
@@ -1705,6 +1706,246 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
     print(f"DEBUG: 获取项目 ID: {project_id} 的详情。")
     return project
+
+
+# --- 课程管理接口 ---
+@app.post("/courses/", response_model=schemas.CourseResponse, summary="创建新课程")
+async def create_course(
+        course_data: schemas.CourseBase, # 接收 CourseBase 数据 (包含 cover_image_url 和 required_skills)
+        # current_user_id: str = Depends(get_current_user_id), # 暂时不需要普通用户ID
+        current_admin_user: Student = Depends(is_admin_user), # 只有管理员能创建课程
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 管理员 {current_admin_user.id} 尝试创建课程: {course_data.title}")
+
+    # 将 required_skills 转换为数据库存储格式（列表或JSONB）
+    required_skills_list_for_db = []
+    if course_data.required_skills:
+        required_skills_list_for_db = [skill.model_dump() for skill in course_data.required_skills]
+
+    # 重建 combined_text
+    skills_text = ""
+    if required_skills_list_for_db:
+        skills_text = ", ".join(
+            [s.get("name", "") for s in required_skills_list_for_db if isinstance(s, dict) and s.get("name")])
+
+    combined_text_content = ". ".join(filter(None, [
+        _get_text_part(course_data.title),
+        _get_text_part(course_data.description),
+        _get_text_part(course_data.instructor),
+        _get_text_part(course_data.category),
+        _get_text_part(skills_text), # 新增
+        _get_text_part(course_data.total_lessons),
+        _get_text_part(course_data.avg_rating)
+    ])).strip()
+
+    embedding = None
+    if combined_text_content:
+        try:
+            # 课程嵌入生成可以使用管理员的API Key，或通用占位符
+            # 先尝试使用管理员的API Key，如果管理员没有硅基流动配置，则使用默认的零向量
+            admin_api_key_for_embedding = None
+            if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+                try:
+                    admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+                    print(f"DEBUG_EMBEDDING_KEY: 使用管理员配置的硅基流动 API 密钥为课程生成嵌入。")
+                except Exception as e:
+                    print(f"ERROR_EMBEDDING_KEY: 解密管理员硅基流动 API 密钥失败: {e}。课程嵌入将使用占位符。")
+                    admin_api_key_for_embedding = None
+            else:
+                print(f"DEBUG_EMBEDDING_KEY: 管理员未配置硅基流动 API 类型或密钥，课程嵌入将使用占位符。")
+
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_content],
+                api_key=admin_api_key_for_embedding
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            print(f"DEBUG: 课程嵌入向量已生成。")
+        except Exception as e:
+            print(f"ERROR: 生成课程嵌入向量失败: {e}")
+
+    try:
+        db_course = Course(
+            title=course_data.title,
+            description=course_data.description,
+            instructor=course_data.instructor,
+            category=course_data.category,
+            total_lessons=course_data.total_lessons,
+            avg_rating=course_data.avg_rating,
+            cover_image_url=course_data.cover_image_url, # 新增
+            required_skills=required_skills_list_for_db, # 新增
+            combined_text=combined_text_content,
+            embedding=embedding
+        )
+
+        db.add(db_course)
+        db.commit()
+        db.refresh(db_course)
+
+        # 确保返回时 required_skills 是解析后的列表形式
+        if isinstance(db_course.required_skills, str):
+            try:
+                db_course.required_skills = json.loads(db_course.required_skills)
+            except json.JSONDecodeError:
+                db_course.required_skills = []
+        elif db_course.required_skills is None:
+            db_course.required_skills = []
+
+        print(f"DEBUG: 课程 '{db_course.title}' (ID: {db_course.id}) 创建成功。")
+        return db_course
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建课程发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建课程失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建课程发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建课程失败: {e}")
+
+
+@app.get("/courses/{course_id}", response_model=schemas.CourseResponse, summary="获取指定课程详情")
+def get_course_by_id(course_id: int, db: Session = Depends(get_db)):
+    """
+    获取指定ID的课程详情。
+    """
+    print(f"DEBUG: 获取课程 ID: {course_id} 的详情。")
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    # 确保返回时 required_skills 是解析后的列表形式
+    if isinstance(course.required_skills, str):
+        try:
+            course.required_skills = json.loads(course.required_skills)
+        except json.JSONDecodeError:
+            course.required_skills = []
+    elif course.required_skills is None:
+        course.required_skills = []
+
+    return course
+
+
+@app.put("/courses/{course_id}", response_model=schemas.CourseResponse, summary="更新指定课程")
+async def update_course(
+        course_id: int,
+        course_data: schemas.CourseUpdate,  # 接收 CourseUpdate (所有字段可选)
+        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能更新课程
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG: 管理员 {current_admin_user.id} 尝试更新课程 ID: {course_id}。")
+
+    try:
+        db_course = db.query(Course).filter(Course.id == course_id).first()
+        if not db_course:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+        update_data = course_data.dict(exclude_unset=True)
+
+        # 特殊处理 required_skills
+        if "required_skills" in update_data:
+            db_course.required_skills = update_data["required_skills"]  # 直接赋值列表或 None
+            del update_data["required_skills"]  # 避免通用循环再次处理
+
+        # 应用其他字段更新
+        for key, value in update_data.items():
+            if hasattr(db_course, key):
+                setattr(db_course, key, value)
+
+        db.add(db_course)
+
+        # 重建 combined_text
+        skills_text = ""
+        current_skills_for_text = db_course.required_skills
+        if isinstance(current_skills_for_text, str):
+            try:
+                current_skills_for_text = json.loads(current_skills_for_text)
+            except json.JSONDecodeError:
+                current_skills_for_text = []
+
+        if isinstance(current_skills_for_text, list):
+            skills_text = ", ".join(
+                [s.get("name", "") for s in current_skills_for_text if isinstance(s, dict) and s.get("name")])
+
+        db_course.combined_text = ". ".join(filter(None, [
+            _get_text_part(db_course.title),
+            _get_text_part(db_course.description),
+            _get_text_part(db_course.instructor),
+            _get_text_part(db_course.category),
+            _get_text_part(skills_text),  # 新增
+            _get_text_part(db_course.total_lessons),
+            _get_text_part(db_course.avg_rating),
+            _get_text_part(db_course.cover_image_url)  # 新增
+        ])).strip()
+
+        # 重新生成 embedding
+        embedding = None
+        if db_course.combined_text:
+            try:
+                # 嵌入生成可以使用管理员的API Key，或通用占位符
+                admin_api_key_for_embedding = None
+                if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+                    try:
+                        admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+                    except Exception:
+                        pass
+
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [db_course.combined_text],
+                    api_key=admin_api_key_for_embedding
+                )
+                if new_embedding:
+                    db_course.embedding = new_embedding[0]
+                print(f"DEBUG: 课程 {course_id} 嵌入向量已更新。")
+            except Exception as e:
+                print(f"ERROR: 更新课程 {course_id} 嵌入向量失败: {e}")
+
+        db.add(db_course)
+
+        db.commit()
+        db.refresh(db_course)
+
+        # 确保返回时 required_skills 是解析后的列表形式
+        if isinstance(db_course.required_skills, str):
+            try:
+                db_course.required_skills = json.loads(db_course.required_skills)
+            except json.JSONDecodeError:
+                db_course.required_skills = []
+        elif db_course.required_skills is None:
+            db_course.required_skills = []
+
+        print(f"DEBUG: 课程 {course_id} 信息更新成功。")
+        return db_course
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新课程发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新课程失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新课程发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新课程失败: {e}")
+
+
+@app.get("/recommend/courses/{student_id}", response_model=List[schemas.MatchedCourse], summary="为指定学生推荐课程")
+async def recommend_courses_for_student(
+        student_id: int,
+        db: Session = Depends(get_db),
+        initial_k: int = ai_core.INITIAL_CANDIDATES_K,
+        final_k: int = ai_core.FINAL_TOP_K
+):
+    """
+    为指定学生推荐相关课程。
+    """
+    print(f"DEBUG_AI: 为学生 {student_id} 推荐课程。")
+    try:
+        recommendations = await ai_core.find_matching_courses_for_student(db, student_id, initial_k, final_k)
+        if not recommendations:
+            print(f"DEBUG_AI: 未为学生 {student_id} 找到课程推荐。")
+        return recommendations
+    except Exception as e:
+        print(f"ERROR_AI: 推荐课程失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"课程推荐失败: {e}")
 
 
 # --- 用户认证与管理接口 ---
@@ -3160,6 +3401,412 @@ async def update_user_course_progress(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"课程更新失败：{e}",
         )
+
+
+# --- 课程材料管理接口 ---
+@app.post("/courses/{course_id}/materials/", response_model=schemas.CourseMaterialResponse,
+          summary="为指定课程上传新材料（文件或链接）")
+async def create_course_material(
+        course_id: int,
+        # 使用 Union 允许接收 Form 表单数据 (用于文件上传) 或 JSON 数据 (用于链接/文本)
+        # 注意：文件上传（UploadFile）必须放在 Form 参数前面
+        file: Optional[UploadFile] = File(None, description="上传课程文件，如PDF、视频等"),
+        material_data: schemas.CourseMaterialCreate = Depends(),  # 使用 Depends() 来解析 Form 或 JSON
+        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能创建/管理课程材料
+        db: Session = Depends(get_db)
+):
+    print(
+        f"DEBUG_COURSE_MATERIAL: 管理员 {current_admin_user.id} 尝试为课程 {course_id} 创建材料: {material_data.title} (类型: {material_data.type})")
+
+    # 1. 验证课程是否存在
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    # 2. 根据材料类型处理数据
+    material_params = {
+        "course_id": course_id,
+        "title": material_data.title,
+        "type": material_data.type,
+        "content": material_data.content  # 可选，无论哪种类型都可作为补充描述
+    }
+
+    file_path = None
+
+    if material_data.type == "file":
+        if not file:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'file' 时，必须上传文件。")
+
+        file_extension = os.path.splitext(file.filename)[1]
+        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+        file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_filename)
+
+        try:
+            with open(file_path, "wb") as f:
+                # 假设文件不会太大，一次性写入，否则需要分块读取
+                contents = await file.read()
+                f.write(contents)
+            material_params["file_path"] = file_path
+            material_params["original_filename"] = file.filename
+            material_params["file_type"] = file.content_type
+            material_params["size_bytes"] = file.size
+            print(f"DEBUG_COURSE_MATERIAL: 文件 '{file.filename}' 已保存到 {file_path}")
+        except Exception as e:
+            print(f"ERROR_COURSE_MATERIAL: 保存文件失败: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件保存失败: {e}")
+
+    elif material_data.type == "link":
+        if not material_data.url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'link' 时，'url' 字段为必填。")
+        material_params["url"] = material_data.url
+        # 链接类型不应有文件属性
+        material_params["original_filename"] = None
+        material_params["file_type"] = None
+        material_params["size_bytes"] = None
+
+    elif material_data.type == "text":
+        if not material_data.content:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="类型为 'text' 时，'content' 字段为必填。")
+        # 文本类型不应有文件和URL属性
+        material_params["url"] = None
+        material_params["original_filename"] = None
+        material_params["file_type"] = None
+        material_params["size_bytes"] = None
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效的材料类型。")
+
+    # 3. 生成 combined_text 用于嵌入，并计算嵌入向量
+    combined_text_content = ". ".join(filter(None, [
+        _get_text_part(material_data.title),
+        _get_text_part(material_data.content),
+        _get_text_part(material_data.url),
+        _get_text_part(material_data.original_filename),
+        _get_text_part(material_data.file_type)
+    ])).strip()
+
+    embedding = None
+    if combined_text_content:
+        try:
+            admin_api_key_for_embedding = None  # 默认为None，使用 ai_core 内部的占位符逻辑
+            if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+                try:
+                    admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+                except Exception:
+                    pass
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_content],
+                api_key=admin_api_key_for_embedding
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            print(f"DEBUG_COURSE_MATERIAL: 材料嵌入向量已生成。")
+        except Exception as e:
+            print(f"ERROR_COURSE_MATERIAL: 生成材料嵌入向量失败: {e}")
+
+    material_params["combined_text"] = combined_text_content
+    material_params["embedding"] = embedding
+
+    # 4. 创建数据库记录
+    db_material = CourseMaterial(**material_params)
+    db.add(db_material)
+
+    try:
+        db.commit()
+        db.refresh(db_material)
+    except IntegrityError as e:
+        db.rollback()
+        # 如果文件已上传，回滚时尝试删除文件
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"DEBUG_COURSE_MATERIAL: 回滚时删除了文件: {file_path}")
+        print(f"ERROR_DB: 创建课程材料发生完整性约束错误: {e}")
+        # 检查是否是标题冲突
+        if "_course_material_title_uc" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同一课程下已存在同名材料。")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建课程材料失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"DEBUG_COURSE_MATERIAL: 错误回滚时删除了文件: {file_path}")
+        print(f"ERROR_DB: 创建课程材料发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建课程材料失败: {e}")
+
+    print(f"DEBUG_COURSE_MATERIAL: 课程材料 '{db_material.title}' (ID: {db_material.id}) 创建成功。")
+    return db_material
+
+
+@app.get("/courses/{course_id}/materials/", response_model=List[schemas.CourseMaterialResponse],
+         summary="获取指定课程的所有材料列表")
+async def get_course_materials(
+        course_id: int,
+        # 课程材料通常是公开的，或者在学习课程后才能访问，这里简化为只要课程存在即可查看
+        # current_user_id: int = Depends(get_current_user_id), # 如果需要认证，可 uncomment
+        db: Session = Depends(get_db),
+        type_filter: Optional[Literal["file", "link", "text"]] = None
+):
+    print(f"DEBUG_COURSE_MATERIAL: 获取课程 {course_id} 的材料列表。")
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    query = db.query(CourseMaterial).filter(CourseMaterial.course_id == course_id)
+    if type_filter:
+        query = query.filter(CourseMaterial.type == type_filter)
+
+    materials = query.order_by(CourseMaterial.title).all()
+    print(f"DEBUG_COURSE_MATERIAL: 课程 {course_id} 获取到 {len(materials)} 个材料。")
+    return materials
+
+
+@app.get("/courses/{course_id}/materials/{material_id}", response_model=schemas.CourseMaterialResponse,
+         summary="获取指定课程材料详情")
+async def get_course_material_detail(
+        course_id: int,
+        material_id: int,
+        # current_user_id: int = Depends(get_current_user_id), # 如果需要认证，可 uncomment
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG_COURSE_MATERIAL: 获取课程 {course_id} 材料 ID: {material_id} 的详情。")
+    db_material = db.query(CourseMaterial).filter(
+        CourseMaterial.id == material_id,
+        CourseMaterial.course_id == course_id
+    ).first()
+    if not db_material:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程材料未找到或不属于该课程。")
+    return db_material
+
+
+@app.put("/courses/{course_id}/materials/{material_id}", response_model=schemas.CourseMaterialResponse,
+         summary="更新指定课程材料")
+async def update_course_material(
+        course_id: int,
+        material_id: int,
+        file: Optional[UploadFile] = File(None, description="可选：上传新文件替换旧文件"),
+        material_data: schemas.CourseMaterialUpdate = Depends(),  # 允许只更新部分字段
+        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能更新课程材料
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG_COURSE_MATERIAL: 管理员 {current_admin_user.id} 尝试更新课程 {course_id} 材料 ID: {material_id}。")
+
+    db_material = db.query(CourseMaterial).filter(
+        CourseMaterial.id == material_id,
+        CourseMaterial.course_id == course_id
+    ).first()
+    if not db_material:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程材料未找到或不属于该课程。")
+
+    # 验证课程是否存在 (与创建时保持一致，虽然通常在此时材料已存在且课程也存在)
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    update_dict = material_data.dict(exclude_unset=True)  # 获取所有明确传入的字段及其值
+    old_file_path = db_material.file_path  # 记录旧文件路径，以便替换时删除
+
+    # 类型转换的复杂逻辑
+    # 只有当 'type' 字段在 update_dict 中明确提供，并且其值与当前数据库中的类型不同时才触发类型转换逻辑
+    if "type" in update_dict and update_dict["type"] != db_material.type:
+        new_type = update_dict["type"]
+        # 如果旧材料是文件类型，新材料是链接或文本，则删除旧文件并清理文件相关属性
+        if db_material.type == "file" and new_type in ["link", "text"]:
+            if old_file_path and os.path.exists(old_file_path):
+                os.remove(old_file_path)
+                print(f"DEBUG_COURSE_MATERIAL: Deleted old file {old_file_path} due to type change.")
+            db_material.file_path = None
+            db_material.original_filename = None
+            db_material.file_type = None
+            db_material.size_bytes = None
+
+        # 清除不适用于新类型的旧字段值，并进行新类型特有的验证
+        if new_type == "link":
+            db_material.file_path = None
+            db_material.original_filename = None
+            db_material.file_type = None
+            db_material.size_bytes = None
+            db_material.content = None  # 链接不应该有content
+            # 强制要求 'url' 字段存在 (如果更新中通过 update_dict 提供了，用其值；否则检查当前 db_material.url)
+            if not update_dict.get("url") and not db_material.url:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="类型为 'link' 时，'url' 字段为必填。")
+        elif new_type == "text":
+            db_material.file_path = None
+            db_material.original_filename = None
+            db_material.file_type = None
+            db_material.size_bytes = None
+            db_material.url = None  # 文本类型不应该有url
+            # 强制要求 'content' 字段存在
+            if not update_dict.get("content") and not db_material.content:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="类型为 'text' 时，'content' 字段为必填。")
+        elif new_type == "file":
+            db_material.url = None  # 文件类型不应该有url
+            db_material.content = None  # 文件类型不应该有content (除非是文件描述之类的)
+            # 如果类型变更为 'file'，但没有新文件上传，也没有旧文件，且 update_dict 中没有相关文件字段，则报错。
+            # （此处简略处理，后续文件上传逻辑会做更细致验证）
+
+        # 最后，更新 db_material 的 type 属性
+        db_material.type = new_type
+
+    # 如果上传了新文件 (file takes precedence for file-related properties)
+    new_file_path = None  # 初始化为None，用于捕获异常时的清理
+    if file:
+        # 如果当前材料类型不是 'file'，并且没有显式在 update_dict 中将类型改为 'file'，则不允许上传文件
+        if db_material.type != "file" and ("type" not in update_dict or update_dict["type"] != "file"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="只有类型为 'file' 的材料才能上传文件。如需更改材料类型，请在material_data中同时指定 type='file'。")
+
+        # 删除旧文件（如果存在且是文件类型）
+        if old_file_path and os.path.exists(old_file_path) and db_material.type == "file":
+            try:
+                os.remove(old_file_path)
+                print(f"DEBUG_COURSE_MATERIAL: Deleted old file: {old_file_path}")
+            except Exception as e:
+                print(f"ERROR_COURSE_MATERIAL: Failed to delete old file {old_file_path}: {e}")
+                # 不阻碍后续流程，但记录错误
+
+        # 保存新文件
+        new_file_extension = os.path.splitext(file.filename)[1]
+        unique_new_filename = f"{uuid.uuid4().hex}{new_file_extension}"
+        new_file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_new_filename)
+
+        try:
+            with open(new_file_path, "wb") as f:
+                contents = await file.read()
+                f.write(contents)
+            db_material.file_path = new_file_path
+            db_material.original_filename = file.filename
+            db_material.file_type = file.content_type
+            db_material.size_bytes = file.size
+
+            # 如果当前材料的数据库类型不是 'file' (比如原来是link/text但没改type, 或改了type但还没提交)，且当前上传了文件，则将其类型修正为 'file'
+            if db_material.type != "file":
+                db_material.type = "file"
+                print(f"DEBUG_COURSE_MATERIAL: Material type automatically changed to 'file' due to file upload.")
+
+            # 强制清除不属于文件类型的字段
+            db_material.url = None
+            db_material.content = None
+
+            print(f"DEBUG_COURSE_MATERIAL: New file '{file.filename}' saved to {new_file_path}")
+        except Exception as e:
+            print(f"ERROR_COURSE_MATERIAL: Failed to save new file: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"Failed to save new file: {e}")
+
+    # 遍历 update_dict 中的键值对，应用更新
+    for key, value in update_dict.items():
+        # 跳过已通过文件上传或类型转换处理的字段，以及文件参数本身
+        if key in ["type", "url", "content", "original_filename", "file_type", "size_bytes"]:
+            # 类型验证逻辑已经处理过了 `type`, `url`, `content` 的相互排斥和必填
+            # original_filename, file_type, size_bytes 由文件上传逻辑填充，不从 update_dict 直接赋值
+            continue
+
+        if hasattr(db_material, key):
+            # **<<<<< 关键修改：对非空字段进行显式检查 >>>>>**
+            if key == "title":
+                # 如果传入的 title 是 None 或空字符串，则报错
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="材料标题不能为空。")
+                setattr(db_material, key, value)
+            else:
+                # 对于其他字段，如果传入的值为None，我们允许它覆盖（前提是数据库列允许为NULL）
+                # Pydantic的Optional字段在这里会表现为None，直接赋值即可
+                setattr(db_material, key, value)
+
+    # 重新生成 combined_text 和 embedding
+    combined_text_content = ". ".join(filter(None, [
+        _get_text_part(db_material.title),  # 使用 db_material 的最新属性
+        _get_text_part(db_material.content),
+        _get_text_part(db_material.url),
+        _get_text_part(db_material.original_filename),
+        _get_text_part(db_material.file_type)
+    ])).strip()
+
+    embedding = None
+    if combined_text_content:
+        try:
+            admin_api_key_for_embedding = None
+            if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+                try:
+                    admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+                except Exception:
+                    pass
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_content],
+                api_key=admin_api_key_for_embedding
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            print(f"DEBUG_COURSE_MATERIAL: 材料嵌入向量已更新。")
+        except Exception as e:
+            print(f"ERROR_COURSE_MATERIAL: 更新材料嵌入向量失败: {e}")
+
+    db_material.combined_text = combined_text_content
+    db_material.embedding = embedding
+
+    db.add(db_material)
+    try:
+        db.commit()
+        db.refresh(db_material)
+    except IntegrityError as e:
+        db.rollback()
+        # 如果有新文件上传（无论成功与否），在回滚时删除它
+        if new_file_path and os.path.exists(new_file_path):
+            os.remove(new_file_path)
+            print(f"DEBUG_COURSE_MATERIAL: Deleted new file on rollback: {new_file_path}")
+        print(f"ERROR_DB: Update course material integrity constraint error: {e}")
+        # 针对具体错误提供更友好的提示
+        if "_course_material_title_uc" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同一课程下已存在同名材料。")
+        # 补上 type 列的 Null 值错误捕获 (虽然理论上在上面已经通过 validation 拦截了)
+        elif 'null value in column "type"' in str(e):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="材料类型不能为空。")
+        else:  # 其他完整性错误
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新课程材料失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        if new_file_path and os.path.exists(new_file_path):
+            os.remove(new_file_path)
+            print(f"DEBUG_COURSE_MATERIAL: Deleted new file on error rollback: {new_file_path}")
+        print(f"ERROR_DB: Unknown error during course material update: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新课程材料失败: {e}")
+
+    print(f"DEBUG_COURSE_MATERIAL: Course material ID: {material_id} updated successfully.")
+    return db_material
+
+
+@app.delete("/courses/{course_id}/materials/{material_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定课程材料")
+async def delete_course_material(
+        course_id: int,
+        material_id: int,
+        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能删除课程材料
+        db: Session = Depends(get_db)
+):
+    print(f"DEBUG_COURSE_MATERIAL: 管理员 {current_admin_user.id} 尝试删除课程 {course_id} 材料 ID: {material_id}。")
+
+    db_material = db.query(CourseMaterial).filter(
+        CourseMaterial.id == material_id,
+        CourseMaterial.course_id == course_id  # 确保材料属于该课程
+    ).first()
+    if not db_material:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程材料未找到或不属于该课程。")
+
+    # 如果是文件类型，同时删除本地文件
+    if db_material.type == "file" and db_material.file_path and os.path.exists(db_material.file_path):
+        try:
+            os.remove(db_material.file_path)
+            print(f"DEBUG_COURSE_MATERIAL: 删除了本地文件: {db_material.file_path}")
+        except Exception as e:
+            print(f"ERROR_COURSE_MATERIAL: 删除本地文件失败: {e}")
+            # 不阻碍DB记录删除，但记录错误
+
+    db.delete(db_material)
+    db.commit()
+    print(f"DEBUG_COURSE_MATERIAL: 课程材料 ID: {material_id} 及其关联文件已删除。")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- 文件夹管理接口 ---
