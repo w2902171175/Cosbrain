@@ -22,7 +22,7 @@ from passlib.context import CryptContext
 from database import SessionLocal, engine, init_db, get_db
 from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse
 # 导入重构后的 ai_core 模块
 import ai_core
 
@@ -2247,6 +2247,104 @@ async def update_project(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"项目更新失败：{e}",
         )
+
+
+# project/main.py
+
+# ... (在 AI匹配接口 之后，或你认为合适的位置) ...
+
+# --- 统计与查询接口 ---
+
+@app.get("/users/{user_id}/completed-projects-count", response_model=schemas.CountResponse, summary="获取指定学生创建并完成的项目数量")
+async def get_student_completed_projects_count(
+        user_id: int,
+        current_user_id: int = Depends(get_current_user_id), # 验证是否是本人或管理员
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定用户创建并已完成的项目总数。
+    只有用户本人或系统管理员可以查询。
+    """
+    print(f"DEBUG_COUNT: 用户 {current_user_id} 尝试查询用户 {user_id} 完成的项目数量。")
+    # 权限检查
+    requester_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not requester_user or (requester_user.id != user_id and not requester_user.is_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查询该用户的项目完成数量。")
+
+    target_user = db.query(Student).filter(Student.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户未找到。")
+
+    completed_projects_count = db.query(Project).filter(
+        Project.creator_id == user_id,
+        Project.project_status == "已完成"
+    ).count()
+
+    print(f"DEBUG_COUNT: 用户 {user_id} 已完成项目数: {completed_projects_count}。")
+    return {"count": completed_projects_count, "description": f"由用户 {user_id} 创建并完成的项目总数"}
+
+
+@app.get("/users/{user_id}/completed-courses-count", response_model=schemas.CountResponse, summary="获取指定学生完成的课程数量")
+async def get_student_completed_courses_count(
+        user_id: int,
+        current_user_id: int = Depends(get_current_user_id), # 验证是否是本人或管理员
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定用户已完成的课程总数。
+    只有用户本人或系统管理员可以查询。
+    """
+    print(f"DEBUG_COUNT: 用户 {current_user_id} 尝试查询用户 {user_id} 完成的课程数量。")
+    # 权限检查
+    requester_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not requester_user or (requester_user.id != user_id and not requester_user.is_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查询该用户的课程完成数量。")
+
+    target_user = db.query(Student).filter(Student.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户未找到。")
+
+
+    completed_courses_count = db.query(UserCourse).filter(
+        UserCourse.student_id == user_id,
+        UserCourse.status == "completed"
+    ).count()
+
+    print(f"DEBUG_COUNT: 用户 {user_id} 已完成课程数: {completed_courses_count}。")
+    return {"count": completed_courses_count, "description": f"用户 {user_id} 已完成的课程总数"}
+
+
+@app.get("/courses/{course_id}/completed-by-count", response_model=schemas.CountResponse, summary="获取指定课程被多少学生完成的总数")
+async def get_course_global_completed_count(
+        course_id: int,
+        # current_user_id: int = Depends(get_current_user_id), # 任何人都可以查询全局课程完成数
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定课程被标记为“已完成”的总次数（即有多少学生完成了该课程）。
+    """
+    print(f"DEBUG_COUNT: 尝试查询课程 {course_id} 的全球完成数量。")
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    global_completed_count = db.query(UserCourse).filter(
+        UserCourse.course_id == course_id,
+        UserCourse.status == "completed"
+    ).count()
+
+    print(f"DEBUG_COUNT: 课程 {course_id} 全球完成数: {global_completed_count}。")
+    return {"count": global_completed_count, "description": f"课程 '{db_course.title}' 被完成的总次数"}
+
+
+# 【注意：当前项目模型对“项目全球完成数”的解释】
+# 由于 Project 模型没有多对多用户关系（如 UserProject），项目完成状态只由其创建者维护（project_status）。
+# 因此，一个项目“被多少学生完成”的统计，在当前模型下只能是 0 或 1 （即此项目是否被其创建者完成）。
+# 如果需要统计多个学生参与并完成一个项目，需要实现 Student-Project 多对多中间表 (如 UserProject)。
+# 故此处暂时不提供 /projects/{project_id}/completed-by-count 接口以避免歧义。
+# 如果未来模型扩展，此接口可以再添加。
+
+
 
 
 # --- AI匹配接口 ---

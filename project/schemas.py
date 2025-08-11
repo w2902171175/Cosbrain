@@ -969,6 +969,12 @@ class MatchedCourse(BaseModel):
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与课程匹配理由及建议")
 
 
+class CountResponse(BaseModel):
+    """通用计数响应模型"""
+    count: int = Field(..., description="统计数量")
+    description: Optional[str] = Field(None, description="统计的描述信息")
+
+
 class MatchedStudent(BaseModel):
     student_id: int
     name: str
@@ -1173,3 +1179,4 @@ class PointTransactionResponse(BaseModel):
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 # **<<<<< 新增成就系统和积分系统相关 Schemas 结束 >>>>>**
+
