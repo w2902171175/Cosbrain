@@ -211,11 +211,6 @@ python run.py
 uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-8. **访问应用**
-- 应用地址: http://localhost:8000
-- API文档: http://localhost:8000/docs
-- 替代API文档: http://localhost:8000/redoc
-
 ## 📊 数据库结构
 
 平台采用PostgreSQL数据库，共包含29个核��数据表：
@@ -232,47 +227,6 @@ uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 
 详细的数据库结构说明请参考：[数据库表格字段说明文档.md](数据库表格字段说明文档.md)
 
-## 🔌 API文档
-
-### 主要API端点
-
-#### 用户认证
-- `POST /auth/register` - 用户注册
-- `POST /auth/login` - 用户登录
-- `POST /auth/refresh` - 刷新令牌
-- `POST /auth/logout` - 用户登出
-
-#### 用户管理
-- `GET /users/me` - 获取当前用户信息
-- `PUT /users/me` - 更新用户信息
-- `GET /users/{user_id}` - 获取指定用户信息
-- `GET /users/` - 获取用户列表
-
-#### 项目管理
-- `GET /projects/` - 获取项目列表
-- `POST /projects/` - 创建新项目
-- `GET /projects/{project_id}` - 获取项目详情
-- `PUT /projects/{project_id}` - 更新项目信息
-
-#### AI功能
-- `POST /ai/match-students` - 智能学生匹配
-- `POST /ai/chat` - AI对话
-- `POST /ai/tts` - 文本转语音
-- `POST /ai/search` - 语义搜索
-
-#### 聊天系统
-- `WebSocket /ws/chat/{room_id}` - WebSocket聊天连接
-- `GET /chat/rooms/` - 获取聊天室列表
-- `POST /chat/rooms/` - 创建聊天室
-- `POST /chat/rooms/{room_id}/join` - 加入聊天室
-
-#### 知识管理
-- `GET /knowledge/bases/` - 获取知识库列表
-- `POST /knowledge/bases/` - 创建知识库
-- `POST /knowledge/documents/upload` - 上传文档
-- `GET /knowledge/search` - 知识搜索
-
-完整的API文档请访问: http://localhost:8000/docs
 
 ## 🚀 部署指南
 
@@ -473,18 +427,7 @@ git push origin feature/your-feature-name
 - **项目主页**: [GitHub Repository]
 - **问题反馈**: [Issues]
 - **文档**: [Wiki]
-- **邮箱**: your-email@example.com
+- **邮箱**: wxh1331@foxmail.com
 
-## 🙏 致谢
-
-感谢所有为这个项目做出贡献的开发者和用户！
-
-特别感谢以下开源项目：
-- [FastAPI](https://fastapi.tiangolo.com/) - 现代化的Web框架
-- [SQLAlchemy](https://www.sqlalchemy.org/) - Python SQL工具包
-- [pgvector](https://github.com/pgvector/pgvector) - PostgreSQL向量扩展
-- [Sentence Transformers](https://www.sbert.net/) - 句子嵌入模型
-
----
 
 ⭐ 如果这个项目对你有帮助，请给我们一个star！
