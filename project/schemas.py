@@ -76,6 +76,8 @@ class StudentResponse(StudentBase):
     total_points: int
     last_login_at: Optional[datetime] = None
     login_count: int
+    completed_projects_count: Optional[int] = Field(None, description="用户创建并已完成的项目总数")
+    completed_courses_count: Optional[int] = Field(None, description="用户完成的课程总数")
 
     class Config:
         from_attributes = True

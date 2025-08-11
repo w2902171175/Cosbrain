@@ -1399,17 +1399,39 @@ async def login_for_access_token(
         # ... (文件其余部分保持不变) ...
 
 
-
 @app.get("/users/me", response_model=schemas.StudentResponse, summary="获取当前登录用户详情")
 async def read_users_me(current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
     """
-    获取当前登录用户的详细信息。
+    获取当前登录用户的详细信息，包括其完成的项目和课程数量。
     """
-    print(f"DEBUG: 获取当前用户 ID: {current_user_id} 的详情���")
+    print(f"DEBUG: 获取当前用户 ID: {current_user_id} 的详情。")
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return user
+
+    # **<<<<< 新增：计算用户完成的项目和课程数量 >>>>>**
+    completed_projects_count = db.query(Project).filter(
+        Project.creator_id == current_user_id,
+        Project.project_status == "已完成"
+    ).count()
+
+    completed_courses_count = db.query(UserCourse).filter(
+        UserCourse.student_id == current_user_id,
+        UserCourse.status == "completed"
+    ).count()
+
+    # **<<<<< 构建 StudentResponse 对象并填充计算结果 >>>>>**
+    #
+    # 从 ORM 对象创建 StudentResponse 的基本实例，这将负责映射所有已存在的字段
+    response_data = schemas.StudentResponse.model_validate(user, from_attributes=True)
+
+    # 手动填充计算出的字段
+    response_data.completed_projects_count = completed_projects_count
+    response_data.completed_courses_count = completed_courses_count
+
+    print(
+        f"DEBUG: 用户 {current_user_id} 详情查询完成。完成项目: {completed_projects_count}, 完成课程: {completed_courses_count}。")
+    return response_data
 
 
 @app.put("/users/me", response_model=schemas.StudentResponse, summary="更新当前登录用户详情")
