@@ -72,6 +72,10 @@ class StudentResponse(StudentBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_admin: bool
+    # **<<<<< 新增：积分和上次登录时间字段 >>>>>**
+    total_points: int
+    last_login_at: Optional[datetime] = None
+    login_count: int
 
     class Config:
         from_attributes = True
@@ -284,19 +288,19 @@ class CollectedContentResponse(CollectedContentBase):
 
 class ChatRoomBase(BaseModel):
     """聊天室基础信息模型，用于创建或更新时接收数据"""
-    name: str
-    type: Literal["project_group", "course_group", "private", "general"] = "general"
-    project_id: Optional[int] = None
-    course_id: Optional[int] = None
-    color: Optional[str] = None
+    name: str = Field(..., max_length=100) # 明确名称为必填且最大长度
+    type: Literal["project_group", "course_group", "private", "general"] = Field("general", description="聊天室类型")
+    project_id: Optional[int] = Field(None, description="如果为项目群组，关联的项目ID")
+    course_id: Optional[int] = Field(None, description="如果为课程群组，关联的课程ID")
+    color: Optional[str] = Field(None, max_length=20) # 颜色字符串，例如 "#FFFFFF"
 
 
 # 聊天室成员基础信息 (用于请求和响应)
 class ChatRoomMemberBase(BaseModel):
     room_id: int
     member_id: int
-    role: str = Field("member", description="成员角色：'admin'或'member'")
-    status: str = Field("active", description="成员状态：'active', 'banned', 'left'")
+    role: Literal["admin", "member"] = Field("member", description="成员角色：'admin'或'member'")
+    status: Literal["active", "banned", "left"] = Field("active", description="成员状态：'active', 'banned', 'left'")
     # last_read_at: Optional[datetime] = None # 如果在 models.py 中添加了此字段
 
 
@@ -313,7 +317,7 @@ class ChatRoomMemberResponse(ChatRoomMemberBase):
 
 # ** 用于更新成员角色的请求体**
 class ChatRoomMemberRoleUpdate(BaseModel):
-    role: str = Field(..., description="要设置的新角色：'admin' 或 'member'")
+    role: Literal["admin", "member"] = Field(..., description="要设置的新角色：'admin' 或 'member'")
 
 
 # 入群申请请求体
@@ -324,7 +328,7 @@ class ChatRoomJoinRequestCreate(BaseModel):
 
 # 入群申请处理请求体 (用于管理员/群主批准或拒绝)
 class ChatRoomJoinRequestProcess(BaseModel):
-    status: str = Field(..., description="处理结果状态：'approved' 或 'rejected'")  # 只能是这两个字符串
+    status: Literal["approved", "rejected"] = Field(..., description="处理结果状态：'approved' 或 'rejected'")  # 只能是这两个字符串
     # 备注：processed_by_id 和 processed_at 将由后端自动填充
 
 
@@ -699,9 +703,11 @@ class WebSearchRequest(BaseModel):
 
 
 # --- TTSTextRequest Schemas ---
-class TTSTextRequest(BaseModel):
-    text: str
-    lang: str = "zh-CN"
+# 注意：这个TTSTextRequest重复定义了，请确认并删除第一个TTSTextRequest
+# 应该保留一个TTSTextRequest在schemas文件中的唯一位置，这里暂时保留。
+# class TTSTextRequest(BaseModel):
+#     text: str
+#     lang: str = "zh-CN"
 
 
 # --- KnowledgeBase Schemas ---
@@ -975,7 +981,6 @@ class DashboardSummaryResponse(BaseModel):
     unread_messages_count: int = 0
     resume_completion_percentage: float
 
-
 class DashboardProjectCard(BaseModel):
     id: int
     title: str
@@ -994,3 +999,93 @@ class DashboardCourseCard(BaseModel):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+# **<<<<< 新增：成就系统和积分系统相关 Schemas >>>>>**
+
+# --- Achievement Schemas ---
+class AchievementBase(BaseModel):
+    name: str = Field(..., description="成就名称")
+    description: str = Field(..., description="成就描述")
+    # Literal 限制条件类型，例如：PROJECT_COMPLETED_COUNT, COURSE_COMPLETED_COUNT 等
+    criteria_type: Literal[
+        "PROJECT_COMPLETED_COUNT", "COURSE_COMPLETED_COUNT", "FORUM_LIKES_RECEIVED",
+        "DAILY_LOGIN_STREAK", "FORUM_POSTS_COUNT", "CHAT_MESSAGES_SENT_COUNT",
+        "LOGIN_COUNT" # 明确增加登录次数作为条件
+    ] = Field(..., description="达成成就的条件类型")
+    criteria_value: float = Field(..., description="达成成就所需的数值门槛") # 使用Float以支持小数，如平均分
+
+    badge_url: Optional[str] = Field(None, description="勋章图片或图标URL")
+    reward_points: int = Field(0, description="达成此成就额外奖励的积分")
+    is_active: bool = Field(True, description="该成是否启用")
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+class AchievementCreate(AchievementBase):
+    # 创建成就时，所有基础字段都是必需的 (除非它们有默认值)
+    pass
+
+class AchievementUpdate(AchievementBase):
+    # 更新成就时，所有字段都是可选的
+    name: Optional[str] = None
+    description: Optional[str] = None
+    criteria_type: Optional[Literal[
+        "PROJECT_COMPLETED_COUNT", "COURSE_COMPLETED_COUNT", "FORUM_LIKES_RECEIVED",
+        "DAILY_LOGIN_STREAK", "FORUM_POSTS_COUNT", "CHAT_MESSAGES_SENT_COUNT",
+        "LOGIN_COUNT"
+    ]] = None
+    criteria_value: Optional[float] = None
+    badge_url: Optional[str] = None
+    reward_points: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class AchievementResponse(AchievementBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+# --- UserAchievement Schemas ---
+class UserAchievementResponse(BaseModel):
+    id: int
+    user_id: int
+    achievement_id: int
+    earned_at: datetime
+    is_notified: bool
+
+    # 包含成就的实际名称和描述，方便前端展示，避免再次查询
+    achievement_name: Optional[str] = Field(None, description="成就名称")
+    achievement_description: Optional[str] = Field(None, description="成就描述")
+    badge_url: Optional[str] = Field(None, description="勋章图片URL")
+    reward_points: Optional[int] = Field(None, description="获得此成就奖励的积分")
+
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+# --- PointsRewardRequest Schema (用于手动发放/扣除积分) ---
+class PointsRewardRequest(BaseModel):
+    user_id: int = Field(..., description="目标用户ID")
+    amount: int = Field(..., description="积分变动数量，正数代表增加，负数代表减少")
+    reason: Optional[str] = Field(None, description="积分变动理由")
+    transaction_type: Literal["EARN", "CONSUME", "ADMIN_ADJUST"] = Field("ADMIN_ADJUST", description="交易类型")
+    related_entity_type: Optional[str] = Field(None, description="关联的实体类型（如 project, course, forum_topic）")
+    related_entity_id: Optional[int] = Field(None, description="关联实体ID")
+
+# --- PointTransaction Schemas ---
+class PointTransactionResponse(BaseModel):
+    id: int
+    user_id: int
+    amount: int
+    reason: Optional[str] = Field(None, description="积分变动理由描述")
+    transaction_type: str = Field(..., description="积分交易类型")
+    related_entity_type: Optional[str] = Field(None, description="关联的实体类型")
+    related_entity_id: Optional[int] = Field(None, description="关联实体的ID")
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+# **<<<<< 新增成就系统和积分系统相关 Schemas 结束 >>>>>**

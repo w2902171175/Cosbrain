@@ -13,7 +13,7 @@ from datetime import datetime, timedelta  # 确保 datetime 和 timedelta 导入
 
 # 导入数据库和模型定义
 from database import SessionLocal, engine, init_db, Base
-from models import Student, Project  # 导入 Student 和 Project 模型
+from models import Student, Project, Achievement # **<<<<< 新增：导入 Achievement 模型 >>>>>**
 
 # --- 1. 配置数据文件路径 ---
 STUDENTS_CSV_PATH = 'export_tools/data/students.csv'  # 修正路径
@@ -32,6 +32,110 @@ PROJECTS_CSV_PATH = 'export_tools/data/projects.csv'  # 修正路径
 # 这些是API的固定端点和模型名称，需要保留
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+
+# **<<<<< 新增：默认成就列表 >>>>>**
+DEFAULT_ACHIEVEMENTS = [
+    {
+        "name": "初次见面",
+        "description": "首次登录平台，踏上创新协作之旅！",
+        "criteria_type": "LOGIN_COUNT",
+        "criteria_value": 1.0,
+        "badge_url": "/static/badges/welcome.png",
+        "reward_points": 10,
+        "is_active": True
+    },
+    {
+        "name": "每日坚持",
+        "description": "连续登录 7 天，养成每日学习与协作的习惯！",
+        "criteria_type": "DAILY_LOGIN_STREAK", # 假定有机制统计 streak
+        "criteria_value": 7.0,
+        "badge_url": "/static/badges/daily_streak.png",
+        "reward_points": 50,
+        "is_active": True
+    },
+    {
+        "name": "项目新手",
+        "description": "你的第一个项目已成功完成，在实践中探索AI应用！",
+        "criteria_type": "PROJECT_COMPLETED_COUNT",
+        "criteria_value": 1.0,
+        "badge_url": "/static/badges/project_novice.png",
+        "reward_points": 100,
+        "is_active": True
+    },
+    {
+        "name": "项目骨干",
+        "description": "累计完成 3 个项目，你已是项目协作的得力助手！",
+        "criteria_type": "PROJECT_COMPLETED_COUNT",
+        "criteria_value": 3.0,
+        "badge_url": "/static/badges/project_backbone.png",
+        "reward_points": 200,
+        "is_active": True
+    },
+    {
+        "name": "学习起步",
+        "description": "成功完成 1 门课程，点亮个人知识树！",
+        "criteria_type": "COURSE_COMPLETED_COUNT",
+        "criteria_value": 1.0,
+        "badge_url": "/static/badges/course_starter.png",
+        "reward_points": 20,
+        "is_active": True
+    },
+    {
+        "name": "课程达人",
+        "description": "累计完成 3 门课程，你是名副其实的知识探索者！",
+        "criteria_type": "COURSE_COMPLETED_COUNT",
+        "criteria_value": 3.0,
+        "badge_url": "/static/badges/course_expert.png",
+        "reward_points": 80,
+        "is_active": True
+    },
+    {
+        "name": "初试啼声",
+        "description": "首次在论坛发布话题或评论，与社区积极互动！",
+        "criteria_type": "FORUM_POSTS_COUNT",
+        "criteria_value": 1.0,
+        "badge_url": "/static/badges/forum_post_novice.png",
+        "reward_points": 5,
+        "is_active": True
+    },
+    {
+        "name": "社区参与者",
+        "description": "在论坛发布累计 10 个话题或评论，积极分享你的见解！",
+        "criteria_type": "FORUM_POSTS_COUNT",
+        "criteria_value": 10.0,
+        "badge_url": "/static/badges/forum_participant.png",
+        "reward_points": 30,
+        "is_active": True
+    },
+    {
+        "name": "小有名气",
+        "description": "你的话题或评论获得了 5 次点赞，内容已被认可！",
+        "criteria_type": "FORUM_LIKES_RECEIVED",
+        "criteria_value": 5.0,
+        "badge_url": "/static/badges/likes_5.png",
+        "reward_points": 25,
+        "is_active": True
+    },
+    {
+        "name": "人气之星",
+        "description": "你的话题或评论获得了 20 次点赞，在社区中声名鹊起！",
+        "criteria_type": "FORUM_LIKES_RECEIVED",
+        "criteria_value": 20.0,
+        "badge_url": "/static/badges/likes_stars.png",
+        "reward_points": 100,
+        "is_active": True
+    },
+     {
+        "name": "沟通达人",
+        "description": "累计发送 50 条聊天消息，你活跃在团队协作的前线！",
+        "criteria_type": "CHAT_MESSAGES_SENT_COUNT",
+        "criteria_value": 50.0,
+        "badge_url": "/static/badges/chat_master.png",
+        "reward_points": 20,
+        "is_active": True
+    }
+]
+# **<<<<< 默认成就列表结束 >>>>>**
 
 
 # --- 3. API 调用函数 ---
@@ -152,7 +256,9 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
                 processed_skills_for_cell.extend([{"name": name, "level": default_skill_level} for name in skill_names])
             except Exception as e:
                 print(f"WARNING_PREPROCESS: Error processing skills for student {row.get('id', index)}: {e}")
-                processed_skills_for_cell = []
+                processed_skills_for_cell = []  # 异常发生时也确保是列表
+        else: # **<<<<< MODIFICATION: 新增 else 分支 >>>>>**
+            processed_skills_for_cell = []  # 明确为空列表，为了安全和IDE提示
 
         df.at[index, 'skills'] = json.dumps(processed_skills_for_cell, ensure_ascii=False)
 
@@ -233,6 +339,8 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
             except Exception as e:
                 print(f"WARNING_PREPROCESS: Error processing required_skills for project {row.get('id', index)}: {e}")
                 processed_required_skills_for_cell = []
+        else: # **<<<<< MODIFICATION: 新增 else 分支 >>>>>**
+            processed_required_skills_for_cell = [] # 明确为空列表，为了安全和IDE提示
 
         df.at[index, 'required_skills'] = json.dumps(processed_required_skills_for_cell, ensure_ascii=False)
 
@@ -254,7 +362,8 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
             except Exception as e:
                 print(f"WARNING_PREPROCESS: Error processing required_roles for project {row.get('id', index)}: {e}")
                 processed_required_roles_for_cell = []
-
+        else:  # **<<<<< MODIFICATION: 新增 else 分支 >>>>>**
+           processed_required_roles_for_cell = [] # 明确为空列表，为了安全和IDE提示
         df.at[index, 'required_roles'] = json.dumps(processed_required_roles_for_cell, ensure_ascii=False)
 
 
@@ -424,6 +533,37 @@ def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
     db.commit()
     print("项目数据导入完成。")
 
+# **<<<<< 新增：插入默认成就的函数 >>>>>**
+def insert_default_achievements(db: Session):
+    """
+    插入预设的成就到数据库中，如果同名成就已存在则跳过。
+    """
+    print("\n开始检查并插入默认成就...")
+    for achievement_data in DEFAULT_ACHIEVEMENTS:
+        existing_achievement = db.query(Achievement).filter(Achievement.name == achievement_data["name"]).first()
+        if existing_achievement:
+            print(f"DEBUG_ACHIEVEMENT_IMPORT: 成就 '{achievement_data['name']}' 已存在，跳过。")
+            continue
+
+        new_achievement = Achievement(
+            name=achievement_data["name"],
+            description=achievement_data["description"],
+            criteria_type=achievement_data["criteria_type"],
+            criteria_value=achievement_data["criteria_value"],
+            badge_url=achievement_data["badge_url"],
+            reward_points=achievement_data["reward_points"],
+            is_active=achievement_data["is_active"]
+        )
+        db.add(new_achievement)
+        print(f"DEBUG_ACHIEVEMENT_IMPORT: 插入成就: {new_achievement.name}")
+    try:
+        db.commit()
+        print("默认成就插入完成。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_ACHIEVEMENT_IMPORT: 插入默认成就失败: {e}")
+# **<<<<< 插入默认成就函数结束 >>>>>**
+
 
 # --- 主执行流程 ---
 if __name__ == "__main__":
@@ -468,6 +608,8 @@ if __name__ == "__main__":
     try:
         import_students_to_db(db_session, students_df)
         import_projects_to_db(db_session, projects_df)
+        # **<<<<< 新增：在导入数据后插入默认成就 >>>>>**
+        insert_default_achievements(db_session)
     except Exception as e:
         db_session.rollback()
         print(f"\n数据导入过程中发生错误，事务已回滚: {e}")
