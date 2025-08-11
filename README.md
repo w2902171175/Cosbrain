@@ -211,10 +211,6 @@ python run.py
 uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-8. **访问应用**
-- 应用地址: http://localhost:8000
-- API文档: http://localhost:8000/docs
-- 替代API文档: http://localhost:8000/redoc
 
 ## 📊 数据库结构
 
