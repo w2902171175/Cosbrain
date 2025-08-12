@@ -16,10 +16,10 @@ import ast
 import re
 from datetime import datetime, timedelta
 
-# 导入 gTTS (如果需要)
+# 导入 gTTS
 from gtts import gTTS
 
-# 导入文档解析库 (如果需要)
+# 导入文档解析库
 from docx import Document as DocxDocument
 import PyPDF2
 
@@ -103,7 +103,7 @@ def _parse_single_skill_entry_to_dict(single_skill_raw_data: Any) -> Optional[Di
             return {"name": processed_str.strip(), "level": default_skill_level}
         return None  # Fallback for empty/whitespace string
 
-    # 新增：直接处理接收到的列表类型 (这正是日志中出现的场景！)
+    # 直接处理接收到的列表类型
     elif isinstance(single_skill_raw_data, list):
         print(
             f"WARNING_MATCH_SKILLS: Received a list as a single skill entry: '{single_skill_raw_data}'. Attempting to extract valid dict by iterating.")
@@ -134,14 +134,13 @@ def _ensure_top_level_list(raw_input: Any) -> List[Any]:
 
     if isinstance(raw_input, str):
         processed_input = raw_input.strip()
-        # Try to handle stringified string (e.g. '"[{\\"name\\":\\"skill\\"}]"')
-        for _ in range(2):  # Try stripping outer quotes twice
+
+        for _ in range(2):
             if (processed_input.startswith(("'", '"')) and processed_input.endswith(("'", '"')) and len(
                     processed_input) > 1):
                 processed_input = processed_input[1:-1]
         processed_input = processed_input.replace('\\"', '"').replace("\\'", "'")
 
-        # Attempt 1: json.loads
         try:
             parsed = json.loads(processed_input)
             if isinstance(parsed, list):
@@ -152,7 +151,6 @@ def _ensure_top_level_list(raw_input: Any) -> List[Any]:
         except json.JSONDecodeError:
             pass
 
-        # Attempt 2: ast.literal_eval
         try:
             parsed = ast.literal_eval(processed_input)
             if isinstance(parsed, list):
@@ -178,7 +176,7 @@ def _ensure_top_level_list(raw_input: Any) -> List[Any]:
 UPLOAD_DIRECTORY = "uploaded_files"
 os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
 
-# --- 加密库 (用于API密钥，生产环境需要更健壮的方案) ---
+# --- 加密库 (用于API密钥) ---
 SIMPLE_ENCRYPTION_KEY = b"verysecretkey12343"
 
 
@@ -195,12 +193,6 @@ def decrypt_key(encrypted_key_hex: str) -> str:
         'utf-8')
 
 
-# # --- 硅基流动API配置 (Embedding和Rerank固定模型) ---
-# SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
-# if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "sk-YOUR_SILICONFLOW_API_KEY_HERE":
-#     print("警告：SILICONFLOW_API_KEY 环境变量未设置或为默认值。AI Embedding/Rerank功能将受限。")
-#     SILICONFLOW_API_KEY = "dummy_key_for_testing_without_api"
-#
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
 RERANKER_API_URL = "https://api.siliconflow.cn/v1/rerank"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
@@ -211,20 +203,20 @@ DEFAULT_LLM_API_CONFIG = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "chat_path": "/chat/completions",
-        "default_model": "gpt-3.5-turbo",
-        "available_models": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]
+        "default_model": "gpt-4o",
+        "available_models": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-5-2025-08-07","gpt-5-mini-2025-08-07","gpt-5-nano-2025-08-07"]
     },
      "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
         "chat_path": "/chat/completions",
         "default_model": "deepseek-chat",
-        "available_models": ["deepseek-chat", "deepseek-coder"]
+        "available_models": ["deepseek-chat", "deepseek-reasoner"]
     },
     "siliconflow": {
         "base_url": "https://api.siliconflow.cn/v1",
         "chat_path": "/chat/completions",
         "default_model": "deepseek-ai/DeepSeek-V3",
-        "available_models": ["deepseek-ai/DeepSeek-R1", "deepseek-ai/DeepSeek-V3"]
+        "available_models": ["deepseek-ai/DeepSeek-R1", "deepseek-ai/DeepSeek-V3","BAAI/bge-m3","BAAI/bge-reranker-v2-m3"]
     },
     "huoshanengine": {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
@@ -235,16 +227,16 @@ DEFAULT_LLM_API_CONFIG = {
     "kimi": {
         "base_url": "https://api.moonshot.cn/v1",
         "chat_path": "/chat/completions",
-        "default_model": "moonshot-v1-8k",
-        "available_models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]
+        "default_model": "kimi-k2-0711-preview",
+        "available_models": ["kimi-k2-0711-preview", "moonshot-v1-auto"]
     },
     "zhipu": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "chat_path": "/chat/completions",
-        "default_model": "glm-4",
-        "available_models": ["glm-4", "glm-4v", "glm-3-turbo", "glm-4-air", "glm-4-flash"]
+        "default_model": "glm-4.5v",
+        "available_models": ["glm-4.5v", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4-flash"]
     },
-    "custom_openai": { # <<<< 作为自定义OpenAI兼容服务的模板
+    "custom_openai": { # 作为自定义OpenAI兼容服务的模板
             "base_url": None, # 用户必须提供，此处为None表示无默认值
             "chat_path": "/chat/completions", # OpenAI兼容API的标准路径
             "default_model": None, # 用户必须提供，此处为None表示无默认值
@@ -258,8 +250,8 @@ DEFAULT_TTS_CONFIGS = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "tts_path": "/audio/speech",
-        "default_model": "tts-1",
-        "available_models": ["tts-1", "tts-1-hd"],
+        "default_model": "gpt-4o-mini-tts",
+        "available_models": ["gpt-4o-mini-tts"],
         "default_voice": "alloy",
         "available_voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
     },
@@ -287,11 +279,10 @@ def get_available_llm_configs() -> Dict[str, Dict[str, Any]]:
             "available_models": data["available_models"],
             "notes": f"请访问 {data['base_url']} 对应的服务商官网获取API密钥。"
         }
-        # <<<< MODIFICATION: Special note for custom_openai >>>>
         if llm_type == "custom_openai":
             configs[llm_type]["notes"] = "自定义OpenAI兼容服务：需要提供完整的API基础URL、API密钥和模型ID。"
             configs[llm_type]["default_model"] = None # 强调无默认模型
-            configs[llm_type]["available_models"] = ["任意兼容OpenAI API的自定义模型"] # 更通用的描述
+            configs[llm_type]["available_models"] = ["任意兼容OpenAI API的自定义模型"]
     return configs
 
 
@@ -453,10 +444,6 @@ async def call_web_search_api(
     return results
 
 
-# project/ai_core.py
-
-# ... (在 get_rerank_scores_from_api 和 extract_text_from_document 之间) ...
-
 async def synthesize_speech(
         text: str,
         lang: str = 'zh-CN',  # 基础语言代码，用于 gTTS 和某些 API
@@ -534,8 +521,6 @@ async def synthesize_speech(
                 f"WARNING_TTS: TTS provider '{tts_type}' is registered but its API integration is not yet fully implemented in ai_core.py. Falling back to gTTS.")
             use_gtts_fallback = True
             # 如果不想回退，可以抛出异常：
-            # raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            #                     detail=f"TTS provider '{tts_type}' API integration not yet implemented in backend.")
         else:
             print(f"WARNING_TTS: Unknown TTS provider type '{tts_type}' configured. Falling back to gTTS.")
             use_gtts_fallback = True
@@ -551,8 +536,8 @@ async def synthesize_speech(
             print(f"DEBUG_TTS: Using gTTS fallback with language: {gtts_lang}.")
 
             # gTTS 不支持选择特定语音，voice_name 和 model_id 将被忽略
-            # 注意：gTTS.save 是同步IO操作。在高度并发的应用中，这应该使用 asyncio.to_thread 运行。
-            # 当前为了简化，保持直接调用。
+            # gTTS.save 是同步IO操作。在高度并发的应用中，这应该使用 asyncio.to_thread 运行。
+            # 当前为了简化，直接调用。
             tts = gTTS(text=text, lang=gtts_lang)
             tts.save(audio_filepath)
 
@@ -586,12 +571,12 @@ async def get_embeddings_from_api(texts: List[str], api_key: Optional[str] = Non
     print(f"DEBUG_EMBEDDING: Requesting embeddings for {len(non_empty_texts)} texts using {EMBEDDING_MODEL_NAME}.")
 
     async with httpx.AsyncClient() as client:
-        response = None # **<<<<< MODIFICATION: 确保 response 在 try 块外部被声明 >>>>>**
+        response = None # 确保 response 在 try 块外部被声明
         try:
             response = await client.post(EMBEDDING_API_URL, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             data = response.json()
-            embeddings_result = [item['embedding'] for item in data.get('data', [])] # **<<<<< MODIFICATION: 使用 .get() 安全地访问 'data' 键 >>>>>**
+            embeddings_result = [item['embedding'] for item in data.get('data', [])] # 使用 .get() 安全地访问 'data' 键
 
             full_embeddings = []
             result_idx = 0
@@ -611,7 +596,6 @@ async def get_embeddings_from_api(texts: List[str], api_key: Optional[str] = Non
             print(f"响应内容: {getattr(e, 'response', None).text if hasattr(e, 'response') and e.response else '无'}")
             raise
         except KeyError as e:
-            # **<<<<< MODIFICATION: 修正 data 引用，并确保 response 可用 >>>>>**
             print(f"API响应格式错误 (Embedding): {e}. 响应: {response.text if response and hasattr(response, 'text') else '无法获取响应数据或响应正文'}")
             raise
         except json.JSONDecodeError as e: # 添加特定的JSON解码错误
@@ -650,14 +634,13 @@ async def get_rerank_scores_from_api(query: str, documents: List[str], api_key: 
             print(f"响应内容: {getattr(e, 'response', None).text if getattr(e, 'response', None) else '无'}")
             raise # Re-raise the exception to be handled by the caller
         except KeyError as e:
-            # **<<<<< MODIFICATION: 修正 data 引用，确保 data 即使未定义也不会报错 >>>>>**
             print(f"API响应格式错误 (Reranker): {e}.")
             print(f"响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
-            raise # Re-raise the exception to be handled by the caller
-        except json.JSONDecodeError as e: # Add specific JSON decode error
+            raise
+        except json.JSONDecodeError as e:
             print(f"API响应JSON解码错误 (Reranker): {e}.")
             print(f"响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
-            raise # Re-raise the exception to be handled by the caller
+            raise
 
 
 
@@ -727,7 +710,6 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
 
 
 # --- Agent工具定义和执行器 ---
-
 # 定义通用的工具Schema for LLM function calling
 WEB_SEARCH_TOOL_SCHEMA = {
     "type": "function",
@@ -996,7 +978,7 @@ async def get_all_available_tools_for_llm(db: Session, user_id: int) -> List[Dic
     tools.append(WEB_SEARCH_TOOL_SCHEMA)
     tools.append(RAG_KNOWLEDGE_BASE_TOOL_SCHEMA)
 
-    # 2. Add user-defined and active MCP tools
+    # 2. 添加用户定义和活动的 MCP 工具
     active_mcp_configs = db.query(UserMcpConfig).filter(
         UserMcpConfig.owner_id == user_id,
         UserMcpConfig.is_active == True
@@ -1119,7 +1101,7 @@ async def invoke_agent(
             # Return all messages generated in this turn
             response_data["llm_type_used"] = llm_api_type
             response_data["llm_model_used"] = llm_model_id
-            response_data["turn_messages_to_log"] = current_turn_messages_to_log  # <<<< 返回本轮次消息
+            response_data["turn_messages_to_log"] = current_turn_messages_to_log  # 返回本轮次消息
             return response_data
     else:
         tools_to_send_to_llm = available_tools_for_llm
@@ -1162,7 +1144,7 @@ async def invoke_agent(
 
             tool_output_result = None
             try:
-                # Special handling for RAG and Web Search to extract structured info for schema
+                # RAG 和 Web 搜索的特殊处理，用于提取架构的结构化信息
                 if tool_name == "rag_knowledge_base":
                     executed_output = await execute_tool(
                         db=db,
@@ -1175,7 +1157,7 @@ async def invoke_agent(
                     response_data["source_articles"] = executed_output.get("sources", []) if isinstance(executed_output,
                                                                                                         dict) else []
                     tool_output_result = {"context": rag_context,
-                                          "sources": response_data["source_articles"]}  # Pack for logging
+                                          "sources": response_data["source_articles"]}
 
                 elif tool_name == "web_search":
                     executed_output = await execute_tool(
@@ -1201,31 +1183,30 @@ async def invoke_agent(
                                     results_list.append({"raw": line})
                     response_data["search_results"] = results_list
                     tool_output_result = {"raw_string_output": executed_output,
-                                          "parsed_results": results_list}  # Pack for logging
+                                          "parsed_results": results_list}
 
                 elif tool_name.startswith("mcp_"):
                     executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
-                        tool_call_args=tc['function']['arguments'],  # tool_args is already parsed from JSON
+                        tool_call_args=tc['function']['arguments'],
                         user_id=user_id
                     )
-                    tool_output_result = executed_output  # Direct string or dict from MCP tool
+                    tool_output_result = executed_output
 
                 else:
                     tool_output_result = f"Error: LLM attempted to call an unexpected tool: {tool_name}"
                     print(tool_output_result)
 
-                # Log the tool output message
-                output_content_str = str(tool_output_result)  # Convert complex output to string for content
+                output_content_str = str(tool_output_result)  # 将复杂输出转换为内容的字符串
                 current_turn_messages_to_log.append({
                     "role": "tool_output",
                     "content": f"工具 {tool_name} 执行结果: {output_content_str[:500]}...",
-                    "tool_output_json": tool_output_result  # Store raw output here
+                    "tool_output_json": tool_output_result  # 在此处存储原始输出
                 })
                 tool_outputs_for_second_turn.append({
                     "tool_call_id": tool_call_id,
-                    "output": output_content_str  # LLM gets string output
+                    "output": output_content_str
                 })
 
                 print(f"DEBUG_AGENT: Tool '{tool_name}' executed successfully, output: {output_content_str[:100]}...")
@@ -1235,7 +1216,6 @@ async def invoke_agent(
                     "tool_call_id": tool_call_id,
                     "output": error_msg
                 })
-                # Log the tool error message
                 current_turn_messages_to_log.append({
                     "role": "tool_output",
                     "content": f"工具 {tool_name} 执行失败: {error_msg}",
@@ -1244,7 +1224,7 @@ async def invoke_agent(
                 print(f"ERROR_AGENT: {error_msg}")
 
         # 将LLM的工具调用消息和工具输出消息添加到上下文，进行第二轮LLM调用
-        messages.append(message_content)  # LLM 'tool_calls' message
+        messages.append(message_content)
         for output in tool_outputs_for_second_turn:
             messages.append({"role": "tool", "tool_call_id": output["tool_call_id"], "content": output["output"]})
 
@@ -1308,7 +1288,7 @@ async def invoke_agent(
 
     response_data["llm_type_used"] = llm_api_type
     response_data["llm_model_used"] = llm_model_id
-    response_data["turn_messages_to_log"] = current_turn_messages_to_log  # <<<< 返回本轮次生成的详细消息序列
+    response_data["turn_messages_to_log"] = current_turn_messages_to_log  # 返回本轮次生成的详细消息序列
 
     return response_data
 
@@ -1334,26 +1314,26 @@ def _get_safe_embedding_np(raw_embedding: Any, entity_type: str, entity_id: Any)
                 np_embedding = np.array(parsed_embedding, dtype=np.float32)
             else:
                 print(f"WARNING_AI_MATCHING: {entity_type} {entity_id} 嵌入字符串解析后不是浮点数列表。")
-                return None  # parsing_embedding fails
+                return None  #
         except json.JSONDecodeError:
             print(f"WARNING_AI_MATCHING: {entity_type} {entity_id} 嵌入字符串JSON解码失败。")
-            return None  # parsing_embedding fails
+            return None
     # 3. 处理 Python 浮点数列表
     elif isinstance(raw_embedding, list):
         if all(isinstance(x, (float, int)) for x in raw_embedding):
             np_embedding = np.array(raw_embedding, dtype=np.float32)
         else:
             print(f"WARNING_AI_MATCHING: {entity_type} {entity_id} 嵌入列表包含非数值元素。")
-            return None  # list elements fail validation
+            return None
     # 4. 处理 None 或其他未知类型
     elif raw_embedding is None:
         print(f"WARNING_AI_MATCHING: {entity_type} {entity_id} 嵌入向量为None。")
-        return None  # raw_embedding is None
+        return None
     else:
         print(f"WARNING_AI_MATCHING: {entity_type} {entity_id} 嵌入向量类型未知: {type(raw_embedding)}。")
-        return None  # unknown type
+        return None
 
-    # Final validation on the resulting numpy array
+    # 对生成的 numpy 数组进行最终验证
     if np_embedding is not None:
         # 检查维度 (必须是 1D 向量) 和大小 (1024)
         if np_embedding.ndim != 1 or np_embedding.shape[0] != 1024:
@@ -1366,7 +1346,7 @@ def _get_safe_embedding_np(raw_embedding: Any, entity_type: str, entity_id: Any)
             print(f"WARNING_AI_MATCHING: {entity_type} {entity_id} 嵌入向量包含 NaN/Inf 值。")
             return None
 
-    return np_embedding  # Safely processed numpy array
+    return np_embedding  # 安全处理的 numpy 数组
 
 
 def _get_skill_level_weight(level: str) -> float:
@@ -1526,7 +1506,7 @@ def _calculate_time_match_score(student: Student, project: Project) -> float:
             print(f"DEBUG_TIME_MATCH: 周小时数匹配 - 双方均未明确。得分：+{score_hours:.2f}")
 
     # 2. 日期/持续时间匹配 (权重 0.4)
-    # 鉴于学生 availability 是自由文本，这里进行粗略的日期匹配
+    # 因学生 availability 是自由文本，这里进行粗略的日期匹配
 
     student_temporal_keywords = set()
     if student.availability:
@@ -1552,7 +1532,7 @@ def _calculate_time_match_score(student: Student, project: Project) -> float:
             matched_period = True
         elif "semester" in student_temporal_keywords and not (
                 6 <= project_start_month <= 8 or project_start_month == 1 or project_start_month == 12):
-            matched_period = True  # Rest of year
+            matched_period = True
 
         # 持续时间匹配 (粗略)
         if "long_term" in student_temporal_keywords and project_duration_months is not None and project_duration_months >= 6:
@@ -1678,7 +1658,7 @@ def _identify_enhancement_opportunities(
         "project_recruit_suggestion": ""  # 针对项目的招聘建议文本 (对课程不适用)
     }
 
-    # 用于本地解析技能数据的辅助函数 (与_calculate_proficiency_match_score中的一致)
+    # 用于本地解析技能数据的辅助函数
     default_skill_level = "初窥门径"
     valid_skill_levels = ["初窥门径", "登堂入室", "融会贯通", "炉火纯青"]
 
@@ -1851,20 +1831,20 @@ def _identify_enhancement_opportunities(
         if skill_suggestions:
             item_type_str = "项目" if project else ("课程" if course else "目标")  # 根据哪个对象非None来确定
             enhancements[
-                "student_learn_suggestion"] = f"为更好地匹配该{item_type_str}，建议您：{'. '.join(skill_suggestions)}。"  # [14]
+                "student_learn_suggestion"] = f"为更好地匹配该{item_type_str}，建议您：{'. '.join(skill_suggestions)}。"
 
         if enhancements["required_roles_not_covered_by_student"] and project:
             if enhancements["student_learn_suggestion"]:
                 enhancements["student_learn_suggestion"] += (
-                    f" 此外，您可以拓展您的角色能力，尝试承担 {'、'.join(enhancements['required_roles_not_covered_by_student'])} 等角色职能。")  # [30]
+                    f" 此外，您可以拓展您的角色能力，尝试承担 {'、'.join(enhancements['required_roles_not_covered_by_student'])} 等角色职能。")
             else:
                 enhancements["student_learn_suggestion"] = (
                     f" 建议您拓展您的角色能力，尝试承担 {'、'.join(enhancements['required_roles_not_covered_by_student'])} 等角色职能。")
 
-    else:  # project_to_student
+    else:
         recruit_suggestions = []
         if enhancements["missing_skills_for_student"]:
-            recruit_suggestions.append(f"学生缺少 {'、'.join(enhancements['missing_skills_for_student'])} 技能")  # [8]
+            recruit_suggestions.append(f"学生缺少 {'、'.join(enhancements['missing_skills_for_student'])} 技能")
         if enhancements["missing_proficiency_for_student"]:
             for item in enhancements["missing_proficiency_for_student"]:
                 recruit_suggestions.append(
@@ -1872,7 +1852,7 @@ def _identify_enhancement_opportunities(
 
         if recruit_suggestions:
             enhancements[
-                "project_recruit_suggestion"] = f"该项目与 {student.name} 的匹配度可以在技能方面通过以下方式提升：{'. '.join(recruit_suggestions)}。"  # [8]
+                "project_recruit_suggestion"] = f"该项目与 {student.name} 的匹配度可以在技能方面通过以下方式提升：{'. '.join(recruit_suggestions)}。"
 
         if enhancements["required_roles_not_covered_by_student"]:
             if enhancements["project_recruit_suggestion"]:
@@ -1891,13 +1871,13 @@ def _identify_enhancement_opportunities(
 # --- 辅助函数：使用LLM生成匹配理由 (包含行动建议和地理位置信息) ---
 async def _generate_match_rationale_llm(
         student: Student,
-        target_item: Union[Project, "Course"], # <-- MODIFICATION: 接受 Project 或 Course 对象
+        target_item: Union[Project, "Course"], # 接受 Project 或 Course 对象
         sim_score: float,
         proficiency_score: float,
         time_score: float,
         location_score: float,
         enhancement_opportunities: Dict[str, Any],
-        match_type: Literal["student_to_project", "project_to_student", "student_to_course"], # <-- MODIFICATION: 新增 student_to_course
+        match_type: Literal["student_to_project", "project_to_student", "student_to_course"],
         llm_api_key: Optional[str] = None
 ) -> str:
     """
@@ -1930,7 +1910,7 @@ async def _generate_match_rationale_llm(
     综合得分 (未标准化): {sim_score * 0.5 + proficiency_score * 0.3 + time_score * 0.1 + location_score * 0.1:.2f}
     """
 
-    if match_type == "student_to_project": # [17]
+    if match_type == "student_to_project":
         user_prompt = f"""
         学生信息:
         姓名: {student.name}, 专业: {student.major}
@@ -1978,7 +1958,7 @@ async def _generate_match_rationale_llm(
 
         请根据以上信息，为项目'{target_item.title}'推荐学生 '{student.name}' 提供匹配理由和可行动的建议。
         """
-    # 新增 Course 推荐的子类型
+    # Course 推荐的子类型
     elif match_type == "student_to_course":
         user_prompt = f"""
         学生信息:
@@ -2040,7 +2020,7 @@ async def _generate_match_rationale_llm(
 
 # --- 智能匹配函数 ---
 async def find_matching_projects_for_student(db: Session, student_id: int,
-                                             current_user_api_key: Optional[str] = None,  # <-- 新增参数：当前用户API Key
+                                             current_user_api_key: Optional[str] = None,  # 当前用户API Key
                                              initial_k: int = INITIAL_CANDIDATES_K,
                                              final_k: int = FINAL_TOP_K) -> List[MatchedProject]:
     """
@@ -2051,7 +2031,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     if not student:
         raise HTTPException(status_code=404, detail="学生未找到。")
 
-    # **<<<<< MODIFICATION: 在 AI 核心函数中，获取学生自己的 API Key，而不是依赖外部传入 >>>>>**
+    # 在 AI 核心函数中，获取学生自己的 API Key，而不是依赖外部传入
     # 推荐时，如果学生自己的嵌入是零向量，但它有配置API Key，则尝试重新生成嵌入。
     # 仅在学生主动触发更新的情况下才会更新到DB。这里只用于当前计算。
     student_api_key_for_embedding_and_rerank = None
@@ -2145,7 +2125,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     print(
         f"DEBUG_EMBED_SHAPE: 所有项目嵌入数组 shape: {project_embeddings_array.shape}, dtype: {project_embeddings_array.dtype}")
 
-    # **<<<<< 阶段 1: 基于嵌入向量的初步筛选 >>>>>**
+    # 阶段 1: 基于嵌入向量的初步筛选
     try:
         cosine_sims = cosine_similarity(student_embedding, project_embeddings_array)[0]
     except Exception as e:
@@ -2156,7 +2136,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     initial_candidates = [(valid_projects[i], cosine_sims[i]) for i in initial_candidates_indices]
     print(f"DEBUG_AI_MATCHING: 初步筛选 {len(initial_candidates)} 个候选项目。")
 
-    # **<<<<< 阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素) >>>>>**
+    # 阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素)
     refined_candidates = []
     student_skills_data = student.skills
     if isinstance(student_skills_data, str):
@@ -2211,7 +2191,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
 
     refined_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
 
-    # **<<<<< 阶段 3: Reranking with specialized model >>>>>**
+    #  阶段 3: Reranking with specialized model
     reranker_documents = [candidate["project"].combined_text or "" for candidate in refined_candidates[:final_k * 2] if
                           candidate["project"].combined_text and candidate["project"].combined_text.strip()]
     reranker_query = student.combined_text or ""
@@ -2219,16 +2199,16 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
     final_recommendations = []
     if reranker_documents and reranker_query and reranker_query.strip():
         try:
-            # **<<<<< MODIFICATION: 将学生自己的 API Key 传递给 get_rerank_scores_from_api >>>>>**
+            # 将学生自己的 API Key 传递给 get_rerank_scores_from_api
             rerank_scores = await get_rerank_scores_from_api(
                 reranker_query,
                 reranker_documents,
-                api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
+                api_key=student_api_key_for_embedding_and_rerank  # 传递学生密钥
             )
 
             reranked_projects_with_scores = []
             rerank_doc_to_full_candidate_map = {
-                (c["project"].combined_text or ""): c  # Ensure key is non-None
+                (c["project"].combined_text or ""): c  # 确保密钥为非空
                 for c in refined_candidates[:final_k * 2]
                 if c["project"].combined_text and c["project"].combined_text.strip()
             }
@@ -2250,7 +2230,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
             reranked_projects_with_scores.sort(key=lambda x: x["relevance_score"], reverse=True)
 
             for rec in reranked_projects_with_scores[:final_k]:
-                # **<<<<< MODIFICATION: 将学生自己的 API Key 传递给 _generate_match_rationale_llm >>>>>**
+                # 将学生自己的 API Key 传递给 _generate_match_rationale_llm
                 rationale = await _generate_match_rationale_llm(
                     student=student,
                     project=rec["project"],
@@ -2260,7 +2240,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                     location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
                     match_type="student_to_project",
-                    llm_api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
+                    llm_api_key=student_api_key_for_embedding_and_rerank  # 传递学生密钥
                 )
                 final_recommendations.append(
                     MatchedProject(
@@ -2287,7 +2267,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                     location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
                     match_type="student_to_project",
-                    llm_api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
+                    llm_api_key=student_api_key_for_embedding_and_rerank  #  传递学生密钥
                 )
                 final_recommendations.append(
                     MatchedProject(
@@ -2312,7 +2292,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                 location_score=rec["location_score"],
                 enhancement_opportunities=rec["enhancement_opportunities"],
                 match_type="student_to_project",
-                llm_api_key=student_api_key_for_embedding_and_rerank  # <-- 传递学生密钥
+                llm_api_key=student_api_key_for_embedding_and_rerank  #  传递学生密钥
             )
             final_recommendations.append(
                 MatchedProject(
@@ -2330,7 +2310,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
 
 async def find_matching_courses_for_student(db: Session, student_id: int,
                                             initial_k: int = INITIAL_CANDIDATES_K,
-                                            final_k: int = FINAL_TOP_K) -> List[MatchedCourse]: # <-- 返回 MatchedCourse 列表
+                                            final_k: int = FINAL_TOP_K) -> List[MatchedCourse]: # 返回 MatchedCourse 列表
     """
     为指定学生推荐课程。
     """
@@ -2372,7 +2352,7 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
     student_embedding = student_embedding_np.reshape(1, -1)
     print(f"DEBUG_EMBED_SHAPE: 学生 {student_id} 嵌入向量 shape: {student_embedding.shape}, dtype: {student_embedding.dtype}")
 
-    all_courses = db.query(Course).all() # <-- MODIFICATION: 查询所有课程
+    all_courses = db.query(Course).all() #  查询所有课程
     if not all_courses:
         print(f"WARNING_AI_MATCHING: 数据库中没有课程可供推荐。")
         return []
@@ -2380,11 +2360,11 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
     course_embeddings = []
     valid_courses = []
 
-    for c in all_courses: # <-- MODIFICATION: 遍历课程
-        safe_c_embedding_np = _get_safe_embedding_np(c.embedding, "课程", c.id) # <-- MODIFICATION: 针对课程的日志和类型
+    for c in all_courses: # 遍历课程
+        safe_c_embedding_np = _get_safe_embedding_np(c.embedding, "课程", c.id) #  针对课程的日志和类型
         if safe_c_embedding_np is None or (safe_c_embedding_np == np.zeros(1024, dtype=np.float32)).all():
             # 如果课程嵌入向量为None或全零，尝试用学生或一个通用API Key临时重新生成
-            key_to_use_for_course_embedding = student_api_key_for_embedding_and_rerank # <-- 可以用学生自己的密钥生成课程嵌入
+            key_to_use_for_course_embedding = student_api_key_for_embedding_and_rerank # 可以用学生自己的密钥生成课程嵌入
 
             if key_to_use_for_course_embedding:
                 print(f"WARNING_AI_MATCHING: 课程 {c.id} 嵌入向量为None或全零，尝试使用API Key (学生)重新生成。")
@@ -2403,33 +2383,33 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
             continue
 
         course_embeddings.append(safe_c_embedding_np)
-        valid_courses.append(c) # <-- MODIFICATION: 添加有效课程
+        valid_courses.append(c) # 添加有效课程
         print(f"DEBUG_EMBED_SHAPE: 添加课程 {c.id} 嵌入向量 shape: {safe_c_embedding_np.shape}, dtype: {safe_c_embedding_np.dtype}")
 
-    if not valid_courses: # <-- MODIFICATION: 检查有效课程
+    if not valid_courses: # 检查有效课程
         print(f"WARNING_AI_MATCHING: 所有课程都没有有效嵌入向量可供匹配。")
         return []
 
     try:
-        course_embeddings_array = np.array(course_embeddings, dtype=np.float32) # <-- MODIFICATION: 课程嵌入数组
+        course_embeddings_array = np.array(course_embeddings, dtype=np.float32) # 课程嵌入数组
     except Exception as e:
         print(f"ERROR_AI_MATCHING: 课程嵌入向量列表转换为大型 NumPy 数组失败: {e}")
         return []
 
     print(f"DEBUG_EMBED_SHAPE: 所有课程嵌入数组 shape: {course_embeddings_array.shape}, dtype: {course_embeddings_array.dtype}")
 
-    # **<<<<< 阶段 1: 基于嵌入向量的初步筛选 >>>>>**
+    # 阶段 1: 基于嵌入向量的初步筛选
     try:
-        cosine_sims = cosine_similarity(student_embedding, course_embeddings_array)[0] # <-- MODIFICATION: 学生 vs 课程相似度
+        cosine_sims = cosine_similarity(student_embedding, course_embeddings_array)[0] # 学生 vs 课程相似度
     except Exception as e:
         print(f"ERROR_AI_MATCHING: 计算余弦相似度失败: {e}. 请检查嵌入向量的尺寸或内容。")
         return []
 
     initial_candidates_indices = cosine_sims.argsort()[-initial_k:][::-1]
-    initial_candidates = [(valid_courses[i], cosine_sims[i]) for i in initial_candidates_indices] # <-- MODIFICATION: 课程候选
+    initial_candidates = [(valid_courses[i], cosine_sims[i]) for i in initial_candidates_indices] # 课程候选
     print(f"DEBUG_AI_MATCHING: 初步筛选 {len(initial_candidates)} 个候选课程。")
 
-    # **<<<<< 阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素) >>>>>**
+    # 阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素)
     refined_candidates = []
     student_skills_data = student.skills
     if isinstance(student_skills_data, str):
@@ -2440,8 +2420,8 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
     if student_skills_data is None:
         student_skills_data = []
 
-    for course, sim_score in initial_candidates: # <-- MODIFICATION: 遍历课程
-        course_required_skills_data = course.required_skills # <-- MODIFICATION: 课程的 required_skills
+    for course, sim_score in initial_candidates: #  遍历课程
+        course_required_skills_data = course.required_skills #  课程的 required_skills
         if isinstance(course_required_skills_data, str):
             try:
                 course_required_skills_data = json.loads(course_required_skills_data)
@@ -2452,16 +2432,16 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
 
         proficiency_score = _calculate_proficiency_match_score(
             student_skills_data,
-            course_required_skills_data # <-- MODIFICATION: 学生技能 vs 课程所需技能
+            course_required_skills_data # 学生技能 vs 课程所需技能
         )
 
-        time_score = _calculate_time_match_score(student, course) # <-- MODIFICATION: 学生 vs 课程时间匹配 (如果课程有相关字段)
-        # 注意：课程通常没有 estimated_weekly_hours 和 start_date/end_date。
+        time_score = _calculate_time_match_score(student, course) # 学生 vs 课程时间匹配 (如果课程有相关字段)
+        # 课程通常没有 estimated_weekly_hours 和 start_date/end_date。
         # _calculate_time_match_score 会根据这些字段缺失返回默认分数 [5.2.4]_calculate_time_match_score。
         print(f"DEBUG_MATCH: 课程 {course.id} ({course.title}) - 时间得分: {time_score:.4f}")
 
-        location_score = _calculate_location_match_score(student.location, course.category) # <-- MODIFICATION: 简化：学生所在地 vs 课程类别 (可能更有用，或直接用课程地点 if exists)
-        # 注意：Course 模型目前没有 location 字段，这里简化为用 category 作为文本匹配。
+        location_score = _calculate_location_match_score(student.location, course.category) # 简化：学生所在地 vs 课程类别 (可能更有用，或直接用课程地点 if exists)
+        # Course 模型目前没有 location 字段，这里简化为用 category 作为文本匹配。
         # 如果需要更精准的地点，需要给 Course model 添加 location 字段
         print(f"DEBUG_MATCH: 课程 {course.id} ({course.title}) - 地理位置得分: {location_score:.4f}")
 
@@ -2476,10 +2456,10 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
             f"DEBUG_MATCH: 课程 {course.id} ({course.title}) - 嵌入相似度: {sim_score:.4f}, 熟练度得分: {proficiency_score:.4f}, 时间得分: {time_score:.4f}, 地理位置得分: {location_score:.4f}, 综合得分: {combined_score:.4f}")
 
         enhancement_opportunities = _identify_enhancement_opportunities(student=student, project=None, course=course,
-                                                                        match_type="student_to_course") # <-- MODIFICATION: project 设为 None，传入 course [10]
+                                                                        match_type="student_to_course")
 
         refined_candidates.append({
-            "course": course, # <-- MODIFICATION: 存储课程对象
+            "course": course, # 存储课程对象
             "combined_score": combined_score,
             "sim_score": sim_score,
             "proficiency_score": proficiency_score,
@@ -2490,9 +2470,9 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
 
     refined_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
 
-    # **<<<<< 阶段 3: Reranking with specialized model >>>>>**
+    # 3: Reranking with specialized model
     reranker_documents = [candidate["course"].combined_text or "" for candidate in refined_candidates[:final_k * 2] if
-                          candidate["course"].combined_text and candidate["course"].combined_text.strip()] # <-- MODIFICATION: 课程的 combined_text
+                          candidate["course"].combined_text and candidate["course"].combined_text.strip()] # 课程的 combined_text
     reranker_query = student.combined_text or ""
 
     final_recommendations = []
@@ -2506,7 +2486,7 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
 
             reranked_courses_with_scores = []
             rerank_doc_to_full_candidate_map = {
-                (c["course"].combined_text or ""): c  # Ensure key is non-None
+                (c["course"].combined_text or ""): c
                 for c in refined_candidates[:final_k * 2]
                 if c["course"].combined_text and c["course"].combined_text.strip()
             }
@@ -2530,23 +2510,23 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
             for rec in reranked_courses_with_scores[:final_k]:
                 rationale = await _generate_match_rationale_llm(
                     student=student,
-                    target_item=rec["course"], # <-- MODIFICATION: 传入课程对象
+                    target_item=rec["course"], # 传入课程对象
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
                     location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
-                    match_type="student_to_course", # <-- MODIFICATION: 匹配类型
+                    match_type="student_to_course", # 匹配类型
                     llm_api_key=student_api_key_for_embedding_and_rerank
                 )
                 final_recommendations.append(
-                    MatchedCourse( # <-- MODIFICATION: 返回 MatchedCourse
+                    MatchedCourse( # 返回 MatchedCourse
                         course_id=rec["course"].id,
                         title=rec["course"].title,
                         description=rec["course"].description,
                         instructor=rec["course"].instructor,
                         category=rec["course"].category,
-                        cover_image_url=rec["course"].cover_image_url, # 新增
+                        cover_image_url=rec["course"].cover_image_url,
                         similarity_stage1=rec["combined_score_stage2"],
                         relevance_score=rec["relevance_score"],
                         match_rationale=rationale
@@ -2560,17 +2540,17 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
             for rec in refined_candidates[:final_k]:
                 rationale = await _generate_match_rationale_llm(
                     student=student,
-                    target_item=rec["course"], # <-- MODIFICATION: 传入课程对象
+                    target_item=rec["course"], # 传入课程对象
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
                     location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
-                    match_type="student_to_course", # <-- MODIFICATION: 匹配类型
+                    match_type="student_to_course", #  匹配类型
                     llm_api_key=student_api_key_for_embedding_and_rerank
                 )
                 final_recommendations.append(
-                    MatchedCourse( # <-- MODIFICATION: 返回 MatchedCourse
+                    MatchedCourse( # 返回 MatchedCourse
                         course_id=rec["course"].id,
                         title=rec["course"].title,
                         description=rec["course"].description,
@@ -2587,17 +2567,17 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
         for rec in refined_candidates[:final_k]:
             rationale = await _generate_match_rationale_llm(
                 student=student,
-                target_item=rec["course"], # <-- MODIFICATION: 传入课程对象
+                target_item=rec["course"], # 传入课程对象
                 sim_score=rec["sim_score"],
                 proficiency_score=rec["proficiency_score"],
                 time_score=rec["time_score"],
                 location_score=rec["location_score"],
                 enhancement_opportunities=rec["enhancement_opportunities"],
-                match_type="student_to_course", # <-- MODIFICATION: 匹配类型
+                match_type="student_to_course", #  匹配类型
                 llm_api_key=student_api_key_for_embedding_and_rerank
             )
             final_recommendations.append(
-                MatchedCourse( # <-- MODIFICATION: 返回 MatchedCourse
+                MatchedCourse( # 返回 MatchedCourse
                     course_id=rec["course"].id,
                     title=rec["course"].title,
                     description=rec["course"].description,
@@ -2614,7 +2594,7 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
 
 
 async def find_matching_students_for_project(db: Session, project_id: int,
-                                             project_creator_api_key: Optional[str] = None,  # <-- 新增参数：项目创建者API Key
+                                             project_creator_api_key: Optional[str] = None,  # 项目创建者API Key
                                              initial_k: int = INITIAL_CANDIDATES_K,
                                              final_k: int = FINAL_TOP_K) -> List[MatchedStudent]:
     """
@@ -2625,7 +2605,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     if not project:
         raise HTTPException(status_code=404, detail="项目未找到。")
 
-    # **<<<<< MODIFICATION: 在 AI 核心函数中，获取项目创建者自己的 API Key，而不是依赖外部传入 >>>>>**
+    # 在 AI 核心函数中，获取项目创建者自己的 API Key，而不是依赖外部传入
     # 推荐时，如果项目自己的嵌入是零向量，但它有配置API Key，则尝试重新生成嵌入。
     # 仅在项目主动触发更新的情况下才会更新到DB。这里只用于当前计算。
     project_api_key_for_embedding_and_rerank = None
@@ -2720,7 +2700,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     print(
         f"DEBUG_EMBED_SHAPE: 所有学生嵌入数组 shape: {student_embeddings_array.shape}, dtype: {student_embeddings_array.dtype}")
 
-    # **<<<<< 阶段 1: 基于嵌入向量的初步筛选 >>>>>**
+    # 阶段 1: 基于嵌入向量的初步筛选
     try:
         cosine_sims = cosine_similarity(project_embedding, student_embeddings_array)[0]
     except Exception as e:
@@ -2731,7 +2711,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     initial_candidates = [(valid_students[i], cosine_sims[i]) for i in initial_candidates_indices]
     print(f"DEBUG_AI_MATCHING: 初步筛选 {len(initial_candidates)} 个候选学生。")
 
-    # **<<<<< 阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素) >>>>>**
+    #  阶段 2: 细化匹配分数 (融入技能熟练度、时间与投入度、地理位置等因素)
     refined_candidates = []
     project_required_skills_data = project.required_skills
     if isinstance(project_required_skills_data, str):
@@ -2786,7 +2766,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
 
     refined_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
 
-    # **<<<<< 阶段 3: Reranking with specialized model >>>>>**
+    #  阶段 3: Reranking with specialized model
     reranker_documents = [candidate["student"].combined_text or "" for candidate in refined_candidates[:final_k * 2] if
                           candidate["student"].combined_text and candidate["student"].combined_text.strip()]
     reranker_query = project.combined_text or ""
@@ -2794,16 +2774,16 @@ async def find_matching_students_for_project(db: Session, project_id: int,
     final_recommendations = []
     if reranker_documents and reranker_query and reranker_query.strip():
         try:
-            # **<<<<< MODIFICATION: 将项目创建者自己的 API Key 传递给 get_rerank_scores_from_api >>>>>**
+            # 将项目创建者自己的 API Key 传递给 get_rerank_scores_from_api
             rerank_scores = await get_rerank_scores_from_api(
                 reranker_query,
                 reranker_documents,
-                api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
+                api_key=project_api_key_for_embedding_and_rerank  # 传递项目创建者密钥
             )
 
             reranked_students_with_scores = []
             rerank_doc_to_full_candidate_map = {
-                (c["student"].combined_text or ""): c  # Ensure key is non-None
+                (c["student"].combined_text or ""): c
                 for c in refined_candidates[:final_k * 2]
                 if c["student"].combined_text and c["student"].combined_text.strip()
             }
@@ -2825,7 +2805,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
             reranked_students_with_scores.sort(key=lambda x: x["relevance_score"], reverse=True)
 
             for rec in reranked_students_with_scores[:final_k]:
-                # **<<<<< MODIFICATION: 将项目创建者自己的 API Key 传递给 _generate_match_rationale_llm >>>>>**
+                # MODIFICATION: 将项目创建者自己的 API Key 传递给 _generate_match_rationale_llm
                 rationale = await _generate_match_rationale_llm(
                     student=rec["student"],
                     project=project,
@@ -2835,7 +2815,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                     location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
                     match_type="project_to_student",
-                    llm_api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
+                    llm_api_key=project_api_key_for_embedding_and_rerank  # 传递项目创建者密钥
                 )
                 final_recommendations.append(
                     MatchedStudent(
@@ -2863,7 +2843,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                     location_score=rec["location_score"],
                     enhancement_opportunities=rec["enhancement_opportunities"],
                     match_type="project_to_student",
-                    llm_api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
+                    llm_api_key=project_api_key_for_embedding_and_rerank  # 传递项目创建者密钥
                 )
                 final_recommendations.append(
                     MatchedStudent(
@@ -2889,7 +2869,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                 location_score=rec["location_score"],
                 enhancement_opportunities=rec["enhancement_opportunities"],
                 match_type="project_to_student",
-                llm_api_key=project_api_key_for_embedding_and_rerank  # <-- 传递项目创建者密钥
+                llm_api_key=project_api_key_for_embedding_and_rerank  # 传递项目创建者密钥
             )
             final_recommendations.append(
                 MatchedStudent(
@@ -2904,6 +2884,4 @@ async def find_matching_students_for_project(db: Session, project_id: int,
             )
 
     return final_recommendations
-
-
 
