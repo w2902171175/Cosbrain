@@ -2,27 +2,15 @@
 from fastapi import HTTPException, status
 import pandas as pd
 import numpy as np
-import os
-import httpx
-import json
+from cryptography.fernet import Fernet
+import os, httpx, json, uuid, time, asyncio, ast, re, PyPDF2, requests
 from typing import List, Dict, Any, Optional, Literal, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sklearn.metrics.pairwise import cosine_similarity
-import uuid
-import time
-import asyncio
-import ast
-import re
 from datetime import datetime, timedelta
-
-# 导入 gTTS
 from gtts import gTTS
-
-# 导入文档解析库
 from docx import Document as DocxDocument
-import PyPDF2
-
 from models import Student, Project, KnowledgeBase, KnowledgeArticle, Note, Course, KnowledgeDocument, \
     KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial, AIConversationMessage
 from schemas import WebSearchResult, WebSearchResponse, McpToolDefinition, McpStatusResponse, MatchedProject, \
@@ -176,21 +164,26 @@ def _ensure_top_level_list(raw_input: Any) -> List[Any]:
 UPLOAD_DIRECTORY = "uploaded_files"
 os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
 
+
 # --- 加密库 (用于API密钥) ---
-SIMPLE_ENCRYPTION_KEY = b"verysecretkey12343"
+_ENCRYPTION_KEY_STR = os.getenv("ENCRYPTION_KEY")
 
+if not _ENCRYPTION_KEY_STR:
+    raise ValueError("ENCRYPTION_KEY 环境变量未设置，加密功能无法初始化。请在 .env 文件中设置。")
 
-def _xor_encrypt_decrypt(data_bytes: bytes, key_bytes: bytes) -> bytes:
-    return bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(data_bytes))
+try:
+    # Fernet 密钥必须是 base64-encoded bytes
+    FERNET_KEY = Fernet(_ENCRYPTION_KEY_STR.encode('utf-8')) # <<<< 关键：将字符串编码为字节并初始化Fernet
+except Exception as e:
+    raise ValueError(f"ENCRYPTION_KEY 格式无效或初始化失败: {e}. 请确保其为32位URL-safe Base64编码的字符串。")
 
+def encrypt_key(key: str) -> str:
+    """加密字符串"""
+    return FERNET_KEY.encrypt(key.encode('utf-8')).decode('utf-8')
 
-def encrypt_key(plain_key: str) -> str:
-    return _xor_encrypt_decrypt(plain_key.encode('utf-8'), SIMPLE_ENCRYPTION_KEY).hex()
-
-
-def decrypt_key(encrypted_key_hex: str) -> str:
-    return _xor_encrypt_decrypt(bytes.fromhex(encrypted_key_hex), SIMPLE_ENCRYPTION_KEY).decode(
-        'utf-8')
+def decrypt_key(encrypted_key: str) -> str:
+    """解密字符串"""
+    return FERNET_KEY.decrypt(encrypted_key.encode('utf-8')).decode('utf-8')
 
 
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
