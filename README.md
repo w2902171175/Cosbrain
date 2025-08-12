@@ -1,7 +1,6 @@
 # 鸿庆书云创新协作平台
 
 > 🎓 一个为师生提供智能匹配、知识管理、课程学习和协作支持的综合性教育平台
-
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-blue.svg)](https://postgresql.org)
