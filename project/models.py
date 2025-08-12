@@ -98,6 +98,8 @@ class Student(Base):
     achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
     point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
 
+    ai_conversations = relationship("AIConversation", back_populates="user_owner", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Student(id={self.id}, email='{self.email}', username='{self.username}')>"
 
@@ -424,6 +426,54 @@ class ForumLike(Base):
     comment = relationship("ForumComment", back_populates="likes")
 
 
+class AIConversation(Base):
+    __tablename__ = "ai_conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True, comment="对话所属用户ID")
+    title = Column(String, nullable=True, comment="对话标题（可由AI生成或用户自定义）")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="对话创建时间")
+    last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+                          comment="对话最后更新时间")
+
+    # Relationships
+    user_owner = relationship("Student", back_populates="ai_conversations")
+    messages = relationship("AIConversationMessage", back_populates="conversation",
+                            order_by="AIConversationMessage.sent_at", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<AIConversation(id={self.id}, user_id={self.user_id}, title='{self.title[:20] if self.title else ''}')>"
+
+
+class AIConversationMessage(Base):
+    __tablename__ = "ai_conversation_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("ai_conversations.id"), nullable=False, index=True,
+                             comment="所属对话ID")
+
+    # 消息角色: "user" (用户输入), "assistant" (LLM回答), "tool_call" (LLM决定调用工具), "tool_output" (工具执行结果)
+    role = Column(String, nullable=False, comment="消息角色")
+    content = Column(Text, nullable=False, comment="消息内容（文本）")
+
+    # 存储工具调用和工具输出的原始JSON数据，以便更详细的记录和回放
+    tool_calls_json = Column(JSONB, nullable=True, comment="如果角色是'tool_call'，存储工具调用的JSON数据")
+    tool_output_json = Column(JSONB, nullable=True, comment="如果角色是'tool_output'，存储工具输出的JSON数据")
+
+    # 存储本次消息生成时使用的LLM信息（如果角色是 assistant）
+    llm_type_used = Column(String, nullable=True, comment="本次消息使用的LLM类型")
+    llm_model_used = Column(String, nullable=True, comment="本次消息使用的LLM模型ID")
+
+    sent_at = Column(DateTime, server_default=func.now(), nullable=False, comment="消息发送时间")
+
+    # Relationships
+    conversation = relationship("AIConversation", back_populates="messages")
+
+    def __repr__(self):
+        return f"<AIConversationMessage(id={self.id}, role='{self.role}', conv_id={self.conversation_id}, sent_at='{self.sent_at}')>"
+
+
 class UserFollow(Base):
     __tablename__ = "user_follows"
 
@@ -468,7 +518,7 @@ class UserSearchEngineConfig(Base):
     api_key_encrypted = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
     description = Column(Text, nullable=True)
-    #base_url = Column(String, nullable=True, comment="搜索引擎API的基础URL")
+    base_url = Column(String, nullable=True, comment="搜索引擎API的基础URL")
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())

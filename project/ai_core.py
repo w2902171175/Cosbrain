@@ -24,7 +24,7 @@ from docx import Document as DocxDocument
 import PyPDF2
 
 from models import Student, Project, KnowledgeBase, KnowledgeArticle, Note, Course, KnowledgeDocument, \
-    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial
+    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial, AIConversationMessage
 from schemas import WebSearchResult, WebSearchResponse, McpToolDefinition, McpStatusResponse, MatchedProject, \
     MatchedStudent, MatchedCourse
 
@@ -214,11 +214,11 @@ DEFAULT_LLM_API_CONFIG = {
         "default_model": "gpt-3.5-turbo",
         "available_models": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]
     },
-    "zhipu": {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+     "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
         "chat_path": "/chat/completions",
-        "default_model": "glm-4",
-        "available_models": ["glm-4", "glm-4v", "glm-3-turbo", "glm-4-air", "glm-4-flash"]
+        "default_model": "deepseek-chat",
+        "available_models": ["deepseek-chat", "deepseek-coder"]
     },
     "siliconflow": {
         "base_url": "https://api.siliconflow.cn/v1",
@@ -229,8 +229,8 @@ DEFAULT_LLM_API_CONFIG = {
     "huoshanengine": {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "chat_path": "/chat/completions",
-        "default_model": "Doubao-lite-llm-128k",
-        "available_models": ["Doubao-lite-llm-128k", "Doubao-pro-llm-128k", "Doubao-pro-4k", "Doubao-pro-32k"]
+        "default_model": "doubao-1-5-thinking-pro-250415",
+        "available_models": ["doubao-1-5-thinking-pro-250415", "doubao-1-5-thinking-vision-pro-250428", "kimi-k2-250711"]
     },
     "kimi": {
         "base_url": "https://api.moonshot.cn/v1",
@@ -238,11 +238,17 @@ DEFAULT_LLM_API_CONFIG = {
         "default_model": "moonshot-v1-8k",
         "available_models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]
     },
-    "deepseek": {
-        "base_url": "https://api.deepseek.com/v1",
+    "zhipu": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "chat_path": "/chat/completions",
-        "default_model": "deepseek-chat",
-        "available_models": ["deepseek-chat", "deepseek-coder"]
+        "default_model": "glm-4",
+        "available_models": ["glm-4", "glm-4v", "glm-3-turbo", "glm-4-air", "glm-4-flash"]
+    },
+    "custom_openai": { # <<<< 作为自定义OpenAI兼容服务的模板
+            "base_url": None, # 用户必须提供，此处为None表示无默认值
+            "chat_path": "/chat/completions", # OpenAI兼容API的标准路径
+            "default_model": None, # 用户必须提供，此处为None表示无默认值
+            "available_models": ["any_openai_compatible_model"] # 占位符，用户可使用任意模型ID
     }
 }
 
@@ -281,6 +287,11 @@ def get_available_llm_configs() -> Dict[str, Dict[str, Any]]:
             "available_models": data["available_models"],
             "notes": f"请访问 {data['base_url']} 对应的服务商官网获取API密钥。"
         }
+        # <<<< MODIFICATION: Special note for custom_openai >>>>
+        if llm_type == "custom_openai":
+            configs[llm_type]["notes"] = "自定义OpenAI兼容服务：需要提供完整的API基础URL、API密钥和模型ID。"
+            configs[llm_type]["default_model"] = None # 强调无默认模型
+            configs[llm_type]["available_models"] = ["任意兼容OpenAI API的自定义模型"] # 更通用的描述
     return configs
 
 
@@ -293,33 +304,56 @@ async def call_llm_api(
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None
 ) -> Dict[str, Any]:
-    config = DEFAULT_LLM_API_CONFIG.get(user_llm_api_type)
-    if not config:
-        raise ValueError(f"不支持的LLM类型: {user_llm_api_type}")
+    api_base_url_final: str = None
+    chat_path_final: str = None
+    model_to_use_final: str = None
 
-    # Check if API Key is a dummy key for any LLM chat, which is used for dev without real key
-    if user_llm_api_key == "dummy_key_for_testing_without_api" and user_llm_api_type != "siliconflow":
-        # Allow siliconflow embedding/reranker to use dummy, but not general LLM chat without real API key
-        print(
-            f"WARNING_LLM_CHAT: LLM API Key for {user_llm_api_type} is a dummy key. LLM chat will be skipped and return placeholder.")
-        return {"choices": [
-            {"message": {"content": "LLM API not configured or key is dummy. Cannot generate dynamic content."}}]}
+    # <<<< MODIFICATION: Handle custom_openai type >>>>
+    if user_llm_api_type == "custom_openai":
+        if not user_llm_api_base_url:
+            raise ValueError("对于自定义OpenAI兼容服务 ('custom_openai')，必须提供API基础URL (llm_api_base_url)。")
+        if not user_llm_model_id:
+            raise ValueError("对于自定义OpenAI兼容服务 ('custom_openai')，必须提供LLM模型ID (llm_model_id)。")
 
-    api_base_url = user_llm_api_base_url or config.get("base_url")
-    chat_path = config.get("chat_path")
+        api_base_url_final = user_llm_api_base_url
+        chat_path_final = "/chat/completions"  # OpenAI兼容API的标准路径
+        model_to_use_final = user_llm_model_id
 
-    model_to_use = user_llm_model_id or config.get("default_model")
-    # if model_to_use not in config.get("available_models", []): # This check is too strict if custom models are allowed
-    #    raise ValueError(f"指定模型 '{model_to_use}' 不受LLM类型 '{user_llm_api_type}' 支持，或不在可用模型列表中。")
+        # Check if API Key is a dummy key for custom_openai chat
+        if user_llm_api_key == "dummy_key_for_testing_without_api":
+            print(
+                "WARNING_LLM_CHAT: Custom_openai LLM API Key is a dummy key. LLM chat will be skipped and return placeholder.")
+            return {"choices": [{"message": {
+                "content": "Custom OpenAI compatible LLM API not configured or key is dummy. Cannot generate dynamic content."}}]}
 
-    api_url = f"{api_base_url}{chat_path}"
+    else:
+        # For known LLM types, retrieve configuration from DEFAULT_LLM_API_CONFIG
+        config = DEFAULT_LLM_API_CONFIG.get(user_llm_api_type)
+        if not config:
+            raise ValueError(f"不支持的LLM类型: {user_llm_api_type}")
+
+        # Choose base_url: user-provided first, then default from config
+        api_base_url_final = user_llm_api_base_url or config["base_url"]
+        chat_path_final = config["chat_path"]
+
+        # Choose model: user-provided first, then default from config
+        model_to_use_final = user_llm_model_id or config["default_model"]
+
+        # Check if API Key is a dummy key for known LLM chat
+        if user_llm_api_key == "dummy_key_for_testing_without_api":
+            print(
+                f"WARNING_LLM_CHAT: LLM API Key for {user_llm_api_type} is a dummy key. LLM chat will be skipped and return placeholder.")
+            return {"choices": [
+                {"message": {"content": "LLM API not configured or key is dummy. Cannot generate dynamic content."}}]}
+
+    api_url = f"{api_base_url_final}{chat_path_final}"
 
     headers = {
         "Authorization": f"Bearer {user_llm_api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": model_to_use,
+        "model": model_to_use_final,  # Use the determined model
         "messages": messages,
         "temperature": 0.5,
         "top_p": 0.9
@@ -331,7 +365,7 @@ async def call_llm_api(
         payload["tool_choice"] = tool_choice
 
     print(
-        f"DEBUG_AI: Calling LLM API: Type={user_llm_api_type}, Model={model_to_use}, URL={api_url}, Tools={bool(tools)}")
+        f"DEBUG_AI: Calling LLM API: Type={user_llm_api_type}, Model={model_to_use_final}, URL={api_url}, Tools={bool(tools)}")
 
     async with httpx.AsyncClient() as client:
         try:
@@ -1037,11 +1071,22 @@ async def invoke_agent(
         llm_model_id: Optional[str],
         kb_ids: Optional[List[int]] = None,
         note_ids: Optional[List[int]] = None,
-        preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
+        preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None,
+        past_messages: Optional[List[Dict[str, Any]]] = None  # <<<< 新增：接受历史消息
 ) -> Dict[str, Any]:
-    messages = [{"role": "user", "content": query}]
-    tool_outputs = []
-    response_data = {}
+    # 消息列表现在从 past_messages 开始，如果存在的话
+    messages = past_messages if past_messages is not None else []
+    messages.append({"role": "user", "content": query})  # 加入当前用户问题
+
+    # 用于本轮次将要保存的消息记录
+    current_turn_messages_to_log = []
+    # 初始记录用户的问题
+    current_turn_messages_to_log.append({
+        "role": "user",
+        "content": query
+    })
+
+    response_data = {}  # 用于构建最终返回给 main.py 的 Dict
 
     available_tools_for_llm = await get_all_available_tools_for_llm(db, user_id)
 
@@ -1059,15 +1104,24 @@ async def invoke_agent(
                 "WARNING_AGENT: User specified preferred tools, but no matching active tools found. Falling back to general Q&A.")
             final_llm_response = await call_llm_api(messages, llm_api_type, llm_api_key, llm_api_base_url, llm_model_id)
             if 'choices' in final_llm_response and final_llm_response['choices'][0]['message'].get('content'):
-                response_data["answer"] = final_llm_response['choices'][0]['message']['content']
+                final_answer_content = final_llm_response['choices'][0]['message']['content']
+                response_data["answer"] = final_answer_content
                 response_data["answer_mode"] = "General_mode"
+                current_turn_messages_to_log.append({
+                    "role": "assistant",
+                    "content": final_answer_content,
+                    "llm_type_used": llm_api_type,
+                    "llm_model_used": llm_model_id
+                })
             else:
-                response_data[
-                    "answer"] = "Service busy, please try again later or provide a more specific question."
+                response_data["answer"] = "Service busy, please try again later or provide a more specific question."
                 response_data["answer_mode"] = "Failed_General_mode"
+            # Return all messages generated in this turn
+            response_data["llm_type_used"] = llm_api_type
+            response_data["llm_model_used"] = llm_model_id
+            response_data["turn_messages_to_log"] = current_turn_messages_to_log  # <<<< 返回本轮次消息
             return response_data
     else:
-
         tools_to_send_to_llm = available_tools_for_llm
         print(f"DEBUG_AGENT: Auto-selecting all tools.")
 
@@ -1084,41 +1138,47 @@ async def invoke_agent(
     choice = llm_response_data['choices'][0]
     message_content = choice['message']
 
+    response_data["answer"] = ""  # 初始化最终答案
+    response_data["answer_mode"] = ""  # 初始化答案模式
+
     if message_content.get('tool_calls'):
         print(f"DEBUG_AGENT: LLM decided to call tool(s): {message_content['tool_calls']}")
         tool_outputs_for_second_turn = []
         response_data["answer_mode"] = "Tool_Use_mode"
-        response_data["tool_calls"] = []
+        # 记录LLM决定调用工具的消息
+        current_turn_messages_to_log.append({
+            "role": "tool_call",
+            "content": f"LLM决定调用工具，工具调用详情：{json.dumps(message_content['tool_calls'], ensure_ascii=False)}",
+            "tool_calls_json": message_content['tool_calls'],
+            "llm_type_used": llm_api_type,
+            "llm_model_used": llm_model_id
+        })
 
+        # Process each tool call
         for tc in message_content['tool_calls']:
             tool_call_id = tc.get('id')
             tool_name = tc['function']['name']
             tool_args = json.loads(tc['function']['arguments'])
 
-            response_data["tool_calls"].append({
-                "tool_name": tool_name,
-                "tool_args": tool_args,
-                "status": "pending_execution"
-            })
-
             tool_output_result = None
             try:
+                # Special handling for RAG and Web Search to extract structured info for schema
                 if tool_name == "rag_knowledge_base":
-                    tool_output_result = await execute_tool(
+                    executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
                         tool_call_args={"query": tool_args.get("query"), "kb_ids": kb_ids, "note_ids": note_ids},
                         user_id=user_id
                     )
-                    rag_context = tool_output_result.get("context", "") if isinstance(tool_output_result,
-                                                                                      dict) else str(tool_output_result)
-                    response_data["source_articles"] = tool_output_result.get("sources", []) if isinstance(
-                        tool_output_result, dict) else []
-                    tool_output_result = rag_context
+                    rag_context = executed_output.get("context", "") if isinstance(executed_output, dict) else str(
+                        executed_output)
+                    response_data["source_articles"] = executed_output.get("sources", []) if isinstance(executed_output,
+                                                                                                        dict) else []
+                    tool_output_result = {"context": rag_context,
+                                          "sources": response_data["source_articles"]}  # Pack for logging
 
                 elif tool_name == "web_search":
-
-                    tool_output_result = await execute_tool(
+                    executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
                         tool_call_args={"query": tool_args.get("query"),
@@ -1127,8 +1187,8 @@ async def invoke_agent(
                     )
                     response_data["search_results"] = []
                     results_list = []
-                    if isinstance(tool_output_result, str) and tool_output_result.startswith("网络搜索结果:\n"):
-                        lines = tool_output_result.strip().split("\n")
+                    if isinstance(executed_output, str) and executed_output.startswith("网络搜索结果:\n"):
+                        lines = executed_output.strip().split("\n")
                         for line in lines[1:]:
                             if "标题:" in line and "链接:" in line and "摘要:" in line:
                                 try:
@@ -1140,37 +1200,53 @@ async def invoke_agent(
                                     print(f"WARNING: Could not parse search result string: {parse_e}")
                                     results_list.append({"raw": line})
                     response_data["search_results"] = results_list
+                    tool_output_result = {"raw_string_output": executed_output,
+                                          "parsed_results": results_list}  # Pack for logging
 
                 elif tool_name.startswith("mcp_"):
-                    tool_output_result = await execute_tool(
+                    executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
-                        tool_call_args=tc['function']['arguments'],
+                        tool_call_args=tc['function']['arguments'],  # tool_args is already parsed from JSON
                         user_id=user_id
                     )
+                    tool_output_result = executed_output  # Direct string or dict from MCP tool
+
                 else:
                     tool_output_result = f"Error: LLM attempted to call an unexpected tool: {tool_name}"
                     print(tool_output_result)
 
+                # Log the tool output message
+                output_content_str = str(tool_output_result)  # Convert complex output to string for content
+                current_turn_messages_to_log.append({
+                    "role": "tool_output",
+                    "content": f"工具 {tool_name} 执行结果: {output_content_str[:500]}...",
+                    "tool_output_json": tool_output_result  # Store raw output here
+                })
                 tool_outputs_for_second_turn.append({
                     "tool_call_id": tool_call_id,
-                    "output": tool_output_result
+                    "output": output_content_str  # LLM gets string output
                 })
-                print(
-                    f"DEBUG_AGENT: Tool '{tool_name}' executed successfully, output: {str(tool_output_result)[:100]}...")
+
+                print(f"DEBUG_AGENT: Tool '{tool_name}' executed successfully, output: {output_content_str[:100]}...")
             except Exception as e:
                 error_msg = f"Tool '{tool_name}' execution failed: {e}"
                 tool_outputs_for_second_turn.append({
                     "tool_call_id": tool_call_id,
                     "output": error_msg
                 })
+                # Log the tool error message
+                current_turn_messages_to_log.append({
+                    "role": "tool_output",
+                    "content": f"工具 {tool_name} 执行失败: {error_msg}",
+                    "tool_output_json": {"error": str(e)}
+                })
                 print(f"ERROR_AGENT: {error_msg}")
-                response_data["tool_calls"][-1]["status"] = "failed"
-                response_data["tool_calls"][-1]["error"] = str(e)
 
-        messages.append(message_content)
+        # 将LLM的工具调用消息和工具输出消息添加到上下文，进行第二轮LLM调用
+        messages.append(message_content)  # LLM 'tool_calls' message
         for output in tool_outputs_for_second_turn:
-            messages.append({"role": "tool", "tool_call_id": output["tool_call_id"], "content": str(output["output"])})
+            messages.append({"role": "tool", "tool_call_id": output["tool_call_id"], "content": output["output"]})
 
         print(f"DEBUG_AGENT: Sending tool output back to LLM for final answer.")
 
@@ -1183,27 +1259,56 @@ async def invoke_agent(
             tools=None,
             tool_choice="none"
         )
-
-        if 'choices' in final_llm_response and final_llm_response['choices'][0]['message'].get('content'):
-            response_data["answer"] = final_llm_response['choices'][0]['message']['content']
+        final_answer_content = final_llm_response['choices'][0]['message'].get('content')
+        if final_answer_content:
+            response_data["answer"] = final_answer_content
             response_data["answer_mode"] = "Tool_Use_mode"
+            # 记录LLM的最终答案
+            current_turn_messages_to_log.append({
+                "role": "assistant",
+                "content": final_answer_content,
+                "llm_type_used": llm_api_type,
+                "llm_model_used": llm_model_id
+            })
         else:
             response_data[
                 "answer"] = "Tool call completed, but LLM failed to generate a clear answer. Please try a more specific question."
             response_data["answer_mode"] = "Tool_Use_Failed_Answer"
+            # 记录LLM未能回答的情况
+            current_turn_messages_to_log.append({
+                "role": "assistant",
+                "content": "LLM未能生成明确答案。",
+                "llm_type_used": llm_api_type,
+                "llm_model_used": llm_model_id
+            })
 
     else:
-
         print(f"DEBUG_AGENT: LLM did not call any tools, returning direct answer.")
-        if 'content' in message_content:
-            response_data["answer"] = message_content['content']
+        final_answer_content = message_content.get('content')
+        if final_answer_content:
+            response_data["answer"] = final_answer_content
             response_data["answer_mode"] = "General_mode"
+            # 记录LLM的直接答案
+            current_turn_messages_to_log.append({
+                "role": "assistant",
+                "content": final_answer_content,
+                "llm_type_used": llm_api_type,
+                "llm_model_used": llm_model_id
+            })
         else:
             response_data["answer"] = "AI failed to generate a clear answer. Please retry or rephrase the question."
             response_data["answer_mode"] = "Failed_General_mode"
+            # 记录LLM未能回答的情况
+            current_turn_messages_to_log.append({
+                "role": "assistant",
+                "content": "LLM未能生成明确答案。",
+                "llm_type_used": llm_api_type,
+                "llm_model_used": llm_model_id
+            })
 
     response_data["llm_type_used"] = llm_api_type
     response_data["llm_model_used"] = llm_model_id
+    response_data["turn_messages_to_log"] = current_turn_messages_to_log  # <<<< 返回本轮次生成的详细消息序列
 
     return response_data
 

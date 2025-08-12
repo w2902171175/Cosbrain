@@ -64,7 +64,10 @@ class StudentResponse(StudentBase):
     email: Optional[EmailStr] = None
 
     combined_text: Optional[str] = None
-    llm_api_type: Optional[str] = None
+    # <<<< MODIFICATION: Add "custom_openai" to llm_api_type Literal >>>>
+    llm_api_type: Optional[Literal[
+        "openai", "zhipu", "siliconflow", "huoshanengine", "kimi", "deepseek", "custom_openai"
+    ]] = None
     llm_api_base_url: Optional[str] = None
     llm_model_id: Optional[str] = None
     llm_api_key_encrypted: Optional[str] = None
@@ -72,10 +75,10 @@ class StudentResponse(StudentBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_admin: bool
-    # **<<<<< 新增：积分和上次登录时间字段 >>>>>**
     total_points: int
     last_login_at: Optional[datetime] = None
     login_count: int
+
     completed_projects_count: Optional[int] = Field(None, description="用户创建并已完成的项目总数")
     completed_courses_count: Optional[int] = Field(None, description="用户完成的课程总数")
 
@@ -1011,7 +1014,8 @@ class UserLLMConfigUpdate(BaseModel):
         "siliconflow",
         "huoshanengine",
         "kimi",
-        "deepseek"
+        "deepseek",
+        "custom_openai"
     ]] = None
     llm_api_key: Optional[str] = None
     llm_api_base_url: Optional[str] = None
@@ -1030,25 +1034,82 @@ class AIQARequest(BaseModel):
     preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
 
     llm_model_id: Optional[str] = None
+    conversation_id: Optional[int] = Field(None, description="要继续的对话Session ID。如果为空，则开始新的对话。")
 
 
-# AIQAResponse 也要更新，以反映工具使用情况
 class AIQAResponse(BaseModel):
-    answer: str
-    source_articles: Optional[List[Dict[str, Any]]] = None  # RAG模式下的来源文章
-    search_results: Optional[List[Dict[str, Any]]] = None  # 网络搜索结果摘要，如果使用了网络搜索
-    tool_calls: Optional[List[Dict[str, Any]]] = None  # 如果AI调用了工具，记录工具调用信息
+    answer: str  # 统一返回最终答案
 
+    # AIQA相关通用信息
     answer_mode: str  # "General_mode", "RAG_mode", "Tool_Use_mode"
     llm_type_used: Optional[str] = None
     llm_model_used: Optional[str] = None
 
+    # 新增会话ID，用于客户端后续保持会话
+    conversation_id: int = Field(..., description="当前问答所关联的对话Session ID。")
+    # 当前轮次产生的所有消息，方便前端显示和区分角色
+    # 例如：用户消息 -> LLM工具调用消息 -> 工具输出消息 -> LLM回复消息
+    turn_messages: List["AIConversationMessageResponse"] = Field(..., description="当前轮次（包括用户问题和AI回复）产生的完整消息序列。")
+
+    source_articles: Optional[List[Dict[str, Any]]] = None  # RAG模式下的来源文章
+    search_results: Optional[List[Dict[str, Any]]] = None  # 网络搜索结果摘要，如果使用了网络搜索
+
     class Config:
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- Semantic Search Schemas ---
+
+class AIConversationBase(BaseModel):
+    title: Optional[str] = Field(None, description="对话标题")
 
 
+class AIConversationCreate(AIConversationBase):
+    pass
+
+
+class AIConversationResponse(AIConversationBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    last_updated: datetime
+
+    # 可以在这里包含最近的消息概要，或总消息数，如果需要
+    total_messages_count: Optional[int] = Field(None, description="对话中的总消息数量")
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+# --- AI Conversation Message Schemas ---
+class AIConversationMessageBase(BaseModel):
+    role: Literal["user", "assistant", "tool_call", "tool_output"] = Field(...,
+                                                                           description="消息角色: user, assistant, tool_call, tool_output")
+    content: str = Field(..., description="消息内容（文本）")
+
+    tool_calls_json: Optional[Dict[str, Any]] = Field(None,
+                                                      description="如果角色是'tool_call'，存储原始工具调用的JSON数据")
+    tool_output_json: Optional[Dict[str, Any]] = Field(None,
+                                                       description="如果角色是'tool_output'，存储原始工具输出的JSON数据")
+
+    llm_type_used: Optional[str] = Field(None, description="本次消息使用的LLM类型")
+    llm_model_used: Optional[str] = Field(None, description="本次消息使用的LLM模型ID")
+
+
+class AIConversationMessageCreate(AIConversationMessageBase):
+    pass
+
+
+class AIConversationMessageResponse(AIConversationMessageBase):
+    id: int
+    conversation_id: int
+    sent_at: datetime
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+# --- Semantic Search Schemas ---
 class SemanticSearchRequest(BaseModel):
     query: str
     item_types: Optional[List[str]] = None

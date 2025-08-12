@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationC
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session,joinedload
 from sqlalchemy.exc import IntegrityError
-from typing import List, Optional, Dict, Any, Literal, Union
+from typing import List, Optional, Dict, Any, Literal, Union, Tuple
 import numpy as np
 from datetime import timedelta, datetime, timezone, date
 from sqlalchemy.sql import func
@@ -20,9 +20,9 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse
 # 导入重构后的 ai_core 模块
 import ai_core
 
@@ -2861,7 +2861,7 @@ async def delete_knowledge_document(
     return {"message": "Knowledge document deleted successfully"}
 
 
-# --- GET 请求获取文档内容 (为了方便调试���检查后台处理结果) ---
+# --- GET 请求获取文档内容 (为了方便调试检查后台处理结果) ---
 @app.get("/knowledge-bases/{kb_id}/documents/{document_id}/content", summary="获取知识文档的原始文本内容 (DEBUG)")
 async def get_document_raw_content(
         kb_id: int,
@@ -2898,7 +2898,7 @@ async def get_document_raw_content(
 
 
 @app.get("/knowledge-bases/{kb_id}/documents/{document_id}/chunks",
-         response_model=List[schemas.KnowledgeDocumentChunkResponse], summary="获取知识文档���文本块列表 (DEBUG)")
+         response_model=List[schemas.KnowledgeDocumentChunkResponse], summary="获取知识文档文本块列表 (DEBUG)")
 async def get_document_chunks(
         kb_id: int,
         document_id: int,
@@ -2933,27 +2933,63 @@ async def get_document_chunks(
 
 
 # --- AI问答与智能搜索接口 ---
-
 @app.post("/ai/qa", response_model=schemas.AIQAResponse, summary="AI智能问答 (通用、RAG或工具调用)")
 async def ai_qa(
-        qa_request: schemas.AIQARequest,  # 现在使用包含新字段的 AIQARequest
+        qa_request: schemas.AIQARequest,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    使用LLM进行问答。
-    - 如果 `use_tools` 为 `False` (默认值)：行为与旧版类似，仅提供通用问答。（此时 `kb_ids`, `note_ids` 不再直接控制 RAG，而是成为 `invoke_agent` 的参数，让智能体决定是否使用 RAG）
-    - 如果 `use_tools` 为 `True`: LLM将尝试智能选择并调用工具 (RAG、网络搜索、MCP工具)。
-    - `preferred_tools` 可用于引导AI优先使用某些工具。
+    使用LLM进行问答，并支持对话历史记录。
+    - 如果 `qa_request.conversation_id` 为空，则开始新的对话。
+    - 否则，加载指定对话的历史记录作为LLM的上下文。
+    - `use_tools` 为 `False`：通用问答。
+    - `use_tools` 为 `True`：LLM将尝试智能选择并调用工具 (RAG、网络搜索、MCP工具)。
     """
     print(
         f"DEBUG: 用户 {current_user_id} 提问: {qa_request.query}，使用工具模式: {qa_request.use_tools}，偏好工具: {qa_request.preferred_tools}")
 
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未找到。")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    # 获取用户LLM配置
+    # 1. 获取或创建 AI Conversation
+    db_conversation: AIConversation
+    past_messages_for_llm: List[Dict[str, Any]] = []
+
+    if qa_request.conversation_id:
+        db_conversation = db.query(AIConversation).filter(
+            AIConversation.id == qa_request.conversation_id,
+            AIConversation.user_id == current_user_id
+        ).first()
+        if not db_conversation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定的对话未找到或无权访问。")
+
+        # 加载历史消息作为LLM的上下文
+        # 限制历史消息数量，防止超出LLM的上下文窗口
+        raw_past_messages = db.query(AIConversationMessage).filter(
+            AIConversationMessage.conversation_id == db_conversation.id
+        ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 例如，限制为最后10条消息作为上下文
+
+        for msg in raw_past_messages:
+            llm_message = {"role": msg.role, "content": msg.content}
+            if msg.role == "tool_call" and msg.tool_calls_json:
+                llm_message["tool_calls"] = msg.tool_calls_json  # for LLM format
+            elif msg.role == "tool_output" and msg.tool_output_json:
+                llm_message["name"] = "tool_response_name"  # LLM通常需要一个工具名作为 "name" 字段
+                llm_message["content"] = json.dumps(msg.tool_output_json,
+                                                    ensure_ascii=False)  # tool output content for LLM
+
+            past_messages_for_llm.append(llm_message)
+
+        print(f"DEBUG_AI_CONV: 加载了 {len(past_messages_for_llm)} 条历史消息作为上下文。")
+
+    else:
+        db_conversation = AIConversation(user_id=current_user_id)
+        db.add(db_conversation)
+        db.flush()  # 刷新以获取 conversation_id，但尚未提交事务
+        print(f"DEBUG_AI_CONV: 创建了新的对话 session ID: {db_conversation.id}")
+
     llm_type = user.llm_api_type
     llm_key_encrypted = user.llm_api_key_encrypted
     llm_base_url = user.llm_api_base_url
@@ -2961,65 +2997,83 @@ async def ai_qa(
 
     if not llm_type or not llm_key_encrypted:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="用户未配置LLM API 类型或密钥。请前往用户设置页面配置。")
+                            detail="User has not configured LLM API type or key. Please configure it in user settings.")
 
     try:
         llm_key = ai_core.decrypt_key(llm_key_encrypted)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法解密LLM API密钥，请重新配置。")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to decrypt LLM API key. Please reconfigure.")
 
-    final_response_data = {}  # 用于存储 invoke_agent 的结果
+    try:
+        # 2. 调用 invoke_agent 获取当前轮次的所有消息和最终答案
+        agent_raw_response = await ai_core.invoke_agent(
+            db=db,
+            user_id=current_user_id,
+            query=qa_request.query,
+            llm_api_type=llm_type,
+            llm_api_key=llm_key,
+            llm_api_base_url=llm_base_url,
+            llm_model_id=llm_model_id,
+            kb_ids=qa_request.kb_ids,
+            note_ids=qa_request.note_ids,
+            preferred_tools=qa_request.preferred_tools,
+            past_messages=past_messages_for_llm  # <<<< 传入历史消息
+        )
 
-    if qa_request.use_tools:
-        # 调用智能体，让它自主决策是否使用工具
-        print(f"DEBUG: 激活AI智能体模式。")
-        try:
-            final_response_data = await ai_core.invoke_agent(
-                db=db,
-                user_id=current_user_id,
-                query=qa_request.query,
-                llm_api_type=llm_type,
-                llm_api_key=llm_key,
-                llm_api_base_url=llm_base_url,
-                llm_model_id=llm_model_id,
-                kb_ids=qa_request.kb_ids,  # 传递给智能体，RAG工具会使用
-                note_ids=qa_request.note_ids,  # 传递给智能体，RAG工具会使用
-                preferred_tools=qa_request.preferred_tools  # 传递给智能体，引导工具选择
+        response_to_client = schemas.AIQAResponse(
+            answer=agent_raw_response["answer"],
+            answer_mode=agent_raw_response["answer_mode"],
+            llm_type_used=agent_raw_response.get("llm_type_used"),
+            llm_model_used=agent_raw_response.get("llm_model_used"),
+            conversation_id=db_conversation.id,
+            turn_messages=[]  # 先初始化为空，下面填充
+        )
+
+        # 3. 持久化当前轮次的所有消息
+        for msg_data in agent_raw_response.get("turn_messages_to_log", []):
+            db_message = AIConversationMessage(
+                conversation_id=db_conversation.id,
+                role=msg_data["role"],
+                content=msg_data["content"],
+                tool_calls_json=msg_data.get("tool_calls_json"),
+                tool_output_json=msg_data.get("tool_output_json"),
+                llm_type_used=msg_data.get("llm_type_used"),
+                llm_model_used=msg_data.get("llm_model_used")
             )
-        except Exception as e:
-            print(f"ERROR: AI智能体调用失败: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI智能体调用失败: {e}")
-    else:
-        # 如果不使用工具，直接进行通用问答
-        print(f"DEBUG: AI智能体未激活，执行通用问答模式。")
-        # 直接调用LLM，不再传入工具，强制它生成纯文本回答
-        messages = [{"role": "user", "content": qa_request.query}]
-        try:
-            llm_response_data = await ai_core.call_llm_api(
-                messages,
-                llm_type,
-                llm_key,
-                llm_base_url,
-                llm_model_id,
-                tools=None,  # 不提供工具
-                tool_choice="none"  # 不允许工具调用
-            )
-            if 'choices' in llm_response_data and llm_response_data['choices'][0]['message'].get('content'):
-                final_response_data["answer"] = llm_response_data['choices'][0]['message']['content']
-                final_response_data["answer_mode"] = "General_mode"
-            else:
-                final_response_data["answer"] = "AI未能生成明确答案。请重试或换个问题。"
-                final_response_data["answer_mode"] = "Failed_General_mode"
+            db.add(db_message)
+            response_to_client.turn_messages.append(
+                schemas.AIConversationMessageResponse.model_validate(db_message, from_attributes=True))
 
-        except Exception as e:
-            print(f"ERROR: 通用问答LLM调用失败: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"通用问答失败: {e}")
+        # 4. 更新对话的 last_updated 时间
+        db_conversation.last_updated = func.now()
+        db.add(db_conversation)
 
-        final_response_data["llm_type_used"] = llm_type
-        final_response_data["llm_model_used"] = llm_model_id
+        db.commit()  # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
 
-    # 从 invoke_agent 返回的字典直接构建 AIQAResponse
-    return schemas.AIQAResponse(**final_response_data)
+        # 如果需要，这里可以进一步处理 source_articles 和 search_results
+        # 例如，如果你还希望在 AIQAResponse 的顶层明确显示这些，就从 agent_raw_response 提取
+        response_to_client.source_articles = agent_raw_response.get("source_articles")
+        response_to_client.search_results = agent_raw_response.get("search_results")
+
+        print(f"DEBUG: 用户 {current_user_id} 在对话 {db_conversation.id} 中成功完成AI问答。")
+        return response_to_client
+
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: AI问答请求失败: {e}")
+        # 如果是新创建的对话，并且在问答过程中失败，可以考虑删除它
+        if not qa_request.conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
+            try:  # 尝试清理空对话（如果没消息）
+                if db.query(AIConversationMessage).filter(
+                        AIConversationMessage.conversation_id == db_conversation.id).count() == 0:
+                    db.delete(db_conversation)
+                    db.commit()
+                    print(f"DEBUG_AI_CONV_CLEANUP: 问答失败，已删除空对话 {db_conversation.id}。")
+            except Exception as cleanup_e:
+                print(f"ERROR_AI_CONV_CLEANUP: 问答失败后清理空对话 {db_conversation.id} 失败: {cleanup_e}")
+                db.rollback()  # 再次回滚以防清理也出错
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI问答失败: {e}")
 
 
 @app.post("/search/semantic", response_model=List[schemas.SemanticSearchResult], summary="智能语义搜索")
@@ -3123,6 +3177,153 @@ async def semantic_search(
 
     print(f"DEBUG_AI: 语义搜索完成，返回 {len(final_results)} 个结果。")
     return final_results
+
+
+@app.get("/users/me/ai-conversations", response_model=List[schemas.AIConversationResponse],
+         summary="获取当前用户的所有AI对话列表")
+async def get_my_ai_conversations(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        limit: int = 10,
+        offset: int = 0
+):
+    """
+    获取当前用户的所有AI对话列表，按最新更新时间排序。
+    """
+    print(f"DEBUG: 获取用户 {current_user_id} 的AI对话列表。")
+    conversations = db.query(AIConversation).filter(AIConversation.user_id == current_user_id) \
+        .order_by(AIConversation.last_updated.desc()) \
+        .offset(offset).limit(limit).all()
+
+    response_list = []
+    for conv in conversations:
+        # 动态计算总消息数，填充 total_messages_count
+        total_messages_count = db.query(AIConversationMessage).filter(
+            AIConversationMessage.conversation_id == conv.id).count()
+        conv_response = schemas.AIConversationResponse.model_validate(conv, from_attributes=True)
+        conv_response.total_messages_count = total_messages_count
+        response_list.append(conv_response)
+
+    print(f"DEBUG: 用户 {current_user_id} 获取到 {len(response_list)} 个AI对话。")
+    return response_list
+
+
+@app.get("/users/me/ai-conversations/{conversation_id}", response_model=schemas.AIConversationResponse,
+         summary="获取指定AI对话详情")
+async def get_ai_conversation_detail(
+        conversation_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定ID的AI对话详情。
+    """
+    print(f"DEBUG: 获取用户 {current_user_id} 的AI对话 {conversation_id} 详情。")
+    db_conversation = db.query(AIConversation).filter(
+        AIConversation.id == conversation_id,
+        AIConversation.user_id == current_user_id
+    ).first()
+    if not db_conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话未找到或无权访问。")
+
+    # 动态计算总消息数
+    total_messages_count = db.query(AIConversationMessage).filter(
+        AIConversationMessage.conversation_id == db_conversation.id).count()
+    conv_response = schemas.AIConversationResponse.model_validate(db_conversation, from_attributes=True)
+    conv_response.total_messages_count = total_messages_count
+
+    return conv_response
+
+
+@app.get("/users/me/ai-conversations/{conversation_id}/messages",
+         response_model=List[schemas.AIConversationMessageResponse], summary="获取指定AI对话的所有消息历史")
+async def get_ai_conversation_messages(
+        conversation_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        limit: int = 50,
+        offset: int = 0
+):
+    """
+    获取指定AI对话的所有消息历史记录。
+    """
+    print(f"DEBUG: 获取用户 {current_user_id} 的AI对话 {conversation_id} 消息历史。")
+    # 验证对话存在且属于当前用户
+    db_conversation = db.query(AIConversation).filter(
+        AIConversation.id == conversation_id,
+        AIConversation.user_id == current_user_id
+    ).first()
+    if not db_conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话未找到或无权访问。")
+
+    messages = db.query(AIConversationMessage).filter(AIConversationMessage.conversation_id == conversation_id) \
+        .order_by(AIConversationMessage.sent_at).offset(offset).limit(limit).all()
+
+    print(f"DEBUG: 对话 {conversation_id} 获取到 {len(messages)} 条消息。")
+    # Pydantic的 from_attributes=True 会自动处理ORM对象到Schema的转换
+    return messages
+
+
+@app.put("/users/me/ai-conversations/{conversation_id}", response_model=schemas.AIConversationResponse,
+         summary="更新指定AI对话的标题")
+async def update_ai_conversation_title(
+        conversation_id: int,
+        conversation_data: schemas.AIConversationBase,  # 允许更新标题
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    更新指定AI对话的标题。
+    """
+    print(f"DEBUG: 用户 {current_user_id} 尝试更新AI对话 {conversation_id}。")
+    db_conversation = db.query(AIConversation).filter(
+        AIConversation.id == conversation_id,
+        AIConversation.user_id == current_user_id
+    ).first()
+    if not db_conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话未找到或无权访问。")
+
+    update_dict = conversation_data.dict(exclude_unset=True)
+    if "title" in update_dict:
+        db_conversation.title = update_dict["title"]
+        db.add(db_conversation)
+        db.commit()
+        db.refresh(db_conversation)
+        print(f"DEBUG: AI对话 {conversation_id} 标题更新为 '{db_conversation.title}'。")
+    else:
+        print(f"DEBUG: AI对话 {conversation_id} 无标题更新内容。")
+
+    # 动态计算总消息数 for response
+    total_messages_count = db.query(AIConversationMessage).filter(
+        AIConversationMessage.conversation_id == db_conversation.id).count()
+    conv_response = schemas.AIConversationResponse.model_validate(db_conversation, from_attributes=True)
+    conv_response.total_messages_count = total_messages_count
+
+    return conv_response
+
+
+@app.delete("/users/me/ai-conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定AI对话")
+async def delete_ai_conversation(
+        conversation_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    删除指定AI对话及其所有消息历史。
+    """
+    print(f"DEBUG: 用户 {current_user_id} 尝试删除AI对话 {conversation_id}。")
+    db_conversation = db.query(AIConversation).filter(
+        AIConversation.id == conversation_id,
+        AIConversation.user_id == current_user_id
+    ).first()
+    if not db_conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话未找到或无权访问。")
+
+    db.delete(db_conversation)  # 会级联删除所有消息 (cascade="all, delete-orphan")
+    db.commit()
+    print(f"DEBUG: AI对话 {conversation_id} 及其所有消息已删除。")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- 随手记录管理接口 ---
