@@ -13,7 +13,7 @@ from sqlalchemy import and_,or_,ForeignKey
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer #
 from dotenv import load_dotenv
-import requests,schemas,secrets,json,os,uuid,asyncio
+import requests,schemas,secrets,json,os,uuid,asyncio,httpx
 load_dotenv()
 # 密码哈希
 from passlib.context import CryptContext
@@ -373,85 +373,108 @@ async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
                                      api_key: Optional[str] = None) -> schemas.McpStatusResponse:
     """
     尝试ping MCP服务的健康检查端点或一个简单的公共API。
-    此处为简化模拟，实际应根据MCP的具体API文档实现。
+    此处为简化实现，实际应根据MCP的具体API文档实现。
     """
     print(f"DEBUG_MCP: Checking connectivity for {base_url} with protocol {protocol_type}")
 
-    test_url = base_url.rstrip('/')
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+        # Modelscope有时需要X-DashScope-Apikey
+        if "modelscope" in base_url.lower():
+            headers["X-DashScope-Apikey"] = api_key  # 为Modelscope添加专用header
 
-    # 模拟不同的协议连通性检查
-    if protocol_type.lower() == "sse" or protocol_type.lower() == "streamable_http":
-        # 对于 SEE/Streamable HTTP，可能没有简单的GET端点返回JSON
-        # 我们只能模拟一个成功的连接尝试或ping
+    # 使用 httpx.AsyncClient 进行异步请求
+    async with httpx.AsyncClient() as client:
         try:
-            # 尝试一个HEAD请求或小范围GET请求，看是否能建立连接
-            # 对于SEE，通常是客户端监听，简单的GET请求可能直接挂起
-            # 这里我们假设一个 /health 或 /status 端点存在
-            test_health_url = base_url.rstrip('/') + "/health"  # 假设模型服务有健康检查端口
-            # 对于魔搭社区这类，通常是GET base_url本身，或者 /v1/models /v1/ping 等
-            # 具体 ModelScope SEE 服务的 API 连通性检查方式，需要查阅其文档
-            # 这里简化为尝试HTTP GET
-            response = requests.get(test_health_url, headers=headers, stream=True, timeout=5)  # 用stream=True防止阻塞
-            response.raise_for_status()
-            return schemas.McpStatusResponse(
-                status="success",
-                message=f"成功连接到MCP服务 (模拟SSE/Streamable HTTP连通性)：{base_url}",
-                timestamp=datetime.now()
-            )
-        except requests.exceptions.Timeout:
+            # **Case 1: ModelScope 推理 API (通常以 /sse 或 /api/v1/inference 结尾，期望 POST 请求)**
+            # 这些端点通常没有独立的 /health 或 /api/v1/models 路径。
+            # 直接对 base_url 进行 HEAD 请求可以判断该服务是否可达。
+            is_modelscope_inference_url = "mcp.api-inference.modelscope.net" in base_url.lower() \
+                                          or "modelscope.cn/api/v1/inference" in base_url.lower()
+
+            if is_modelscope_inference_url:
+                print(f"DEBUG_MCP: Attempting HEAD on ModelScope inference URL: {base_url}")
+                response = await client.head(base_url, headers=headers, timeout=5)
+                # 对于推理服务，如果返回 405 (Method Not Allowed), 表示服务器可达，但不支持HEAD，这仍可视为成功连通
+                if response.status_code == 405:
+                    return schemas.McpStatusResponse(
+                        status="success",
+                        message=f"ModelScope推理服务可达 (HTTP 405 Method Not Allowed): {base_url}",
+                        timestamp=datetime.now()
+                    )
+                # 404 (Not Found) 表示该 URL 路径确实不存在，是真正的失败
+                if response.status_code == 404:
+                    raise httpx.RequestError(f"Endpoint not found: {base_url}", request=response.request)  # 转换为请求错误
+
+                response.raise_for_status()  # 对其他 4xx/5xx 状态码抛出异常
+                return schemas.McpStatusResponse(
+                    status="success",
+                    message=f"成功连接到ModelScope推理服务 ({response.status_code}): {base_url}",
+                    timestamp=datetime.now()
+                )
+
+            # **Case 2: 纯 SSE/Streamable HTTP (通用，非特定ModelScope的健康检查)**
+            elif protocol_type.lower() == "sse" or protocol_type.lower() == "streamable_http":
+                # 对于通用SSE，假设存在 /health 端点。
+                test_health_url = base_url.rstrip('/') + "/health"
+                print(f"DEBUG_MCP: Attempting GET on general SSE health URL: {test_health_url}")
+                response = await client.get(test_health_url, headers=headers, timeout=5)
+                response.raise_for_status()
+                return schemas.McpStatusResponse(
+                    status="success",
+                    message=f"成功连接到MCP服务 (SSE/Streamable HTTP连通性): {test_health_url}",
+                    timestamp=datetime.now()
+                )
+
+            # **Case 3: 标准 HTTP API (通用 REST API，包括非推理部分的ModelScope，以及LLM API)**
+            else:  # 默认为 http_rest 或其他通用类型
+                test_api_url = base_url.rstrip('/')
+                # 对于通用 ModelScope API (非推理服务)，或当 base_url 仅为域名时
+                # 尝试访问其 /api/v1/models 或类似的通用发现端点。
+                # 如果 base_url 已经包含如 /api/v1 等路径，则不重复追加。
+                if ("modelscope.cn" in base_url.lower() or "modelscope.net" in base_url.lower()) and \
+                        not any(suffix in base_url.lower() for suffix in
+                                ["/sse", "/api/v1/inference", "/v1/models", "/health", "/status"]):
+                    test_api_url = base_url.rstrip('/') + "/api/v1/models"  # 常见 ModelScope 通用 API 路径
+                elif not base_url.lower().endswith("health") and not base_url.lower().endswith("status"):
+                    # 对于其他通用自定义 HTTP API，如果没有明确指定健康检查路径，假设为 /health。
+                    test_api_url = base_url.rstrip('/') + "/health"
+
+                print(f"DEBUG_MCP: Attempting GET on standard HTTP API URL: {test_api_url}")
+                # 使用标准的 GET 请求
+                response = await client.get(test_api_url, headers=headers, timeout=5)
+                response.raise_for_status()  # 对 4xx/5xx 状态码抛出异常
+                return schemas.McpStatusResponse(
+                    status="success",
+                    message=f"成功连接到MCP服务: {test_api_url}",
+                    timestamp=datetime.now()
+                )
+
+        except httpx.TimeoutException:
+            print(f"ERROR_MCP: 连接MCP服务超时: {base_url}")
             return schemas.McpStatusResponse(
                 status="timeout",
-                message=f"连接MCP服务超时 (SSE/Streamable HTTP): {base_url}",
+                message=f"连接MCP服务超时: {base_url}",
                 timestamp=datetime.now()
             )
-        except requests.exceptions.RequestException as e:
-            status_code = getattr(e.response, 'status_code', 'N/A')
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            print(f"ERROR_MCP: 连接MCP服务失败 (HTTP {status_code}): {e}")
             return schemas.McpStatusResponse(
                 status="failure",
-                message=f"连接MCP服务失败 (SSE/Streamable HTTP, {status_code}): {e}",
+                message=f"连接MCP服务失败 (HTTP {status_code}): {e.response.text}",
+                timestamp=datetime.now()
+            )
+        except httpx.RequestError as e:
+            print(f"ERROR_MCP: 连接MCP服务请求错误: {e}")
+            return schemas.McpStatusResponse(
+                status="failure",
+                message=f"连接MCP服务请求错误: {e}",
                 timestamp=datetime.now()
             )
         except Exception as e:
-            return schemas.McpStatusResponse(
-                status="failure",
-                message=f"内部错误，无法检查MCP服务 (SSE/Streamable HTTP)：{e}",
-                timestamp=datetime.now()
-            )
-    else:  # 默认为传统的HTTP API (包括LLM API类型)
-        # 例如 ModelScope 的公共接口通常是 /api/vX 或 /v1/models
-        # 对魔搭社区的通用服务，可以尝试访问其 models 列表
-        test_api_url = base_url.rstrip('/') + '/v1/models'  # 尝试访问一个通用models列表接口
-        # 例子： https://mcp.api-inference.modelscope.net/00bcc54bf7fb49/sse
-        # 对于这种特定服务��可能没有统一的 /v1/models 接口，连通性可能需要直接调用服务的特定API
-        # 这里为了演示，我们先假设 /v1/models 存在
-        if "modelscope" in base_url.lower():  # 特别处理modelscope的通用api
-            test_api_url = base_url.rstrip('/') + "/api/v1/models"  # 或者/v1/inference 一般需要看��档
-
-        try:
-            response = requests.get(test_api_url, headers=headers, timeout=5)
-            response.raise_for_status()
-            return schemas.McpStatusResponse(
-                status="success",
-                message=f"成功连接到MCP服务：{base_url}",
-                timestamp=datetime.now()
-            )
-        except requests.exceptions.Timeout:
-            return schemas.McpStatusResponse(
-                status="timeout",
-                message=f"连接MCP服务超时：{base_url}",
-                timestamp=datetime.now()
-            )
-        except requests.exceptions.RequestException as e:
-            status_code = getattr(e.response, 'status_code', 'N/A')
-            return schemas.McpStatusResponse(
-                status="failure",
-                message=f"连接MCP服务失败 ({status_code}): {e}. 请检查URL或API密钥。",
-                timestamp=datetime.now()
-            )
-        except Exception as e:
+            print(f"ERROR_MCP: 检查MCP服务时发生未知错误: {e}")
             return schemas.McpStatusResponse(
                 status="failure",
                 message=f"内部错误，无法检查MCP服务：{e}",

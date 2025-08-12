@@ -1,6 +1,6 @@
 # 鸿庆书云创新协作平台API接口文档
 
-## 目录
+本文档详细描述了鸿庆书云创新协作平台的数据库表结构，共包含 **28个数据表**。
 - [项目概述](#项目概述)
 - [认证方式](#认证方式)
 - [用户认证与管理](#用户认证与管理)
@@ -11,7 +11,8 @@
 - [AI智能服务](#ai智能服务)
 - [搜索引擎配置](#搜索引擎配置)
 - [TTS语音配置](#tts语音配置)
-- [MCP服务配置](#mcp服务配置)
+8. [AI对话系统表](#8-ai对话系统表)
+9. [系统配置表](#9-系统配置表)
 - [聊天室管理](#聊天室管理)
 - [收藏夹管理](#收藏夹管理)
 - [随手记录](#随手记录)
@@ -146,6 +147,8 @@ Authorization: Bearer <your_jwt_token>
 **响应体：**
 ```json
 {
+**特殊约束：** 确保一个用户在一个聊天室中最多只有一个 'pending' 状态的申请
+
   "id": 1,
   "username": "张三",
   "email": "zhangsan@example.com",
@@ -361,6 +364,18 @@ Authorization: Bearer <your_jwt_token>
   "description": "从零开始学习Python编程",
   "instructor": "李老师",
   "category": "编程语言",
+### 5.5 collection_items (收藏项目表)
+
+旧的收藏系统表（将来可能重构或删除）。
+
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| id | Integer | PRIMARY KEY, INDEX | 收藏项目唯一标识符 |
+| user_id | Integer | FOREIGN KEY(students.id) | 用户ID |
+| item_type | String | | 项目类型 |
+| item_id | Integer | | 项目ID |
+| created_at | DateTime | SERVER_DEFAULT=func.now() | 创建时间 |
+
   "total_lessons": 40,
   "avg_rating": 4.8,
   "cover_image_url": "https://example.com/python-course.jpg",
@@ -380,23 +395,148 @@ Authorization: Bearer <your_jwt_token>
 
 ### 3. 更新指定课程
 **接口：** `PUT /courses/{course_id}`
+| combined_text | Text | | 合并文本（用于搜索） |
+| embedding | Vector(1024) | | 向量嵌入 |
+| created_at | DateTime | SERVER_DEFAULT=func.now() | 创建时间 |
+| updated_at | DateTime | ONUPDATE=func.now() | 更新时间 |
 
-**摘要：** 更新指定课程信息（仅管理员可操作）
+### 6.2 user_courses (用户课程关联表)
 
-**认证：** 需要Bearer Token（管理员权限）
+管理用户与课程的关联关系。
 
-### 4. 为学生推荐课程
-**接口：** `GET /recommend/courses/{student_id}`
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| student_id | Integer | FOREIGN KEY(students.id), PRIMARY KEY | 学生ID |
+| course_id | Integer | FOREIGN KEY(courses.id), PRIMARY KEY | 课程ID |
+| progress | Float | DEFAULT=0.0 | 学习进度 |
+| status | String | DEFAULT="in_progress" | 学习状态 |
+| last_accessed | DateTime | SERVER_DEFAULT=func.now(), ONUPDATE=func.now() | 最后访问时间 |
+| created_at | DateTime | SERVER_DEFAULT=func.now() | 创建时间 |
 
-**摘要：** 为指定学生推荐匹配的课程
+### 6.3 course_materials (课程材料表)
 
-**查询参数：**
-- `initial_k`: 初始候选数量（默认20）
-- `final_k`: 最终推荐数量（默认5）
+存储课程相关的学习材料。
 
-### 5. 课程材料管理
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| id | Integer | PRIMARY KEY, INDEX | 材料唯一标识符 |
+| course_id | Integer | FOREIGN KEY(courses.id), NOT NULL, INDEX | 课程ID |
+| title | String | NOT NULL | 材料标题 |
+| type | String | NOT NULL | 材料类型（file/link/text） |
+| file_path | String | NULLABLE | 本地文件存储路径 |
+| original_filename | String | NULLABLE | 原始上传文件名 |
+| file_type | String | NULLABLE | 文件MIME类型 |
+| size_bytes | Integer | NULLABLE | 文件大小（字节） |
+| url | String | NULLABLE | 外部链接URL |
+| content | Text | NULLABLE | 文本内容或描述 |
+| combined_text | Text | NULLABLE | 合并文本（用于搜索） |
+| embedding | Vector(1024) | NULLABLE | 向量嵌入 |
+| created_at | DateTime | SERVER_DEFAULT=func.now() | 创建时间 |
+| updated_at | DateTime | ONUPDATE=func.now() | 更新时间 |
 
-#### 5.1 上传课程材料
+**约束：** 
+- UNIQUE(course_id, title) - 同一课程下材料标题唯一
+- UNIQUE(file_path) - 文件路径唯一
+### 7.1 achievements (成就表)
+
+定义系统中可获得的成就。
+
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| id | Integer | PRIMARY KEY, INDEX | 成就唯一标识符 |
+| name | String | UNIQUE, NOT NULL | 成就名称 |
+| description | Text | NOT NULL | 成就描述 |
+| criteria_type | String | NOT NULL | 达成条件类型 |
+| criteria_value | Float | NOT NULL | 达成所需数值门槛 |
+| badge_url | String | NULLABLE | 勋章图片URL |
+| reward_points | Integer | DEFAULT=0, NOT NULL | 奖励积分 |
+| is_active | Boolean | DEFAULT=True, NOT NULL | 是否启用 |
+| created_at | DateTime | SERVER_DEFAULT=func.now() | 创建时间 |
+| updated_at | DateTime | ONUPDATE=func.now() | 更新时间 |
+
+### 7.2 user_achievements (用户成就表)
+| is_notified | Boolean | DEFAULT=False, NOT NULL | 是否已通知 |
+**约束：** UNIQUE(user_id, achievement_id) - 确保一个用户不会重复获得同一个成就
+
+### 7.3 point_transactions (积分交易表)
+| amount | Integer | NOT NULL | 积分变化量（正数为获得，负数为消耗） |
+| reason | String | NULLABLE | 变动理由描述 |
+| related_entity_type | String | NULLABLE | 关联实体类型 |
+| related_entity_id | Integer | NULLABLE | 关联实体ID |
+## 8. AI对话系统表
+
+### 8.1 ai_conversations (AI对话表)
+
+存储用户与AI的对话会话。
+
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| id | Integer | PRIMARY KEY, INDEX | 对话唯一标识符 |
+| user_id | Integer | FOREIGN KEY(students.id), NOT NULL, INDEX | 对话所属用户ID |
+| title | String | NULLABLE | 对话标题 |
+| created_at | DateTime | SERVER_DEFAULT=func.now(), NOT NULL | 对话创建时间 |
+| last_updated | DateTime | SERVER_DEFAULT=func.now(), ONUPDATE=func.now(), NOT NULL | 最后更新时间 |
+
+### 8.2 ai_conversation_messages (AI对话消息表)
+
+存储AI对话中的具体消息。
+
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| id | Integer | PRIMARY KEY, INDEX | 消息唯一标识符 |
+| conversation_id | Integer | FOREIGN KEY(ai_conversations.id), NOT NULL, INDEX | 所属对话ID |
+| role | String | NOT NULL | 消息角色（user/assistant/tool_call/tool_output） |
+| content | Text | NOT NULL | 消息内容 |
+| tool_calls_json | JSONB | NULLABLE | 工具调用JSON数据 |
+| tool_output_json | JSONB | NULLABLE | 工具输出JSON数据 |
+| llm_type_used | String | NULLABLE | 使用的LLM类型 |
+| llm_model_used | String | NULLABLE | 使用的LLM模型ID |
+| sent_at | DateTime | SERVER_DEFAULT=func.now(), NOT NULL | 消息发送时间 |
+
+---
+## 9. 系统配置表
+
+### 9.1 user_mcp_configs (用户MCP配置表)
+### 9.2 user_search_engine_configs (用户搜索引擎配置表)
+### 9.3 user_tts_configs (用户TTS配置表)
+   - `knowledge_bases.owner_id` → `students.id`
+   - `forum_topics.owner_id` → `students.id`
+   - `ai_conversations.user_id` → `students.id`
+   - `course_materials.course_id` → `courses.id`
+
+   - `knowledge_document_chunks.kb_id` → `knowledge_bases.id`
+   - `forum_comments.topic_id` → `forum_topics.id`
+   - `forum_comments.parent_comment_id` → `forum_comments.id` (自引用)
+   - `forum_likes.topic_id` → `forum_topics.id`
+   - `forum_likes.comment_id` → `forum_comments.id`
+
+
+7. **积分和成就**：
+   - `user_achievements.user_id` → `students.id`
+   - `user_achievements.achievement_id` → `achievements.id`
+   - `point_transactions.user_id` → `students.id`
+
+8. **AI对话**：
+   - `ai_conversation_messages.conversation_id` → `ai_conversations.id`
+
+
+   - 同一课程下材料标题唯一
+   - 用户不能重复获得同一个成就
+
+   - 删除用户时，相关的成就、积分记录、AI对话等会被级联删除
+   - 删除AI对话时，相关的消息会被级联删除
+
+
+
+2. **JSONB字段**：skills、required_skills、required_roles、tool_calls_json、tool_output_json 等使用JSONB存储复杂数据
+6. **嵌套结构支持**：文件夹和评论支持嵌套结构
+1. 修正了数据库表总数为28个
+2. 新增了AI对话系统相关表格（ai_conversations, ai_conversation_messages）
+4. 补充了积分系统和成就系统的完整字段说明
+5. 修正了所有表的字段名称和约束信息，确保与当前模型完全同步
+6. 新增了collection_items表的说明
+7. 完善了所有外键关系和约束条件的描述
+8. 更新了技术特性说明，包括向量搜索和JSONB字段的使用
 **接口：** `POST /courses/{course_id}/materials/`
 
 **摘要：** 为指定课程上传学习材料
