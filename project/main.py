@@ -356,6 +356,7 @@ origins = [
     "http://localhost",
     "http://localhost:8080",
     "http://localhost:3000",
+    "http://localhost:5173",
     # ... 添加前端域名和端口
 ]
 
