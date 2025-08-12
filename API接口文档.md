@@ -18,6 +18,7 @@
 - [仪表板接口](#仪表板接口)
 - [论坛功能](#论坛功能)
 - [积分与成就系统](#积分与成就系统)
+- [AI对话系统](#ai对话系统)
 - [统计接口](#统计接口)
 - [WebSocket实时通信](#websocket实时通信)
 - [系统管理](#系统管理)
@@ -49,7 +50,21 @@ Authorization: Bearer <your_jwt_token>
 
 ## 用户认证与管理
 
-### 1. 用户注册
+### 1. 健康检查
+**接口：** `GET /health`
+
+**摘要：** API服务健康检查
+
+**响应体：**
+```json
+{
+  "status": "healthy",
+  "message": "鸿庆书云创新协作平台API正常运行",
+  "timestamp": "2024-01-01T10:00:00Z"
+}
+```
+
+### 2. 用户注册
 **接口：** `POST /register`
 
 **摘要：** 新用户注册账号
@@ -95,7 +110,7 @@ Authorization: Bearer <your_jwt_token>
 }
 ```
 
-### 2. 用户登录
+### 3. 用户登录
 **接口：** `POST /token`
 
 **摘要：** 用户登录获取JWT令牌
@@ -121,7 +136,7 @@ Authorization: Bearer <your_jwt_token>
 }
 ```
 
-### 3. 获取当前用户信息
+### 4. 获取当前用户信息
 **接口：** `GET /users/me`
 
 **摘要：** 获取当前登录用户的详细信息
@@ -150,7 +165,7 @@ Authorization: Bearer <your_jwt_token>
 }
 ```
 
-### 4. 更新用户信息
+### 5. 更新用户信息
 **接口：** `PUT /users/me`
 
 **摘要：** 更新当前登录用户的信息
@@ -174,7 +189,7 @@ Authorization: Bearer <your_jwt_token>
 }
 ```
 
-### 5. 更新用户LLM配置
+### 6. 更新用户LLM配置
 **接口：** `PUT /users/me/llm-config`
 
 **摘要：** 更新当前用户的LLM（大语言模型）配置
@@ -184,14 +199,14 @@ Authorization: Bearer <your_jwt_token>
 **请求体：**
 ```json
 {
-  "llm_provider": "openai",
-  "llm_model": "gpt-4",
+  "llm_api_type": "openai",
+  "llm_model_id": "gpt-4",
   "llm_api_key": "your_api_key",
-  "llm_api_base": "https://api.openai.com/v1"
+  "llm_api_base_url": "https://api.openai.com/v1"
 }
 ```
 
-### 6. 获取可用LLM模型
+### 7. 获取可用LLM模型
 **接口：** `GET /llm/available-models`
 
 **摘要：** 获取可配置的LLM服务商及模型列表
@@ -207,12 +222,16 @@ Authorization: Bearer <your_jwt_token>
     "anthropic": {
       "models": ["claude-3-opus", "claude-3-sonnet"],
       "default_api_base": "https://api.anthropic.com"
+    },
+    "siliconflow": {
+      "models": ["deepseek-chat", "qwen-turbo"],
+      "default_api_base": "https://api.siliconflow.cn/v1"
     }
   }
 }
 ```
 
-### 7. 获取所有学生列表
+### 8. 获取所有学生列表
 **接口：** `GET /students/`
 
 **摘要：** 获取所有学生用户列表
@@ -231,7 +250,7 @@ Authorization: Bearer <your_jwt_token>
 ]
 ```
 
-### 8. 获取指定学生详情
+### 9. 获取指定学生详情
 **接口：** `GET /students/{student_id}`
 
 **摘要：** 获取指定学生的详细信息
@@ -255,11 +274,28 @@ Authorization: Bearer <your_jwt_token>
 {
   "title": "智能学习管理系统",
   "description": "基于AI的个性化学习平台",
-  "required_skills": ["Python", "React", "机器学习"],
-  "team_size": 5,
-  "duration_weeks": 12,
-  "difficulty_level": "中等",
-  "is_recruiting": true
+  "required_skills": [
+    {
+      "name": "Python",
+      "level": "精通"
+    },
+    {
+      "name": "React",
+      "level": "熟练"
+    }
+  ],
+  "required_roles": ["后端开发", "前端开发", "UI设计"],
+  "keywords": "AI, 学习, 管理系统",
+  "project_type": "Web应用",
+  "expected_deliverables": "完整的学习管理系统",
+  "contact_person_info": "张三 - zhangsan@example.com",
+  "learning_outcomes": "掌握全栈开发技能",
+  "team_size_preference": "3-5人",
+  "project_status": "招募中",
+  "start_date": "2024-02-01",
+  "end_date": "2024-06-01",
+  "estimated_weekly_hours": 20,
+  "location": "广州"
 }
 ```
 
@@ -279,7 +315,7 @@ Authorization: Bearer <your_jwt_token>
 ### 4. 更新指定项目
 **接口：** `PUT /projects/{project_id}`
 
-**摘要：** 更新指定项目信息
+**摘要：** 更新指定项目信息（仅项目创建者或管理员可操作）
 
 **认证：** 需要Bearer Token
 
@@ -291,6 +327,10 @@ Authorization: Bearer <your_jwt_token>
 **路径参数：**
 - `student_id`: 学生ID
 
+**查询参数：**
+- `initial_k`: 初始候选数量（默认20）
+- `final_k`: 最终推荐数量（默认5）
+
 ### 6. 为项目匹配学生
 **接口：** `GET /projects/{project_id}/match-students`
 
@@ -299,6 +339,10 @@ Authorization: Bearer <your_jwt_token>
 **路径参数：**
 - `project_id`: 项目ID
 
+**查询参数：**
+- `initial_k`: 初始候选数量（默认20）
+- `final_k`: 最终推荐数量（默认5）
+
 ---
 
 ## 课程管理
@@ -306,9 +350,9 @@ Authorization: Bearer <your_jwt_token>
 ### 1. 创建新课程
 **接口：** `POST /courses/`
 
-**摘要：** 创建新的课程
+**摘要：** 创建新的课程（仅管理员可操作）
 
-**认证：** 需要Bearer Token
+**认证：** 需要Bearer Token（管理员权限）
 
 **请求体：**
 ```json
@@ -316,9 +360,16 @@ Authorization: Bearer <your_jwt_token>
   "title": "Python编程基础",
   "description": "从零开始学习Python编程",
   "instructor": "李老师",
-  "difficulty_level": "初级",
-  "estimated_hours": 40,
-  "tags": ["编程", "Python", "基础"]
+  "category": "编程语言",
+  "total_lessons": 40,
+  "avg_rating": 4.8,
+  "cover_image_url": "https://example.com/python-course.jpg",
+  "required_skills": [
+    {
+      "name": "计算机基础",
+      "level": "了解"
+    }
+  ]
 }
 ```
 
@@ -330,32 +381,22 @@ Authorization: Bearer <your_jwt_token>
 ### 3. 更新指定课程
 **接口：** `PUT /courses/{course_id}`
 
-**摘要：** 更新指定课程信息
+**摘要：** 更新指定课程信息（仅管理员可操作）
+
+**认证：** 需要Bearer Token（管理员权限）
 
 ### 4. 为学生推荐课程
 **接口：** `GET /recommend/courses/{student_id}`
 
 **摘要：** 为指定学生推荐匹配的课程
 
-### 5. 加入/更新课程学习状态
-**接口：** `PUT /users/me/courses/{course_id}`
+**查询参数：**
+- `initial_k`: 初始候选数量（默认20）
+- `final_k`: 最终推荐数量（默认5）
 
-**摘要：** 加入课程或更新学习进度
+### 5. 课程材料管理
 
-**认证：** 需要Bearer Token
-
-**请求体：**
-```json
-{
-  "progress": 75.5,
-  "status": "in_progress",
-  "notes": "已完成前三章学习"
-}
-```
-
-### 6. 课程材料管理
-
-#### 6.1 上传课程材料
+#### 5.1 上传课程材料
 **接口：** `POST /courses/{course_id}/materials/`
 
 **摘要：** 为指定课程上传学习材料
@@ -370,22 +411,22 @@ description: "材料描述"
 material_type: "document"
 ```
 
-#### 6.2 获取课程材料列表
+#### 5.2 获取课程材料列表
 **接口：** `GET /courses/{course_id}/materials/`
 
 **摘要：** 获取指定课程的所有学习材料
 
-#### 6.3 获取课程材料详情
+#### 5.3 获取课程材料详情
 **接口：** `GET /courses/{course_id}/materials/{material_id}`
 
 **摘要：** 获取指定课程材料的详细信息
 
-#### 6.4 更新课程材料
+#### 5.4 更新课程材料
 **接口：** `PUT /courses/{course_id}/materials/{material_id}`
 
 **摘要：** 更新指定课程材料信息
 
-#### 6.5 删除课程材料
+#### 5.5 删除课程材料
 **接口：** `DELETE /courses/{course_id}/materials/{material_id}`
 
 **摘要：** 删除指定课程材料
@@ -406,7 +447,7 @@ material_type: "document"
 {
   "name": "Python学习笔记",
   "description": "记录Python学习过程中的知识点",
-  "is_public": false
+  "access_type": "private"
 }
 ```
 
@@ -442,7 +483,8 @@ material_type: "document"
 {
   "title": "Python函数详解",
   "content": "函数是Python中的重要概念...",
-  "tags": ["Python", "函数", "编程"]
+  "version": "1.0",
+  "tags": "Python, 函数, 编程"
 }
 ```
 
@@ -477,15 +519,18 @@ material_type: "document"
 
 **请求体：** `multipart/form-data`
 ```
-file: [文件]
-title: "文档标题"
-description: "文档描述"
+file: [文件] （支持PDF、DOCX、TXT格式）
 ```
+
+**响应状态：** `202 Accepted`（文档将在后台异步处理）
 
 #### 7.2 获取知识文档列表
 **接口：** `GET /knowledge-bases/{kb_id}/documents/`
 
 **摘要：** 获取指定知识库的所有文档
+
+**查询参数：**
+- `status_filter`: 按状态过滤（processing/completed/failed）
 
 #### 7.3 获取知识文档详情
 **接口：** `GET /knowledge-bases/{kb_id}/documents/{document_id}`
@@ -523,8 +568,9 @@ description: "文档描述"
 {
   "title": "今日学习总结",
   "content": "今天学习了Python的面向对象编程...",
-  "tags": ["学习", "Python", "总结"],
-  "is_public": false
+  "note_type": "学习笔记",
+  "course_id": 1,
+  "tags": "学习, Python, 总结"
 }
 ```
 
@@ -532,6 +578,9 @@ description: "文档描述"
 **接口：** `GET /notes/`
 
 **摘要：** 获取当前用户所有笔记
+
+**查询参数：**
+- `note_type`: 按笔记类型过滤
 
 ### 3. 获取笔记详情
 **接口：** `GET /notes/{note_id}`
@@ -562,18 +611,22 @@ description: "文档描述"
 **请求体：**
 ```json
 {
-  "question": "Python中如何定义类？",
-  "knowledge_base_id": 1,
+  "query": "Python中如何定义类？",
   "use_tools": true,
-  "conversation_id": "conv_123"
+  "preferred_tools": ["rag", "web_search"],
+  "knowledge_base_ids": [1, 2],
+  "conversation_id": "conv_123",
+  "llm_model_id": "gpt-4"
 }
 ```
 
 **字段说明：**
-- `question`: 用户问题（必填）
-- `knowledge_base_id`: 知识库ID（可选，指定后将使用RAG）
-- `use_tools`: 是否启用工具调用（可选）
+- `query`: 用户问题（必填）
+- `use_tools`: 是否启用工具调用（可选，默认false）
+- `preferred_tools`: 偏好工具列表（可选）
+- `knowledge_base_ids`: 指定知识库ID列表（可选）
 - `conversation_id`: 对话ID（可选，用于上下文记忆）
+- `llm_model_id`: 指定LLM模型（可选）
 
 **响应体：**
 ```json
@@ -581,13 +634,15 @@ description: "文档描述"
   "answer": "在Python中定义类使用class关键字...",
   "sources": [
     {
-      "document_title": "Python基础教程",
-      "chunk_content": "相关内容片段",
+      "source_type": "knowledge_base",
+      "title": "Python基础教程",
+      "content": "相关内容片段",
       "similarity_score": 0.95
     }
   ],
   "tool_calls": [],
-  "conversation_id": "conv_123"
+  "conversation_id": "conv_123",
+  "llm_model_used": "gpt-4"
 }
 ```
 
@@ -639,9 +694,10 @@ description: "文档描述"
 ```json
 {
   "name": "我的Google搜索",
-  "provider": "google",
+  "engine_type": "google",
   "api_key": "your_api_key",
-  "search_engine_id": "your_search_engine_id",
+  "base_url": "https://www.googleapis.com/customsearch/v1",
+  "description": "Google自定义搜索配置",
   "is_active": true
 }
 ```
@@ -686,12 +742,11 @@ description: "文档描述"
 ```json
 {
   "name": "我的语音配置",
-  "provider": "azure",
+  "tts_type": "openai",
   "api_key": "your_api_key",
-  "region": "eastus",
-  "voice": "zh-CN-XiaoxiaoNeural",
-  "speed": 1.0,
-  "pitch": 0,
+  "base_url": "https://api.openai.com/v1",
+  "model_id": "tts-1",
+  "voice_name": "alloy",
   "is_active": true
 }
 ```
@@ -736,10 +791,10 @@ description: "文档描述"
 ```json
 {
   "name": "文件系统MCP",
-  "server_name": "filesystem",
-  "command": ["python", "-m", "mcp_server_filesystem"],
-  "args": ["/path/to/allowed/directory"],
-  "env_vars": {},
+  "mcp_type": "filesystem",
+  "base_url": "mcp://filesystem",
+  "protocol_type": "stdio",
+  "description": "文件系统访问MCP服务",
   "is_active": true
 }
 ```
@@ -784,9 +839,10 @@ description: "文档描述"
 ```json
 {
   "name": "Python学习讨论组",
-  "description": "专门讨论Python编程的聊天室",
-  "room_type": "public",
-  "max_members": 50
+  "type": "general",
+  "project_id": null,
+  "course_id": null,
+  "color": "#3498db"
 }
 ```
 
@@ -848,8 +904,9 @@ description: "文档描述"
 **请求体：**
 ```json
 {
-  "content": "大家好，我是新成员！",
-  "message_type": "text"
+  "content_text": "大家好，我是新成员！",
+  "message_type": "text",
+  "media_url": null
 }
 ```
 
@@ -878,7 +935,10 @@ description: "文档描述"
 {
   "name": "Python资源",
   "description": "收集Python学习相关的资源",
-  "parent_folder_id": null
+  "color": "#2ecc71",
+  "icon": "folder",
+  "parent_id": null,
+  "order": 0
 }
 ```
 
@@ -911,11 +971,14 @@ description: "文档描述"
 ```json
 {
   "title": "Python官方文档",
+  "type": "link",
   "url": "https://docs.python.org/",
-  "content_type": "link",
-  "description": "Python官方文档链接",
+  "content": "Python官方文档链接",
   "folder_id": 1,
-  "tags": ["Python", "文档", "官方"]
+  "tags": "Python, 文档, 官方",
+  "priority": 5,
+  "notes": "重要参考资料",
+  "is_starred": true
 }
 ```
 
@@ -953,10 +1016,9 @@ description: "文档描述"
 **请求体：**
 ```json
 {
-  "title": "今日学习心得",
   "content": "今天学习了装饰器，感觉很有趣...",
-  "record_type": "学习心得",
-  "tags": ["学习", "装饰器", "Python"]
+  "mood": "开心",
+  "tags": "学习, 装饰器, Python"
 }
 ```
 
@@ -994,214 +1056,350 @@ description: "文档描述"
 **响应体：**
 ```json
 {
-  "total_projects": 15,
-  "total_courses": 8,
-  "total_notes": 42,
-  "total_knowledge_bases": 3,
-  "recent_activities": [
-    {
-      "type": "note_created",
-      "title": "新建笔记：Python装饰器",
-      "timestamp": "2024-01-01T10:00:00"
-    }
-  ]
+  "active_projects_count": 3,
+  "completed_projects_count": 5,
+  "learning_courses_count": 2,
+  "completed_courses_count": 8,
+  "active_chats_count": 4,
+  "unread_messages_count": 12,
+  "resume_completion_percentage": 85.5
 }
 ```
 
-### 2. 获取项目卡片
+### 2. 获取仪表板项目列表
 **接口：** `GET /dashboard/projects`
 
-**摘要：** 获取仪表板项目卡片数据
+**摘要：** 获取当前用户参与的项目卡片列表
+
+**认证：** 需要Bearer Token
 
 **查询参数：**
-- `limit`: 限制返回数量
-- `status`: 项目状态筛选
+- `status_filter`: 按状态过滤项目
 
-### 3. 获取课程卡片
+**响应体：**
+```json
+[
+  {
+    "id": 1,
+    "title": "智能学习管理系统",
+    "progress": 0.65
+  }
+]
+```
+
+### 3. 获取仪表板课程列表
 **接口：** `GET /dashboard/courses`
 
-**摘要：** 获取仪表板课程卡片数据
+**摘要：** 获取当前用户学习的课程卡片列表
+
+**认证：** 需要Bearer Token
 
 **查询参数：**
-- `limit`: 限制返回数量
-- `status`: 学习状态筛选
+- `status_filter`: 按状态过滤课程
+
+**响应体：**
+```json
+[
+  {
+    "id": 1,
+    "title": "Python编程基础",
+    "progress": 75.5,
+    "last_accessed": "2024-01-01T10:00:00"
+  }
+]
+```
 
 ---
 
-## 论坛功能
+## AI对话系统
 
-### 1. 发布论坛话题
-**接口：** `POST /forum/topics/`
+### 1. 获取AI对话列表
+**接口：** `GET /ai/conversations`
 
-**摘要：** 发布新论坛话题
+**摘要：** 获取当前用户的所有AI对话
+
+**认证：** 需要Bearer Token
+
+### 2. 获取AI对话详情
+**接口：** `GET /ai/conversations/{conversation_id}`
+
+**摘要：** 获取指定AI对话的详细信息和消息历史
+
+**认证：** 需要Bearer Token
+
+### 3. 创建新AI对话
+**接口：** `POST /ai/conversations`
+
+**摘要：** 创建新的AI对话会话
 
 **认证：** 需要Bearer Token
 
 **请求体：**
 ```json
 {
-  "title": "关于Python性能优化的讨论",
-  "content": "最近在学习Python性能优化，想和大家交流一下经验...",
-  "category": "技术讨论",
-  "tags": ["Python", "性能优化", "讨论"]
+  "title": "Python学习讨论"
+}
+```
+
+### 4. 更新AI对话标题
+**接口：** `PUT /ai/conversations/{conversation_id}`
+
+**摘要：** 更新AI对话的标题
+
+**认证：** 需要Bearer Token
+
+### 5. 删除AI对话
+**接口：** `DELETE /ai/conversations/{conversation_id}`
+
+**摘要：** 删除指定的AI对话及其所有消息
+
+**认证：** 需要Bearer Token
+
+---
+
+## 论坛功能
+
+### 1. 发布论坛话题
+**接口：** `POST /forum/topics`
+
+**摘要：** 发布新的论坛话题
+
+**认证：** 需要Bearer Token
+
+**请求体：**
+```json
+{
+  "title": "Python学习心得分享",
+  "content": "分享一些Python学习的心得体会...",
+  "tags": "Python, 学习, 心得",
+  "shared_item_type": "project",
+  "shared_item_id": 1
 }
 ```
 
 ### 2. 获取论坛话题列表
-**接口：** `GET /forum/topics/`
+**接口：** `GET /forum/topics`
 
 **摘要：** 获取论坛话题列表
 
 **查询参数：**
-- `category`: 分类筛选
-- `limit`: 限制返回数量
+- `limit`: 每页数量
 - `offset`: 偏移量
+- `tag`: 按标签筛选
 
 ### 3. 获取论坛话题详情
 **接口：** `GET /forum/topics/{topic_id}`
 
-**摘要：** 获取指定论坛话题详情
+**摘要：** 获取指定论坛话题的详细信息
 
 ### 4. 更新论坛话题
 **接口：** `PUT /forum/topics/{topic_id}`
 
-**摘要：** 更新指定论坛话题
+**摘要：** 更新论坛话题（仅作者可操作）
+
+**认证：** 需要Bearer Token
 
 ### 5. 删除论坛话题
 **接口：** `DELETE /forum/topics/{topic_id}`
 
-**摘要：** 删除指定论坛话题
+**摘要：** 删除论坛话题（仅作者可操作）
 
-### 6. 发表论坛评论
-**接口：** `POST /forum/topics/{topic_id}/comments/`
+**认证：** 需要Bearer Token
 
-**摘要：** 对指定话题发表评论
+### 6. 评论管理
 
-**请求体：**
-```json
-{
-  "content": "我觉得使用Cython是一个不错的优化选择",
-  "parent_comment_id": null
-}
-```
+#### 6.1 添加评论
+**接口：** `POST /forum/topics/{topic_id}/comments`
 
-### 7. 获取论坛评论列表
-**接口：** `GET /forum/topics/{topic_id}/comments/`
+**摘要：** 对论坛话题添加评论
+
+**认证：** 需要Bearer Token
+
+#### 6.2 获取评论列表
+**接口：** `GET /forum/topics/{topic_id}/comments`
 
 **摘要：** 获取指定话题的所有评论
 
-### 8. 更新论坛评论
-**接口：** `PUT /forum/comments/{comment_id}`
-
-**摘要：** 更新指定论坛评论
-
-### 9. 删除论坛评论
+#### 6.3 删除评论
 **接口：** `DELETE /forum/comments/{comment_id}`
 
-**摘要：** 删除指定论坛评论
+**摘要：** 删除指定评论（仅作者可操作）
 
-### 10. 点赞论坛内容
-**接口：** `POST /forum/likes/`
+**认证：** 需要Bearer Token
 
-**摘要：** 点赞论坛话题或评论
+### 7. 点赞功能
 
-**请求体：**
-```json
-{
-  "topic_id": 1,
-  "comment_id": null
-}
-```
+#### 7.1 点赞话题
+**接口：** `POST /forum/topics/{topic_id}/like`
 
-### 11. 取消点赞
-**接口：** `DELETE /forum/likes/`
+**摘要：** 对论坛话题点赞
 
-**摘要：** 取消点赞论坛话题或评论
+**认证：** 需要Bearer Token
 
-### 12. 关注用户
-**接口：** `POST /forum/follow/`
+#### 7.2 取消点赞
+**接口：** `DELETE /forum/topics/{topic_id}/like`
 
-**摘要：** 关注一个用户
+**摘要：** 取消对论坛话题的点赞
 
-**请求体：**
-```json
-{
-  "followed_user_id": 2
-}
-```
+**认证：** 需要Bearer Token
 
-### 13. 取消关注用户
-**接口：** `DELETE /forum/unfollow/`
+### 8. 关注功能
 
-**摘要：** 取消关注一个用户
-### 1. 创建成就定义（管理员）
-**接口：** `POST /admin/achievements/definitions`
+#### 8.1 关注用户
+**接口：** `POST /users/{user_id}/follow`
 
-**摘要：** 【管理员专用】创建新的成就定义
+**摘要：** 关注指定用户
 
-**认证：** 需要管理员权限
+**认证：** 需要Bearer Token
 
-**请求体：**
-```json
-{
-  "name": "初次登录",
-  "description": "完成首次登录",
-  "icon": "login",
-  "points_reward": 10,
-  "achievement_type": "milestone",
-  "conditions": {"login_count": 1}
-}
-```
-### 2. 获取成就定义列表
-**接口：** `GET /achievements/definitions`
-**摘要：** 获取所有可获得的成就定义
-### 3. 获取成就定义详情
-**接口：** `GET /achievements/definitions/{achievement_id}`
-**摘要：** 获取指定成就定义详情
-### 4. 更新成就定义（管理员）
-**接口：** `PUT /admin/achievements/definitions/{achievement_id}`
-**摘要：** 【管理员专用】更新指定成就定义
+#### 8.2 取消关注
+**接口：** `DELETE /users/{user_id}/follow`
 
-### 5. 删除成就定义（管理员）
-**接口：** `DELETE /admin/achievements/definitions/{achievement_id}`
+**摘要：** 取消关注指定用户
 
-**摘要：** 【管理员专用】删除指定成就定义
+**认证：** 需要Bearer Token
 
-### 6. 获取用户积分余额
+#### 8.3 获取关注列表
+**接口：** `GET /users/me/following`
+
+**摘要：** 获取当前用户的关注列表
+
+**认证：** 需要Bearer Token
+
+#### 8.4 获取粉丝列表
+**接口：** `GET /users/me/followers`
+
+**摘要：** 获取当前用户的粉丝列表
+
+**认证：** 需要Bearer Token
+
+---
+
+## 积分与成就系统
+
+### 1. 获取用户积分信息
 **接口：** `GET /users/me/points`
 
-**摘要：** 获取当前用户积分余额和上次登录时间
-  "id": 1,
-  "total_points": 150,
-  "last_login": "2024-01-01T10:00:00"
-### 7. 获取积分交易历史
-**接口：** `GET /users/me/points/history`
+**摘要：** 获取当前用户的积分信息
 
-**摘要：** 获取当前用户积分交易历史
-### 8. 获取用户成就列表
-**接口：** `GET /users/me/achievements`
-**摘要：** 获取当前用户已获得的成就列表
-### 9. 积分奖励（管理员）
-**接口：** `POST /admin/points/reward`
+**认证：** 需要Bearer Token
 
-**摘要：** 【管理员专用】为用户奖励积分
+**响应体：**
+```json
+{
+  "total_points": 1250,
+  "recent_transactions": [
+    {
+      "id": 1,
+      "amount": 50,
+      "reason": "完成项目：智能学习系统",
+      "transaction_type": "EARN",
+      "created_at": "2024-01-01T10:00:00"
+    }
+  ]
+}
+```
+
+### 2. 获取积分交易历史
+**接口：** `GET /users/me/point-transactions`
+
+**摘要：** 获取当前用户的积分交易历史
+
+**认证：** 需要Bearer Token
+
+**查询参数：**
+- `limit`: 每页数量
+- `offset`: 偏移量
+- `transaction_type`: 交易类型过滤
+
+### 3. 管理员奖励积分
+**接口：** `POST /admin/users/{user_id}/reward-points`
+
+**摘要：** 管理员为指定用户奖励积分
+
+**认证：** 需要Bearer Token（管理员权限）
 
 **请求体：**
 ```json
 {
-  "user_id": 1,
-  "points": 50,
-  "reason": "完成项目里程碑"
+  "amount": 100,
+  "reason": "优秀项目表现"
 }
 ```
+
+### 4. 获取成就列表
+**接口：** `GET /achievements`
+
+**摘要：** 获取所有可获得的成就列表
+
+### 5. 获取用户成就
+**接口：** `GET /users/me/achievements`
+
+**摘要：** 获取当前用户已获得的成就
+
+**认证：** 需要Bearer Token
+
+### 6. 管理员成就管理
+
+#### 6.1 创建成就
+**接口：** `POST /admin/achievements`
+
+**摘要：** 创建新的成就（仅管理员）
+
+**认证：** 需要Bearer Token（管理员权限）
+
+#### 6.2 更新成就
+**接口：** `PUT /admin/achievements/{achievement_id}`
+
+**摘要：** 更新成就信息（仅管理员）
+
+**认证：** 需要Bearer Token（管理员权限）
+
+#### 6.3 删除成就
+**接口：** `DELETE /admin/achievements/{achievement_id}`
+
+**摘要：** 删除成就（仅管理员）
+
+**认证：** 需要Bearer Token（管理员权限）
+
+---
+
+## 统计接口
+
+### 1. 获取平台统计信息
+**接口：** `GET /stats/platform`
+
+**摘要：** 获取平台整体统计信息
+
+**响应体：**
+```json
+{
+  "total_users": 1250,
+  "total_projects": 340,
+  "total_courses": 45,
+  "total_knowledge_bases": 180,
+  "total_notes": 8650,
+  "active_users_today": 156
+}
+```
+
+### 2. 获取用户统计信息
+**接口：** `GET /stats/users/me`
+
+**摘要：** 获取当前用户的个人统计信息
+
+**认证：** 需要Bearer Token
+
+---
+
 ## WebSocket实时通信
 
 ### 1. 聊天室WebSocket连接
 **接口：** `WebSocket /ws/chat/{room_id}`
 
-**摘要：** 建立聊天室的WebSocket连接，用于实时消息传输
+**摘要：** 建立与指定聊天室的WebSocket连接，用于实时聊天
 
-**认证：** 需要在WebSocket握手时提供token参数
+**认证：** 需要在查询参数中提供token
 
 **连接URL示例：**
 ```
@@ -1212,78 +1410,90 @@ ws://localhost:8000/ws/chat/1?token=your_jwt_token
 ```json
 {
   "type": "message",
-  "content": "Hello, everyone!",
-  "sender_id": 1,
-  "sender_name": "张三",
-  "timestamp": "2024-01-01T10:00:00"
+  "content": "Hello, world!",
+  "timestamp": "2024-01-01T10:00:00Z"
 }
 ```
+
+### 2. 系统通知WebSocket连接
+**接口：** `WebSocket /ws/notifications`
+
+**摘要：** 建立系统通知的WebSocket连接
+
+**认证：** 需要在查询参数中提供token
 
 ---
 
 ## 系统管理
-**摘要：** 健康检查，返回API服务状态
-### 2. 设置用户管理员权限
-**接口：** `PUT /admin/users/{user_id}/set-admin`
-**摘要：** 【超级管理员专用】设置指定用户的管理员权限
-**认证：** 需要超级管理员权限
-**请求体：**
-  "is_admin": true
-## 错误码说明
-| 状态码 | 说明 |
-|--------|------|
-| 200 | 成功 |
-| 201 | 创建成功 |
-| 204 | 删除成功 |
-| 400 | 请求参数错误 |
-| 401 | 未授权 |
-| 403 | 权限不足 |
-| 404 | 资源不存在 |
-| 409 | 资源冲突 |
-| 422 | 请求参数验证失败 |
-| 500 | 服务器内部错误 |
-### v0.1.0 (2024-12-08)
-- 初版API文档发布
-- 包含用户认证、项目管理、课程管理等核心功能
-- 新增AI智能服务、搜索引擎配置等高级功能
-- 支持TTS语音配置和MCP服务配置
-- 实现聊天室、论坛、积分成就等社交功能
-- 添加WebSocket实时通信支持
+
+### 1. 系统健康检查
+**接口：** `GET /admin/health`
+
+**摘要：** 系统健康状态检查（管理员专用）
+
+**认证：** 需要Bearer Token（管理员权限）
+
+### 2. 数据库状态检查
+**接口：** `GET /admin/db-status`
+
+**摘要：** 检查数据库连接状态
+
+**认证：** 需要Bearer Token（管理员权限）
+
+### 3. 清理临时文件
+**接口：** `POST /admin/cleanup-temp-files`
+
+**摘要：** 清理系统临时文件
+
+**认证：** 需要Bearer Token（管理员权限）
+
+### 4. 用户管理
+
+#### 4.1 获取所有用户
+**接口：** `GET /admin/users`
+
+**摘要：** 获取所有用户列表（管理员专用）
+
+**认证：** 需要Bearer Token（管理员权限）
+
+#### 4.2 封禁用户
+**接口：** `PUT /admin/users/{user_id}/ban`
+
+**摘要：** 封禁指定用户
+
+**认证：** 需要Bearer Token（管理员权限）
+
+#### 4.3 解封用户
+**接口：** `PUT /admin/users/{user_id}/unban`
+
+**摘要：** 解封指定用户
+
+**认证：** 需要Bearer Token（管理员权限）
+
 ---
 
-*本文档持续更新中，如有疑问请联系开发团队。*
-**响应体：**
+## 错误响应格式
+
+所有API接口的错误响应都遵循统一格式：
+
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2024-01-01T10:00:00",
-  "version": "0.1.0"
+  "detail": "错误描述信息"
 }
 ```
 
----
-
-## 错误处理
-
-API使用标准HTTP状态码：
-
+**常见HTTP状态码：**
 - `200 OK`: 请求成功
 - `201 Created`: 资源创建成功
-- `204 No Content`: 请求成功但无返回内容
+- `202 Accepted`: 请求已接受，正在处理
+- `204 No Content`: 请求成功，无返回内容
 - `400 Bad Request`: 请求参数错误
-- `401 Unauthorized`: 未授权，需要登录
-- `403 Forbidden`: 禁止访问，权限不足
+- `401 Unauthorized`: 未认证或认证失败
+- `403 Forbidden`: 权限不足
 - `404 Not Found`: 资源未找到
-- `409 Conflict`: 资源冲突（如重复创建）
-- `422 Unprocessable Entity`: 请求格式正确但业务逻辑错误
+- `409 Conflict`: 资源冲突
+- `422 Unprocessable Entity`: 请求格式正确但语义错误
 - `500 Internal Server Error`: 服务器内部错误
-
-**错误响应格式：**
-```json
-{
-  "detail": "错误详细信息"
-}
-```
 
 ---
 
@@ -1306,3 +1516,6 @@ API使用标准HTTP状态码：
   - 添加课程学习模块
   - 集成AI智能服务
   - 支持知识库管理
+  - 实现实时聊天功能
+  - 添加积分与成就系统
+  - 完整的API文档
