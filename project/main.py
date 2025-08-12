@@ -1571,7 +1571,8 @@ async def update_llm_config(
         db: Session = Depends(get_db)
 ):
     """
-    更新当前用户的LLM（大语言模型）API配置，密钥会加密存储（此处为模拟加密）。
+    更新当前用户的LLM（大语言模型）API配置，密钥会加密存储。
+    **成功更新配置后，会尝试重新计算用户个人资料的嵌入向量。**
     """
     print(f"DEBUG: 更新用户 {current_user_id} 的LLM配置。")
     db_student = db.query(Student).filter(Student.id == current_user_id).first()
@@ -1579,6 +1580,10 @@ async def update_llm_config(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     update_data = llm_config_data.dict(exclude_unset=True)
+
+    # 保存旧的 LLM Key 和 Type，以便在处理新 Key 时进行比较
+    # old_llm_api_type = db_student.llm_api_type # 暂时不需要旧值，因为会直接用db_student的当前值
+    # old_llm_api_key_encrypted = db_student.llm_api_key_encrypted # 暂时不需要旧值，因为会直接用db_student的当前值
 
     if "llm_api_type" in update_data:
         db_student.llm_api_type = update_data["llm_api_type"]
@@ -1589,17 +1594,75 @@ async def update_llm_config(
     if "llm_model_id" in update_data:
         db_student.llm_model_id = update_data["llm_model_id"]
 
+    # 处理 API 密钥的更新：加密或清空
+    decrypted_new_key: Optional[str] = None  # 用于后面嵌入重计算
     if "llm_api_key" in update_data and update_data["llm_api_key"]:
-        encrypted_key = ai_core.encrypt_key(update_data["llm_api_key"])
-        db_student.llm_api_key_encrypted = encrypted_key
-        print(f"DEBUG: 用户 {current_user_id} 的LLM API密钥已加密存储。")
+        try:
+            encrypted_key = ai_core.encrypt_key(update_data["llm_api_key"])
+            db_student.llm_api_key_encrypted = encrypted_key
+            decrypted_new_key = update_data["llm_api_key"]  # 存储新密钥的明文供即时使用
+            print(f"DEBUG: 用户 {current_user_id} 的LLM API密钥已加密存储。")
+        except Exception as e:
+            print(f"ERROR: 加密LLM API密钥失败: {e}. 将使用旧密钥或跳过加密。")
+            # 即使加密失败，也应该继续，但要确保db_student.llm_api_key_encrypted没有被错误修改
+            # 此时 decrypted_new_key 仍为 None，不会导致使用无效密钥
     elif "llm_api_key" in update_data and not update_data["llm_api_key"]:  # 允许清空密钥
         db_student.llm_api_key_encrypted = None
+        print(f"DEBUG: 用户 {current_user_id} 的LLM API密钥已清空。")
 
-    db.add(db_student)
-    db.commit()
+    db.add(db_student)  # 将所有 LLM 配置的修改暂存到session中
+
+    #  在LLM配置更新后重新计算用户嵌入向量
+    # 目的：确保用户的个人资料嵌入与新的LLM配置同步
+    # 只有当用户个人资料的 combined_text 存在时才进行计算
+    if db_student.combined_text:
+        print(f"DEBUG_EMBEDDING_RECALC: 尝试为用户 {current_user_id} 重新计算嵌入向量。")
+
+        # 确定用于嵌入的API密钥和LLM配置
+        # 优先使用当前用户刚刚更新的或现有LLM密钥进行嵌入生成
+        key_for_embedding_recalc = None
+        current_llm_api_type = db_student.llm_api_type
+        current_llm_api_base_url = db_student.llm_api_base_url
+        current_llm_model_id = db_student.llm_model_id
+
+        if decrypted_new_key:  # 如果本次更新提供了新的明文密钥
+            key_for_embedding_recalc = decrypted_new_key
+        elif db_student.llm_api_key_encrypted:  # 否则，尝试解密现有密钥
+            try:
+                key_for_embedding_recalc = ai_core.decrypt_key(db_student.llm_api_key_encrypted)
+            except Exception as e:
+                print(
+                    f"WARNING_EMBEDDING_RECALC: 解密用户 {current_user_id} 的LLM API Key失败: {e}。将使用系统默认嵌入服务。")
+                key_for_embedding_recalc = None  # 无法解密则不使用用户密钥
+
+        try:
+            # 调用 ai_core.get_embeddings_from_api，传入用户最新的 LLM 配置
+            # ai_core.get_embeddings_from_api 将根据传入的参数和环境变量进行优先级判断
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_student.combined_text],
+                api_key=key_for_embedding_recalc,  # 用户提供的密钥
+                llm_type=current_llm_api_type,  # 用户选择的LLM类型 (如 'siliconflow', 'openai')
+                llm_base_url=current_llm_api_base_url,  # 用户提供的Base URL
+                llm_model_id=current_llm_model_id  # 用户提供的模型ID
+            )
+            if new_embedding:
+                db_student.embedding = new_embedding[0]
+                print(f"DEBUG_EMBEDDING_RECALC: 用户 {current_user_id} 嵌入向量已成功重新计算。")
+            else:
+                db_student.embedding = [0.0] * 1024  # 如果API没有返回嵌入，则设置为零向量
+                print(f"DEBUG_EMBEDDING_RECALC: 嵌入API未返回结果。用户 {current_user_id} 嵌入向量设为零。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_RECALC: 为用户 {current_user_id} 重新计算嵌入向量失败: {e}。嵌入向量设为零。")
+            db_student.embedding = [0.0] * 1024  # 发生错误时，确保设置为零向量，而不是 None 或旧值
+    else:
+        print(f"WARNING_EMBEDDING_RECALC: 用户 {current_user_id} 的 combined_text 为空，无法重新计算嵌入向量。")
+        # 确保embedding字段是有效的向量格式，即使没内容也为零向量
+        if db_student.embedding is None:
+            db_student.embedding = [0.0] * 1024
+
+    db.commit()  # 提交所有更改，包括LLM配置更新和新的嵌入向量
     db.refresh(db_student)
-    print(f"DEBUG: 用户 {current_user_id} LLM配置更新成功。")
+    print(f"DEBUG: 用户 {current_user_id} LLM配置及嵌入更新成功。")
     return db_student
 
 
