@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 from database import DATABASE_URL
-load_dotenv()  # <--显式加载 .env 文件**
+load_dotenv()
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL 环境变量未设置。请确保 .env 文件存在且 DATABASE_URL 已配置。")

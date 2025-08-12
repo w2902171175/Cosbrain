@@ -1,5 +1,4 @@
 # project/models.py
-
 from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean, text, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, remote
@@ -9,8 +8,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy.schema import UniqueConstraint
 from base import Base
 import json
-from datetime import datetime # 额外导入datetime，用于后续使用，尽管func.now()已引入
-
+from datetime import datetime
 
 class Student(Base):
     __tablename__ = "students"
@@ -24,7 +22,7 @@ class Student(Base):
 
     name = Column(String, index=True)
     major = Column(String, nullable=True)
-    skills = Column(JSONB, nullable=False, server_default='[]')  # 存储技能列表，每个技能包含名称和熟练度
+    skills = Column(JSONB, nullable=False, server_default='[]')
     interests = Column(Text, nullable=True)
     bio = Column(Text, default="欢迎使用本平台！")
     awards_competitions = Column(Text, nullable=True)
@@ -47,15 +45,11 @@ class Student(Base):
     updated_at = Column(DateTime, onupdate=func.now())
     is_admin = Column(Boolean, default=False, nullable=False)
 
-    # **<<<<< 新增：积分和成就相关字段和关系 >>>>>**
     total_points = Column(Integer, default=0, nullable=False, comment="用户当前总积分")
     last_login_at = Column(DateTime, nullable=True, comment="用户上次登录时间，用于每日打卡")
 
     achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
     point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
-    # **<<<<< 新增字段和关系结束 >>>>>**
-
-    # Relationships
     created_chat_rooms = relationship("ChatRoom", back_populates="creator")
     chat_room_memberships = relationship("ChatRoomMember", back_populates="member")
     sent_join_requests = relationship("ChatRoomJoinRequest", foreign_keys="[ChatRoomJoinRequest.requester_id]",
@@ -89,11 +83,10 @@ class Student(Base):
 
     projects_created = relationship("Project", back_populates="creator")
 
-    # **<<<<< 积分和成就相关字段和关系 >>>>>**
     total_points = Column(Integer, default=0, nullable=False, comment="用户当前总积分")
     last_login_at = Column(DateTime, nullable=True, comment="用户上次登录时间，用于每日打卡")
     login_count = Column(Integer, default=0, nullable=False,
-                         comment="用户总登录天数（完成每日打卡的次数）")  # **<<<<< 新增此行 >>>>>**
+                         comment="用户总登录天数（完成每日打卡的次数）")
 
     achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
     point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
@@ -111,7 +104,7 @@ class Project(Base):
     title = Column(String, index=True)
     description = Column(Text)
     required_skills = Column(JSONB, nullable=False, server_default='[]')  # 存储所需技能列表，每个技能包含名称和熟练度
-    required_roles = Column(JSONB, nullable=False, server_default='[]') # 存储项目所需角色列表，例如 ["后端开发", "UI/UX 设计"]
+    required_roles = Column(JSONB, nullable=False, server_default='[]') # 存储项目所需角色列表
     keywords = Column(String)
     project_type = Column(String)
     expected_deliverables = Column(Text)
@@ -133,7 +126,6 @@ class Project(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
-    # Relationships
     chat_room = relationship("ChatRoom", back_populates="project", uselist=False, cascade="all, delete-orphan")
     creator = relationship("Student", back_populates="projects_created")
 
@@ -290,7 +282,6 @@ class ChatMessage(Base):
     sender = relationship("Student", back_populates="sent_messages")
 
 
-# --- 聊天室成员模型 ---
 class ChatRoomMember(Base):
     __tablename__ = "chat_room_members"
     id = Column(Integer, primary_key=True, index=True)
@@ -305,9 +296,8 @@ class ChatRoomMember(Base):
     status = Column(String, default="active", nullable=False)
 
     joined_at = Column(DateTime, default=func.now(), nullable=False)
-    # last_read_at = Column(DateTime, nullable=True) # 可选：用于跟踪未读消息，如果需要可以添加
+    last_read_at = Column(DateTime, nullable=True)
 
-    # Relationships
     room = relationship("ChatRoom", back_populates="memberships")
     member = relationship("Student", back_populates="chat_room_memberships")
 
@@ -323,7 +313,7 @@ class ChatRoomJoinRequest(Base):
     id = Column(Integer, primary_key=True, index=True)
     room_id = Column(Integer, ForeignKey("chat_rooms.id"), nullable=False, index=True)
     requester_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
-    reason = Column(String, nullable=True)  # 用户申请的理由
+    reason = Column(String, nullable=True)
 
     # 状态：'pending' (待处理), 'approved' (已批准), 'rejected' (已拒绝)
     status = Column(String, default="pending", nullable=False)
@@ -332,8 +322,7 @@ class ChatRoomJoinRequest(Base):
     processed_by_id = Column(Integer, ForeignKey("students.id"), nullable=True)  # 谁处理的这个请求
     processed_at = Column(DateTime, nullable=True)
 
-    # Relationships
-    room = relationship("ChatRoom", back_populates="join_requests")  # 新增 back_populates
+    room = relationship("ChatRoom", back_populates="join_requests")
     requester = relationship("Student", foreign_keys=[requester_id], back_populates="sent_join_requests")
     processor = relationship("Student", foreign_keys=[processed_by_id], back_populates="processed_join_requests")
 
@@ -437,7 +426,6 @@ class AIConversation(Base):
     last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
                           comment="对话最后更新时间")
 
-    # Relationships
     user_owner = relationship("Student", back_populates="ai_conversations")
     messages = relationship("AIConversationMessage", back_populates="conversation",
                             order_by="AIConversationMessage.sent_at", cascade="all, delete-orphan")
@@ -467,7 +455,6 @@ class AIConversationMessage(Base):
 
     sent_at = Column(DateTime, server_default=func.now(), nullable=False, comment="消息发送时间")
 
-    # Relationships
     conversation = relationship("AIConversation", back_populates="messages")
 
     def __repr__(self):
@@ -546,13 +533,13 @@ class UserTTSConfig(Base):
     owner = relationship("Student", back_populates="tts_configs")
 
     __table_args__ = (
-        UniqueConstraint('owner_id', 'name', name='_owner_id_tts_config_name_uc'), # 同一个用户下配置名称唯一
+        UniqueConstraint('owner_id', 'name', name='_owner_id_tts_config_name_uc'),
+        # 同一个用户下配置名称唯一
         # 注意：为了确保每个用户只有一个激活的TTS配置，需要在应用层面处理
         # UniqueConstraint('owner_id', 'is_active', name='_owner_id_active_tts_config_uc'),
     )
 
 
-# --- 知识库相关模型 ---
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
 
@@ -592,7 +579,6 @@ class KnowledgeArticle(Base):
     author = relationship("Student", back_populates="knowledge_articles")
 
 
-# --- KnowledgeDocument (for uploaded files) ---
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
 
@@ -616,7 +602,6 @@ class KnowledgeDocument(Base):
     chunks = relationship("KnowledgeDocumentChunk", back_populates="document", cascade="all, delete-orphan")
 
 
-# --- KnowledgeDocumentChunk (for RAG) ---
 class KnowledgeDocumentChunk(Base):
     __tablename__ = "knowledge_document_chunks"
 
@@ -634,7 +619,6 @@ class KnowledgeDocumentChunk(Base):
     document = relationship("KnowledgeDocument", back_populates="chunks")
 
 
-# --- 课程相关模型 ---
 class Course(Base):
     __tablename__ = "courses"
 
@@ -704,7 +688,6 @@ class CourseMaterial(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
-    # Relationships
     course = relationship("Course", back_populates="materials")
 
     UniqueConstraint('course_id', 'title', name='_course_material_title_uc'),  # 确保同一课程下材料标题唯一
@@ -725,7 +708,6 @@ class CollectionItem(Base):
     user = relationship("Student", back_populates="collection_items")
 
 
-# **<<<<< 新增：成就系统和积分系统相关模型 >>>>>**
 class Achievement(Base):
     __tablename__ = "achievements"
 
@@ -777,7 +759,6 @@ class PointTransaction(Base):
     reason = Column(String, nullable=True, comment="积分变动理由描述")
     # 交易类型：EARN, CONSUME, ADMIN_ADJUST 等
     transaction_type = Column(String, nullable=False, comment="积分交易类型")
-    # 可选：关联的实体信息，例如 project_id, course_id, forum_topic_id 等
     related_entity_type = Column(String, nullable=True, comment="关联的实体类型")
     related_entity_id = Column(Integer, nullable=True, comment="关联实体的ID")
 
@@ -787,4 +768,3 @@ class PointTransaction(Base):
 
     def __repr__(self):
         return f"<PointTransaction(user_id={self.user_id}, amount={self.amount}, type='{self.transaction_type}')>"
-# **<<<<< 新增成就系统和积分系统相关模型结束 >>>>>**

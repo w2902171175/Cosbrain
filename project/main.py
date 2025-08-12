@@ -3,13 +3,13 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, Response
 from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session,joinedload
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Literal, Union, Tuple
 import numpy as np
 from datetime import timedelta, datetime, timezone, date
 from sqlalchemy.sql import func
-from sqlalchemy import and_,or_,ForeignKey
+from sqlalchemy import and_, or_, ForeignKey
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer #
 from dotenv import load_dotenv
@@ -38,8 +38,7 @@ app.mount("/course_materials", StaticFiles(directory=ai_core.UPLOAD_DIRECTORY), 
 
 # 令牌认证方案
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
-# HTTPBearer 用于从 Authorization 头解析 token
-bearer_scheme = HTTPBearer(auto_error=False) # auto_error=False 避免在依赖注入层直接抛出401，而是让我们手动处理
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 # --- 密码哈希上下文 ---
@@ -64,10 +63,6 @@ async def get_current_user_id(
     从 JWT 令牌中提取并验证用户ID。
     如果令牌无效或缺失，抛出 HTTPException。
     """
-    # 注意：这里 user_id 硬编码为 1 的行将被删除或替换
-    # user_id = 1 # <-- **删除或注释掉这行硬编码**
-
-    # 如果没有提供 credentials (例如：bearer token 缺失)
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -75,7 +70,7 @@ async def get_current_user_id(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials  # 获取实际的 token 字符串 (credentials.credentials 是 OAuth2Scheme 返回的 token)
+    token = credentials.credentials
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -84,7 +79,7 @@ async def get_current_user_id(
         if user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT 令牌中缺少用户ID信息")
 
-        # 验证用户是否存在 (可选，但推荐，确保 token 对应的用户是有效的)
+        # 验证用户是否存在
         user = db.query(Student).filter(Student.id == user_id).first()
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="JWT 令牌指向的用户不存在")
@@ -119,7 +114,6 @@ async def is_admin_user(current_user_id: int = Depends(get_current_user_id), db:
     return user # 返回整个用户对象，方便需要用户详情的接口
 
 
-# **<<<<< 用于设置活跃TTS配置的辅助依赖函数 >>>>>**
 async def get_active_tts_config(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -220,7 +214,6 @@ async def _check_and_award_achievements(db: Session, user_id: int):
         "LOGIN_COUNT": user.login_count
     }
 
-    # **<<<<< NEW DEBUG PRINT for all counts >>>>>**
     print(f"DEBUG_ACHIEVEMENT_DATA: User {user_id} counts: {user_data_for_achievements}")
 
     awarded_count = 0
@@ -228,7 +221,6 @@ async def _check_and_award_achievements(db: Session, user_id: int):
         is_achieved = False
         criteria_value = achievement.criteria_value
 
-        # **<<<<< NEW DEBUG PRINT: Achievement being checked >>>>>**
         print(
             f"DEBUG_ACHIEVEMENT_CHECK: Checking achievement '{achievement.name}' (Criteria: {achievement.criteria_type}={criteria_value}) for user {user_id}")
 
@@ -248,10 +240,9 @@ async def _check_and_award_achievements(db: Session, user_id: int):
             if user_data_for_achievements["CHAT_MESSAGES_SENT_COUNT"] >= criteria_value:
                 is_achieved = True
         elif achievement.criteria_type == "LOGIN_COUNT":
-            # **<<<<< MODIFICATION: Add explicit float casting and clear debug for LOGIN_COUNT >>>>>**
             user_login_count_val = user_data_for_achievements["LOGIN_COUNT"]
-            crit_val_float = float(criteria_value)  # 确保是浮点数进行比较
-            user_count_float = float(user_login_count_val)  # 确保是浮点数进行比较
+            crit_val_float = float(criteria_value)
+            user_count_float = float(user_login_count_val)
 
             print(
                 f"DEBUG_ACHIEVEMENT_LOGIN_VALUE_TYPE: Achievement '{achievement.name}' criteria_value = {crit_val_float} (Type: {type(crit_val_float)})")
@@ -264,12 +255,8 @@ async def _check_and_award_achievements(db: Session, user_id: int):
             print(
                 f"DEBUG_ACHIEVEMENT_LOGIN_CHECK: Comparison result: {user_count_float} >= {crit_val_float} is {is_achieved}")
         elif achievement.criteria_type == "DAILY_LOGIN_STREAK":
-            # 对于 DAILY_LOGIN_STREAK，它需要一个独立的机制来计算连续登录天数，
-            # 而不是简单的 login_count。这里暂时不实现其具体判断逻辑，
             # 保持 is_achieved 为 False (除非额外开发连续登录计数器)。
             pass
-
-        # **<<<<< CRITICAL MODIFICATION: 修正 `if is_achieved:` 块的缩进！它现在在正确的位置了！ >>>>>**
         if is_achieved:
             user_achievement = UserAchievement(
                 user_id=user_id,
@@ -277,9 +264,8 @@ async def _check_and_award_achievements(db: Session, user_id: int):
                 earned_at=func.now(),
                 is_notified=False  # 默认设置为未通知，等待后续推送
             )
-            db.add(user_achievement)  # Add, but don't commit here
+            db.add(user_achievement)
 
-            # 奖励积分 - _award_points 现在也不进行 commit
             if achievement.reward_points > 0:
                 await _award_points(
                     db=db,
@@ -289,12 +275,11 @@ async def _check_and_award_achievements(db: Session, user_id: int):
                     transaction_type="EARN",
                     related_entity_type="achievement",
                     related_entity_id=achievement.id
-                )  # _award_points 内部不执行 commit
+                )
 
             print(
                 f"SUCCESS_ACHIEVEMENT_PENDING: 用户 {user_id} 获得成就: {achievement.name}！奖励 {achievement.reward_points} 积分 (待提交)。")
             awarded_count += 1
-    # **<<<<< CRITICAL MODIFICATION: 修正 `if awarded_count > 0:` 块的缩进！它现在在正确的位置了！ >>>>>**
     if awarded_count > 0:
         print(f"INFO_ACHIEVEMENT: 用户 {user_id} 本次共获得 {awarded_count} 个成就 (待提交)。")
 
@@ -357,7 +342,7 @@ origins = [
     "http://localhost:8080",
     "http://localhost:3000",
     "http://localhost:5173",
-    # ... 添加前端域名和端口
+    # 添加前端域名和端口
 ]
 
 app.add_middleware(
@@ -381,16 +366,12 @@ async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-        # Modelscope有时需要X-DashScope-Apikey
         if "modelscope" in base_url.lower():
             headers["X-DashScope-Apikey"] = api_key  # 为Modelscope添加专用header
 
     # 使用 httpx.AsyncClient 进行异步请求
     async with httpx.AsyncClient() as client:
         try:
-            # **Case 1: ModelScope 推理 API (通常以 /sse 或 /api/v1/inference 结尾，期望 POST 请求)**
-            # 这些端点通常没有独立的 /health 或 /api/v1/models 路径。
-            # 直接对 base_url 进行 HEAD 请求可以判断该服务是否可达。
             is_modelscope_inference_url = "mcp.api-inference.modelscope.net" in base_url.lower() \
                                           or "modelscope.cn/api/v1/inference" in base_url.lower()
 
@@ -415,7 +396,7 @@ async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
                     timestamp=datetime.now()
                 )
 
-            # **Case 2: 纯 SSE/Streamable HTTP (通用，非特定ModelScope的健康检查)**
+            # Case 2: 纯 SSE/Streamable HTTP (通用，非特定ModelScope的健康检查)
             elif protocol_type.lower() == "sse" or protocol_type.lower() == "streamable_http":
                 # 对于通用SSE，假设存在 /health 端点。
                 test_health_url = base_url.rstrip('/') + "/health"
@@ -428,7 +409,7 @@ async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
                     timestamp=datetime.now()
                 )
 
-            # **Case 3: 标准 HTTP API (通用 REST API，包括非推理部分的ModelScope，以及LLM API)**
+            # Case 3: 标准 HTTP API (通用 REST API，包括非推理部分的ModelScope，以及LLM API)
             else:  # 默认为 http_rest 或其他通用类型
                 test_api_url = base_url.rstrip('/')
                 # 对于通用 ModelScope API (非推理服务)，或当 base_url 仅为域名时
@@ -549,7 +530,6 @@ def _get_text_part(value: Any) -> str:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d")  # 格式化日期，只保留年月日
     if isinstance(value, (int, float)):
-        # **<<<<< MODIFICATION: 对于数字，只返回字符串，不再强制添加“小时”单位 >>>>>**
         # 因为这个函数是通用的，不是所有数字都代表小时
         return str(value)
     return str(value).strip() if str(value).strip() else ""
@@ -585,7 +565,7 @@ async def create_search_engine_config(
 
     # 创建数据库记录
     db_config = UserSearchEngineConfig(
-        owner_id=current_user_id,  # **设置拥有者为当前用户**
+        owner_id=current_user_id,
         name=config_data.name,
         engine_type=config_data.engine_type,
         api_key_encrypted=encrypted_key,
@@ -598,8 +578,6 @@ async def create_search_engine_config(
     db.commit()  # 提交事务
     db.refresh(db_config)  # 刷新以获取数据库生成的ID和时间戳
 
-    # 不要在这里设置 db_config.api_key = None, 因为 UserSearchEngineConfigResponse
-    # 本身就没有 api_key 字段（因为它接收的是 encrypted_key），所以不会泄露。
     print(f"DEBUG: 用户 {current_user_id} 的搜索引擎配置 '{db_config.name}' (ID: {db_config.id}) 创建成功。")
     return db_config
 
@@ -621,7 +599,7 @@ async def get_all_search_engine_configs(
 
     configs = query.order_by(UserSearchEngineConfig.created_at.desc()).all()
     for config in configs:
-        config.api_key = None  # 不返回密钥
+        config.api_key = None
     print(f"DEBUG: 获取到 {len(configs)} 条搜索引擎配置。")
     return configs
 
@@ -676,22 +654,20 @@ async def update_search_engine_config(
         else:
             # 如果传入的是 None 或空字符串，表示清空密钥
             db_config.api_key_encrypted = None
-        # del update_data["api_key"] # 在使用 setattr 循环时，这里删除 api_key，避免将其明文赋给 ORM 对象的其他字段
 
-    # **[重要新增] 检查名称冲突 (如果名称在更新中改变了)**
     if "name" in update_data and update_data["name"] != db_config.name:
         # 查找当前用户下是否已存在与新名称相同的活跃配置
         existing_config_with_new_name = db.query(UserSearchEngineConfig).filter(
             UserSearchEngineConfig.owner_id == current_user_id,
             UserSearchEngineConfig.name == update_data["name"],
             UserSearchEngineConfig.is_active == True,  # 只检查活跃的配置
-            UserSearchEngineConfig.id != config_id  # **排除当前正在更新的配置本身**
+            UserSearchEngineConfig.id != config_id  # 排除当前正在更新的配置本身
         ).first()
         if existing_config_with_new_name:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="新配置名称已存在于您的活跃配置中。")
 
     # 应用其他更新：通过循环处理所有可能更新的字段，更简洁和全面
-    fields_to_update = ["name", "engine_type", "is_active", "description", "base_url"]  # 增加了 "base_url"
+    fields_to_update = ["name", "engine_type", "is_active", "description", "base_url"]
     for field in fields_to_update:
         if field in update_data:  # 只有当传入的数据包含这个字段时才更新
             setattr(db_config, field, update_data[field])
@@ -771,7 +747,7 @@ async def check_search_engine_config_status(
 # --- 通用的网络搜索 API ---
 @app.post("/ai/web-search", response_model=schemas.WebSearchResponse, summary="执行一次网络搜索")
 async def perform_web_search(
-        search_request: schemas.WebSearchRequest,  # 定义新的request schema
+        search_request: schemas.WebSearchRequest,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
@@ -1089,7 +1065,7 @@ async def process_document_in_background(
 
         # 1. 提取文本
         extracted_text = await loop.run_in_executor(
-            None,  # 使用默认的��程池执行器
+            None,
             ai_core.extract_text_from_document,  # 要执行的同步函数
             filepath,  # 传递给函数的第一个参数
             file_type  # 传递给函数的第二个参数
@@ -1245,7 +1221,7 @@ async def register_user(
     embedding = None
     if combined_text_content:
         try:
-            # **<<<<< MODIFICATION: 新注册用户不再使用系统级密钥，依赖 ai_core 内部判断 >>>>>**
+            # 新注册用户不再使用系统级密钥，依赖 ai_core 内部判断
             # 如果用户尚未配置密钥，ai_core.get_embeddings_from_api 会返回零向量
             new_embedding = await ai_core.get_embeddings_from_api([combined_text_content])
             if new_embedding:
@@ -1280,7 +1256,7 @@ async def register_user(
         combined_text=combined_text_content,
         embedding=embedding,
 
-        llm_api_type=None, # 新用户注册时，默认不设置用户自己的LLM API配置
+        llm_api_type=None,
         llm_api_key_encrypted=None,
         llm_api_base_url=None,
         llm_model_id=None,
@@ -1307,10 +1283,6 @@ async def register_user(
     return db_user
 
 
-# project/main.py
-
-# ... (所有其他导入和辅助函数保持不变) ...
-
 @app.post("/token", response_model=schemas.Token, summary="用户登录并获取JWT令牌")
 async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),  # 使用 OAuth2PasswordRequestForm 适应标准登录表单
@@ -1321,7 +1293,7 @@ async def login_for_access_token(
     - username (实际上可以是邮箱或手机号): 用户邮箱或手机号
     - password: 用户密码
     """
-    credential = form_data.username  # 获取用户输入的凭证 (可能是邮箱或手机号)
+    credential = form_data.username  # 获取用户输入的凭证 (邮箱或手机号)
     password = form_data.password
 
     print(f"DEBUG_AUTH: 尝试用户登录: {credential}")
@@ -1351,7 +1323,7 @@ async def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # **<<<<< 新增：每日登录打卡和积分奖励逻辑 >>>>>**
+    # 每日登录打卡和积分奖励逻辑
     # 获取用户最初的积分和登录次数，用于对比和调试
     initial_total_points = user.total_points
     initial_login_count = user.login_count
@@ -1389,10 +1361,10 @@ async def login_for_access_token(
         expires_delta=access_token_expires
     )
 
-    # **<<<<< MODIFICATION: 显式提交事务，并确保总积分在提交后更新 >>>>>**
+    # 显式提交事务，并确保总积分在提交后更新
     try:
         db.commit()  # 提交所有待处理的数据库更改（包括 User, PointTransaction, UserAchievement）
-        # db.refresh(user) # **<<<<< REMOVED: 不再在这里 refresh，避免状态覆盖 >>>>>**
+        # db.refresh(user) 不再在这里 refresh，避免状态覆盖
 
         # 在所有更改提交后，重新从数据库载入 user 对象，确保准确显示最终的 total_points
         # 这确保我们看到的是所有奖励（包括成就奖励）都生效后的总积分。
@@ -1400,7 +1372,7 @@ async def login_for_access_token(
         if final_user_state:
             print(
                 f"DEBUG_AUTH_FINAL: 用户 {final_user_state.email if final_user_state.email else final_user_state.phone_number} (ID: {final_user_state.id}) 登录成功，颁发JWT令牌。**最终积分: {final_user_state.total_points}, 登录次数: {final_user_state.login_count}**")
-            # 也可以在这里验证一下是否有新成就
+            # 可以在这里验证一下是否有新成就
             earned_achievements_count = db.query(UserAchievement).filter(
                 UserAchievement.user_id == final_user_state.id).count()
             print(f"DEBUG_AUTH_FINAL: 用户 {final_user_state.id} 现有成就数量: {earned_achievements_count}")
@@ -1420,7 +1392,6 @@ async def login_for_access_token(
             detail="登录成功但数据保存失败，请重试或联系管理员。",
             headers={"WWW-Authenticate": "Bearer"},
         )
-        # ... (文件其余部分保持不变) ...
 
 
 @app.get("/users/me", response_model=schemas.StudentResponse, summary="获取当前登录用户详情")
@@ -1433,7 +1404,7 @@ async def read_users_me(current_user_id: int = Depends(get_current_user_id), db:
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # **<<<<< 新增：计算用户完成的项目和课程数量 >>>>>**
+    # 计算用户完成的项目和课程数量
     completed_projects_count = db.query(Project).filter(
         Project.creator_id == current_user_id,
         Project.project_status == "已完成"
@@ -1444,8 +1415,6 @@ async def read_users_me(current_user_id: int = Depends(get_current_user_id), db:
         UserCourse.status == "completed"
     ).count()
 
-    # **<<<<< 构建 StudentResponse 对象并填充计算结果 >>>>>**
-    #
     # 从 ORM 对象创建 StudentResponse 的基本实例，这将负责映射所有已存在的字段
     response_data = schemas.StudentResponse.model_validate(user, from_attributes=True)
 
@@ -1553,7 +1522,7 @@ async def update_users_me(
         _get_text_part(db_student.location)
     ])).strip()
 
-    # **<<<<< 新增: 获取用户配置的硅基流动 API 密钥用于生成嵌入向量 >>>>>**
+    # 获取用户配置的硅基流动 API 密钥用于生成嵌入向量
     siliconflow_api_key_for_embedding = None
     if db_student.llm_api_type == "siliconflow" and db_student.llm_api_key_encrypted:
         try:
@@ -1568,7 +1537,7 @@ async def update_users_me(
     # 更新 embedding
     if db_student.combined_text:
         try:
-            # **<<<<< MODIFICATION: 将获取到的密钥传递给 ai_core.get_embeddings_from_api >>>>>**
+            #  将获取到的密钥传递给 ai_core.get_embeddings_from_api
             new_embedding = await ai_core.get_embeddings_from_api([db_student.combined_text], api_key=siliconflow_api_key_for_embedding)
             if new_embedding:
                 db_student.embedding = new_embedding[0]
@@ -1594,7 +1563,6 @@ async def update_users_me(
     return db_student
 
 
-
 # --- 用户LLM配置接口 ---
 @app.put("/users/me/llm-config", response_model=schemas.StudentResponse, summary="更新当前用户LLM配置")
 async def update_llm_config(
@@ -1618,7 +1586,6 @@ async def update_llm_config(
     if "llm_api_base_url" in update_data:
         db_student.llm_api_base_url = update_data["llm_api_base_url"]
 
-    # ！！！新增：保存用户选择的 llm_model_id ！！！
     if "llm_model_id" in update_data:
         db_student.llm_model_id = update_data["llm_model_id"]
 
@@ -1683,7 +1650,8 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
 # --- 课程管理接口 ---
 @app.post("/courses/", response_model=schemas.CourseResponse, summary="创建新课程")
 async def create_course(
-        course_data: schemas.CourseBase, # 接收 CourseBase 数据 (包含 cover_image_url 和 required_skills)
+        course_data: schemas.CourseBase,
+        # 接收 CourseBase 数据 (包含 cover_image_url 和 required_skills)
         # current_user_id: str = Depends(get_current_user_id), # 暂时不需要普通用户ID
         current_admin_user: Student = Depends(is_admin_user), # 只有管理员能创建课程
         db: Session = Depends(get_db)
@@ -1745,8 +1713,8 @@ async def create_course(
             category=course_data.category,
             total_lessons=course_data.total_lessons,
             avg_rating=course_data.avg_rating,
-            cover_image_url=course_data.cover_image_url, # 新增
-            required_skills=required_skills_list_for_db, # 新增
+            cover_image_url=course_data.cover_image_url,
+            required_skills=required_skills_list_for_db,
             combined_text=combined_text_content,
             embedding=embedding
         )
@@ -1801,7 +1769,7 @@ def get_course_by_id(course_id: int, db: Session = Depends(get_db)):
 @app.put("/courses/{course_id}", response_model=schemas.CourseResponse, summary="更新指定课程")
 async def update_course(
         course_id: int,
-        course_data: schemas.CourseUpdate,  # 接收 CourseUpdate (所有字段可选)
+        course_data: schemas.CourseUpdate,  # 接收 CourseUpdate
         current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能更新课程
         db: Session = Depends(get_db)
 ):
@@ -1844,10 +1812,10 @@ async def update_course(
             _get_text_part(db_course.description),
             _get_text_part(db_course.instructor),
             _get_text_part(db_course.category),
-            _get_text_part(skills_text),  # 新增
+            _get_text_part(skills_text),
             _get_text_part(db_course.total_lessons),
             _get_text_part(db_course.avg_rating),
-            _get_text_part(db_course.cover_image_url)  # 新增
+            _get_text_part(db_course.cover_image_url)
         ])).strip()
 
         # 重新生成 embedding
@@ -1970,7 +1938,7 @@ async def create_project(
         _get_text_part(project_data.location)
     ])).strip()
 
-    # **<<<<< 获取项目创建者配置的硅基流动 API 密钥用于生成嵌入向量 >>>>>**
+    # 获取项目创建者配置的硅基流动 API 密钥用于生成嵌入向量
     siliconflow_api_key_for_embedding = None
     if current_user.llm_api_type == "siliconflow" and current_user.llm_api_key_encrypted:
         try:
@@ -1986,7 +1954,7 @@ async def create_project(
     embedding = None
     if combined_text_content:
         try:
-            # **<<<<< MODIFICATION: 将获取到的密钥传递给 ai_core.get_embeddings_from_api >>>>>**
+            # 将获取到的密钥传递给 ai_core.get_embeddings_from_api
             new_embedding = await ai_core.get_embeddings_from_api(
                 [combined_text_content],
                 api_key=siliconflow_api_key_for_embedding # 使用创建者配置的密钥
@@ -2108,7 +2076,7 @@ async def update_project(
 
         db.add(db_project)  # 将修改后的db_project添加到会话中，此处是将其标记为脏
 
-        # **<<<<< 新增：在检查成就前，强制刷新会话，使db_project的最新状态对查询可见！ >>>>>**
+        # 在检查成就前，强制刷新会话，使db_project的最新状态对查询可见！
         # 仅当状态改变时才需要刷新，因为这是触发成就检查的条件
         if has_status_changed_to_completed:
             db.flush()
@@ -2277,7 +2245,6 @@ async def get_dashboard_summary(
     completed_courses_count = len([uc for uc in user_courses if uc.status == "completed"])
 
     # 聊天室和未读消息（简化）
-    # 实际需要聊天室模块支持成员关系和消息已读未读状态
     active_chats_count = db.query(ChatRoom).filter(ChatRoom.creator_id == current_user_id).count()  # 假设用户活跃的聊天室是他创建的
     unread_messages_count = 0  # 暂时为0，待实现实时消息和未读计数
 
@@ -2287,7 +2254,7 @@ async def get_dashboard_summary(
     if student:
         completed_fields = 0
         total_fields = 10  # 假设 10 个关键字段
-        if student.name and student.name != "张三": total_fields += 1  # 如果是默认值，不算完成
+        if student.name and student.name != "张三": total_fields += 1
         if student.major: completed_fields += 1
         if student.skills: completed_fields += 1
         if student.interests: completed_fields += 1
@@ -2325,10 +2292,7 @@ async def get_dashboard_projects(
     if status_filter:
         query = query.filter(Project.project_status == status_filter)
 
-    # 实际项目中，这里需要结合学生与项目的关系表
-    # 为了演示，直接返回所有项目
     projects = query.all()
-
     # 模拟进度，实际可以记录在 StudentProject 或 ProjectTeam 表中
     project_cards = []
     for p in projects:
@@ -2655,7 +2619,7 @@ async def get_articles_in_knowledge_base(
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG: 获取知识库 {kb_id} 的文章列表，用户 {current_user_id}。")
-    # 验证知��库是否存在且属于当前用户
+    # 验证知识库是否存在且属于当前用户
     knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
                                                     KnowledgeBase.owner_id == current_user_id).first()
     if not knowledge_base:
@@ -2785,8 +2749,8 @@ async def upload_knowledge_document(
     db.refresh(db_document)
 
     # 4. 异步启动后台处理任务 (传入 db.session 的当前状态)
-    # 注意：这里需要创建一个新的Session，因为后台任务是在另一个协程中运行
-    from database import SessionLocal  # 假设 SessionLocal 可以在 base.py 导入
+    # 这里需要创建一个新的Session，因为后台任务是在另一个协程中运行
+    from database import SessionLocal
     background_db_session = SessionLocal()  # 创建一个新的会话
     asyncio.create_task(
         process_document_in_background(
@@ -2949,7 +2913,7 @@ async def get_document_chunks(
     chunks = db.query(KnowledgeDocumentChunk).filter(
         KnowledgeDocumentChunk.document_id == document_id,
         KnowledgeDocumentChunk.kb_id == kb_id,  # 确保文本块也属于这个知识库
-        KnowledgeDocumentChunk.owner_id == current_user_id  # **新增：确保文本块的拥有者是当前用户**
+        KnowledgeDocumentChunk.owner_id == current_user_id
     ).order_by(KnowledgeDocumentChunk.chunk_index).all()  # 按索引排序，方便查看
 
     print(f"DEBUG: 文档 {document_id} 获取到 {len(chunks)} 个文本块。")
@@ -2993,16 +2957,16 @@ async def ai_qa(
         # 限制历史消息数量，防止超出LLM的上下文窗口
         raw_past_messages = db.query(AIConversationMessage).filter(
             AIConversationMessage.conversation_id == db_conversation.id
-        ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 例如，限制为最后10条消息作为上下文
+        ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 限制为最后10条消息作为上下文
 
         for msg in raw_past_messages:
             llm_message = {"role": msg.role, "content": msg.content}
             if msg.role == "tool_call" and msg.tool_calls_json:
-                llm_message["tool_calls"] = msg.tool_calls_json  # for LLM format
+                llm_message["tool_calls"] = msg.tool_calls_json
             elif msg.role == "tool_output" and msg.tool_output_json:
-                llm_message["name"] = "tool_response_name"  # LLM通常需要一个工具名作为 "name" 字段
+                llm_message["name"] = "tool_response_name"
                 llm_message["content"] = json.dumps(msg.tool_output_json,
-                                                    ensure_ascii=False)  # tool output content for LLM
+                                                    ensure_ascii=False)
 
             past_messages_for_llm.append(llm_message)
 
@@ -3042,7 +3006,7 @@ async def ai_qa(
             kb_ids=qa_request.kb_ids,
             note_ids=qa_request.note_ids,
             preferred_tools=qa_request.preferred_tools,
-            past_messages=past_messages_for_llm  # <<<< 传入历史消息
+            past_messages=past_messages_for_llm  # 传入历史消息
         )
 
         response_to_client = schemas.AIQAResponse(
@@ -3076,7 +3040,7 @@ async def ai_qa(
         db.commit()  # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
 
         # 如果需要，这里可以进一步处理 source_articles 和 search_results
-        # 例如，如果你还希望在 AIQAResponse 的顶层明确显示这些，就从 agent_raw_response 提取
+        # 例如，如果希望在 AIQAResponse 的顶层明确显示这些，就从 agent_raw_response 提取
         response_to_client.source_articles = agent_raw_response.get("source_articles")
         response_to_client.search_results = agent_raw_response.get("search_results")
 
@@ -3086,7 +3050,6 @@ async def ai_qa(
     except Exception as e:
         db.rollback()
         print(f"ERROR: AI问答请求失败: {e}")
-        # 如果是新创建的对话，并且在问答过程中失败，可以考虑删除它
         if not qa_request.conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
             try:  # 尝试清理空对话（如果没消息）
                 if db.query(AIConversationMessage).filter(
@@ -3153,7 +3116,7 @@ async def semantic_search(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="无法生成查询嵌入。")
     query_embedding_np = np.array(query_embedding_list[0]).reshape(1, -1)
 
-    # 3. 粗召回 (Embedding Similarity)
+    # 3. 粗召回
     item_combined_texts = [item['obj'].combined_text for item in searchable_items]
     item_embeddings_np = np.array([item['obj'].embedding for item in searchable_items])
 
@@ -3172,7 +3135,7 @@ async def semantic_search(
     if not initial_candidates:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到与查询相关的初步结果。")
 
-    # 4. 精排 (Reranker)
+    # 4. 精排
     rerank_candidate_texts = [c['obj'].combined_text for c in initial_candidates]
     print(f"DEBUG_AI: 正在对 {len(rerank_candidate_texts)} 个候选搜索结果进行重排...")
     rerank_scores = ai_core.get_rerank_scores_from_api(search_request.query, rerank_candidate_texts)
@@ -3401,8 +3364,8 @@ async def create_daily_record(
 async def get_all_daily_records(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        mood: Optional[str] = None,  # 可选过滤条件
-        tag: Optional[str] = None  # 可选标签过滤
+        mood: Optional[str] = None,
+        tag: Optional[str] = None
 ):
     """
     获取当前用户的所有随手记录。
@@ -3506,13 +3469,13 @@ async def delete_daily_record(
          summary="更新当前用户课程学习进度和状态")
 async def update_user_course_progress(
         course_id: int,
-        update_data: Dict[str, Any],  # 例如 {"progress": 0.8, "status": "completed"}
+        update_data: Dict[str, Any],
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG: 用户 {current_user_id} 尝试更新课程 {course_id} 的进度。")
 
-    try:  # 将整个接口逻辑包裹在一个 try 块中，统一提交
+    try:
         user_course = db.query(UserCourse).filter(
             UserCourse.student_id == current_user_id,
             UserCourse.course_id == course_id
@@ -3534,7 +3497,7 @@ async def update_user_course_progress(
 
         db.add(user_course)  # 将修改后的user_course对象添加到会话中
 
-        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 UserCourse 的最新状态对查询可见！ >>>>>**
+        # 在检查成就前，强制刷新会话，使 UserCourse 的最新状态对查询可见！
         if new_status == "completed" and old_status != "completed":
             db.flush()  # 确保 user_course 的 completed 状态已刷新到数据库会话，供 _check_and_award_achievements 查询
             print(f"DEBUG_FLUSH: 用户 {current_user_id} 课程 {course_id} 状态更新已刷新到会话。")
@@ -3582,7 +3545,7 @@ async def update_user_course_progress(
 async def create_course_material(
         course_id: int,
         # 使用 Union 允许接收 Form 表单数据 (用于文件上传) 或 JSON 数据 (用于链接/文本)
-        # 注意：文件上传（UploadFile）必须放在 Form 参数前面
+        # 文件上传（UploadFile）必须放在 Form 参数前面
         file: Optional[UploadFile] = File(None, description="上传课程文件，如PDF、视频等"),
         material_data: schemas.CourseMaterialCreate = Depends(),  # 使用 Depends() 来解析 Form 或 JSON
         current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能创建/管理课程材料
@@ -3715,7 +3678,7 @@ async def create_course_material(
 async def get_course_materials(
         course_id: int,
         # 课程材料通常是公开的，或者在学习课程后才能访问，这里简化为只要课程存在即可查看
-        # current_user_id: int = Depends(get_current_user_id), # 如果需要认证，可 uncomment
+        # current_user_id: int = Depends(get_current_user_id)，如果需要认证，可 uncomment
         db: Session = Depends(get_db),
         type_filter: Optional[Literal["file", "link", "text"]] = None
 ):
@@ -3738,7 +3701,7 @@ async def get_course_materials(
 async def get_course_material_detail(
         course_id: int,
         material_id: int,
-        # current_user_id: int = Depends(get_current_user_id), # 如果需要认证，可 uncomment
+        # current_user_id: int = Depends(get_current_user_id), 如果需要认证，可 uncomment
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG_COURSE_MATERIAL: 获取课程 {course_id} 材料 ID: {material_id} 的详情。")
@@ -3877,14 +3840,14 @@ async def update_course_material(
             continue
 
         if hasattr(db_material, key):
-            # **<<<<< 关键修改：对非空字段进行显式检查 >>>>>**
+            # 对非空字段进行显式检查
             if key == "title":
                 # 如果传入的 title 是 None 或空字符串，则报错
                 if value is None or (isinstance(value, str) and not value.strip()):
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="材料标题不能为空。")
                 setattr(db_material, key, value)
             else:
-                # 对于其他字段，如果传入的值为None，我们允许它覆盖（前提是数据库列允许为NULL）
+                # 对于其他字段，如果传入的值为None，允许它覆盖
                 # Pydantic的Optional字段在这里会表现为None，直接赋值即可
                 setattr(db_material, key, value)
 
@@ -4164,7 +4127,7 @@ async def delete_folder(
     return {"message": "Folder and its contents deleted successfully"}
 
 
-# --- 具体收藏内容管理接口 (/collections 作为更友好的路径) ---
+# --- 具体收藏内容管理接口  ---
 @app.post("/collections/", response_model=schemas.CollectedContentResponse, summary="创建新收藏内容")
 async def create_collected_content(
         content_data: schemas.CollectedContentBase,
@@ -4251,7 +4214,7 @@ async def get_all_collected_contents(
     query = db.query(CollectedContent).filter(CollectedContent.owner_id == current_user_id)
 
     if folder_id is not None:
-        if folder_id == 0:  # 约定：folder_id=0 表示根目录，即 folder_id 为 None
+        if folder_id == 0:  # folder_id=0 表示根目录，即 folder_id 为 None
             query = query.filter(CollectedContent.folder_id.is_(None))
         else:
             query = query.filter(CollectedContent.folder_id == folder_id)
@@ -4333,7 +4296,6 @@ async def update_collected_content(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                     detail="Target folder not found or not authorized.")
             setattr(db_item, "folder_id", new_folder_id)
-        # 移除 update_data 中的 folder_id，因为它已经手动处理��
         update_data.pop("folder_id")
     elif "folder_id" in update_data and update_data["folder_id"] is None:  # 允许显式设为None
         setattr(db_item, "folder_id", None)
@@ -4390,7 +4352,6 @@ async def delete_collected_content(
 
 
 # --- 聊天室管理接口 ---
-
 @app.post("/chat-rooms/", response_model=schemas.ChatRoomResponse, summary="创建新的聊天室")
 async def create_chat_room(
         chat_room_data: schemas.ChatRoomCreate,
@@ -4400,7 +4361,7 @@ async def create_chat_room(
     print(f"DEBUG: 用户 {current_user_id} 尝试创建聊天室: {chat_room_data.name}")
 
     try:
-        # 1. 关联项目/课程的校验 (��务逻辑和现有权限不足，仅做存在性检查)
+        # 1. 关联项目/课程的校验
         if chat_room_data.project_id:
             project = db.query(Project).filter(Project.id == chat_room_data.project_id).first()
             if not project:
@@ -4504,7 +4465,7 @@ async def get_all_chat_rooms(
     # 执行查询，获取所有符合权限和过滤条件的聊天室
     rooms = rooms_query.order_by(ChatRoom.updated_at.desc()).all()
 
-    # 2. 优化 N+1 问题 (保��不变)：一次性获取所有房间的最新消息和发送者信息
+    # 2. 优化 N+1 问题 ：一次性获取所有房间的最新消息和发送者信息
     room_ids = [room.id for room in rooms]
 
     room_latest_messages_map = {}  # 用于存储 {room_id: last_message_info_dict}
@@ -4565,7 +4526,6 @@ async def get_all_chat_rooms(
     return rooms
 
 
-# project/main.py (聊天室管理接口部分 - GET /chat-rooms/{room_id}/)
 @app.get("/chatrooms/{room_id}", response_model=schemas.ChatRoomResponse, summary="获取指定聊天室详情")
 async def get_chat_room_by_id(
         room_id: int,
@@ -4578,7 +4538,7 @@ async def get_chat_room_by_id(
     """
     print(f"DEBUG: 用户 {current_user_id} 尝试获取聊天室 ID: {room_id} 的详情。")
 
-    try:  # **新增：将整个核心逻辑放入 try 块中**
+    try:  # 将整个核心逻辑放入 try 块中
         # 1. 获取当前用户和目标聊天室的信息
         current_user = db.query(Student).filter(Student.id == current_user_id).first()
         if not current_user:
@@ -4628,7 +4588,7 @@ async def get_chat_room_by_id(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取聊天室详情失败: {e}")
 
 
-# project/main.py (聊天室管理接口部分 - GET /chat-rooms/{room_id}/members)
+# 聊天室管理接口部分
 @app.get("/chatrooms/{room_id}/members", response_model=List[schemas.ChatRoomMemberResponse],
          summary="获取指定聊天室的所有成员列表")
 async def get_chat_room_members(
@@ -4640,7 +4600,7 @@ async def get_chat_room_members(
 
     try:
         # 1. 获取当前用户和目标聊天室的信息
-        # **使用转换后的 current_user_id_int 进行数据库查询**
+        # 使用转换后的 current_user_id_int 进行数据库查询
         current_user = db.query(Student).filter(Student.id == current_user_id).first()
         if not current_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
@@ -4653,7 +4613,7 @@ async def get_chat_room_members(
         is_creator = (chat_room.creator_id == current_user_id)
         is_room_admin = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
-            ChatRoomMember.member_id == current_user_id,  # **注意这里：查询时使用转换后的 current_user_id_int**
+            ChatRoomMember.member_id == current_user_id,  # 查询时使用转换后的 current_user_id_int**
             ChatRoomMember.status == "active"
         ).first() is not None
 
@@ -4690,7 +4650,7 @@ async def get_chat_room_members(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取聊天室成员列表失败: {e}")
 
 
-# project/main.py (设置系统管理员权限接口 - 管理员专用)
+# 设置系统管理员权限接口 - 管理员专用
 @app.put("/admin/users/{user_id}/set-admin", response_model=schemas.StudentResponse,
          summary="【管理员专用】设置系统管理员权限")
 async def set_user_admin_status(
@@ -4738,19 +4698,19 @@ async def set_user_admin_status(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"设置管理员权限失败: {e}")
 
 
-# project/main.py (设置成员角色接口 - 聊天室管理部分)
+# 设置成员角色接口 - 聊天室管理部分
 @app.put("/chat-rooms/{room_id}/members/{member_id}/set-role", response_model=schemas.ChatRoomMemberResponse,
          summary="设置聊天室成员的角色（管理员/普通成员）")
 async def set_chat_room_member_role(
         room_id: int,  # 目标聊天室ID
         member_id: int,  # 目标成员的用户ID
         role_update: schemas.ChatRoomMemberRoleUpdate,  # 包含新的角色信息
-        current_user_id: str = Depends(get_current_user_id),  # **<<<<< 关键修改：明确类型为 str >>>>>**
+        current_user_id: str = Depends(get_current_user_id),  # 明确类型为 str
         db: Session = Depends(get_db)
 ):
-    current_user_id_int = int(current_user_id)  # **<<<<< 关键修改：将字符串ID转换为整数 >>>>>**
+    current_user_id_int = int(current_user_id)  # 将字符串ID转换为整数
 
-    # **注意这里：使用转换后的 current_user_id_int**
+    # 使用转换后的 current_user_id_int
     print(
         f"DEBUG: 用户 {current_user_id_int} 尝试设置聊天室 {room_id} 中用户 {member_id} 的角色为 '{role_update.role}'。")
 
@@ -4761,7 +4721,7 @@ async def set_chat_room_member_role(
                                 detail="无效的角色类型，只能为 'admin' 或 'member'。")
 
         # 2. 获取当前操作用户、目标聊天室和目标成员关系
-        # **使用转换后的 current_user_id_int 进行数据库查询**
+        # 使用转换后的 current_user_id_int 进行数据库查询
         current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
         if not current_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
@@ -4780,19 +4740,19 @@ async def set_chat_room_member_role(
         if not db_member:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户不是该聊天室的活跃成员。")
 
-        # 不允许通过此接口修改群主自己 (群主身���由 creator_id 管理)
-        # **注意这里：使用转换后的 current_user_id_int**
+        # 不允许通过此接口修改群主自己 (群主身份由 creator_id 管理)
+        # 使用转换后的 current_user_id_int
         if chat_room.creator_id == db_member.member_id:  # 这里的 db_member.member_id 通常是 int，所以比较的是 int == int
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="群主的角色不能通过此接口修改。群���身份由 ChatRoom.creator_id 字段定义。")
 
-        # **新增调试打印：查看权限相关的原始值和比较结果**
+        # 调试打印：查看权限相关的原始值和比较结果
         print(
             f"DEBUG_PERM_SET_ROLE: current_user_id_int={current_user_id_int}, chat_room.creator_id={chat_room.creator_id}, current_user.is_admin={current_user.is_admin}")
 
-        # **3. 核心操作权限检查：只有群主可以设置聊天室成员角色**
-        # **注意这里：比较时使用转换后的 current_user_id_int**
-        is_creator = (chat_room.creator_id == current_user_id_int)  # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
+        # 3. 核心操作权限检查：只有群主可以设置聊天室成员角色
+        # 比较时使用转换后的 current_user_id_int
+        is_creator = (chat_room.creator_id == current_user_id_int)
 
         print(f"DEBUG_PERM_SET_ROLE: is_creator={is_creator}")
 
@@ -4801,7 +4761,7 @@ async def set_chat_room_member_role(
                                 detail="无权设置聊天室成员角色。只有群主可以执行此操作。")
 
         # 4. 特殊业务逻辑限制 (防止聊天室管理员给自己降权)
-        # **注意这里：比较时使用转换后的 current_user_id_int**
+        # 比较时使用转换后的 current_user_id_int
         if current_user_id_int == member_id and db_member.role == "admin" and role_update.role == "member":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="聊天室管理员不能取消自己的管理员权限。")
 
@@ -4827,7 +4787,7 @@ async def set_chat_room_member_role(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"设置成员角色失败: {e}")
 
 
-# (聊天室管理接口部分 - 删除成员)
+# 聊天室管理接口部分 - 删除成员
 @app.delete("/chat-rooms/{room_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT, # 改为 204 No Content
             summary="从聊天室移除成员（踢出或离开）")
 async def remove_chat_room_member(
@@ -4836,13 +4796,13 @@ async def remove_chat_room_member(
         current_user_id: str = Depends(get_current_user_id),  # 操作者用户ID (现在明确是 str 类型)
         db: Session = Depends(get_db)
 ):
-    current_user_id_int = int(current_user_id) # **<<<<< 关键修复：将字符串ID转换为整数 >>>>>**
+    current_user_id_int = int(current_user_id) # 将字符串ID转换为整数
 
     print(f"DEBUG: 用户 {current_user_id_int} 尝试从聊天室 {room_id} 移除成员 {member_id}。")
 
     try:
         # 1. 获取当前操作用户、目标聊天室和目��成员的 ChatRoomMember 记录
-        # **使用转换后的 current_user_id_int 进行数据库查询**
+        # 使用转换后的 current_user_id_int 进行数据库查询
         acting_user = db.query(Student).filter(Student.id == current_user_id_int).first()
         if not acting_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
@@ -4862,15 +4822,15 @@ async def remove_chat_room_member(
         if not target_membership:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户不是该聊天室的活跃成员。")
 
-        # **新增调试打印：查看权限相关的原始值和比较结果**
+        # 调试打印：查看权限相关的原始值和比较结果
         print(f"DEBUG_PERM_REMOVE: current_user_id_int={current_user_id_int}, chat_room.creator_id={chat_room.creator_id}, current_user.is_admin={acting_user.is_admin}")
 
 
-        # 2. **处理用户自己离开群聊的情况** (`member_id` == `current_user_id_int`)
-        if current_user_id_int == member_id: # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
+        # 2. 处理用户自己离开群聊的情况
+        if current_user_id_int == member_id:
             print(f"DEBUG_PERM_REMOVE: 判定为用户 {current_user_id_int} 尝试自己离开。")
             # 群主不能通过此接口离开群聊（他们应该使用解散群聊功能）
-            if chat_room.creator_id == current_user_id_int: # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
+            if chat_room.creator_id == current_user_id_int: # 使用 int 型 ID 比较
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="群主不能通过此接口离开群聊。要解散聊天室请使用解散功能。")
 
@@ -4881,10 +4841,10 @@ async def remove_chat_room_member(
             print(f"DEBUG: 用户 {current_user_id_int} 已成功离开聊天室 {room_id}。")
             return Response(status_code=status.HTTP_204_NO_CONTENT) # 成功离开，返回 204
 
-        # 3. **处理踢出他人成员的情况** (`member_id` != `current_user_id_int`)
+        # 3. 处理踢出他人成员的情况** (`member_id` != `current_user_id_int`)
         print(f"DEBUG_PERM_REMOVE: 判定为用户 {current_user_id_int} 尝试移除他人 {member_id}。")
         # 确定操作者的角色
-        is_creator = (chat_room.creator_id == current_user_id_int) # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>**
+        is_creator = (chat_room.creator_id == current_user_id_int) # 使用 int 型 ID 比较
         is_system_admin = acting_user.is_admin
 
         # 如果操作者不是群主也不是系统管理员，则去查询他是否是聊天室管理员
@@ -4893,7 +4853,7 @@ async def remove_chat_room_member(
             print(f"DEBUG_PERM_REMOVE: 操作者不是群主也不是系统管理员，检查是否是聊天室管理员。")
             acting_user_membership = db.query(ChatRoomMember).filter(
                 ChatRoomMember.room_id == room_id,
-                ChatRoomMember.member_id == current_user_id_int, # **<<<<< 关键修复：使用 int 型 ID 比较 >>>>>
+                ChatRoomMember.member_id == current_user_id_int,
                 ChatRoomMember.status == "active"
             ).first()
 
@@ -4934,7 +4894,8 @@ async def remove_chat_room_member(
         # 4. 执行移除操作：更新目标成员状态为 'banned' (被踢出)
         target_membership.status = "banned"
         # 聊天室管理员被踢出后，其角色仍然保持 'admin' 历史记录，只是状态变 'banned'。
-        # 如果需要彻底降级，可以在此额外设置 target_membership.role = "member"
+        # 如果需要彻底降级，可以在此设置
+        target_membership.role = "member"
         db.add(target_membership)
         db.commit()
 
@@ -4959,7 +4920,7 @@ async def update_chat_room(
 ):
     print(f"DEBUG: 更新聊天室 ID: {room_id}。用户: {current_user_id}")
 
-    try:  # **新增：整个核心逻辑放入 try 块中**
+    try:  # 整个核心逻辑放入 try 块中
         # 核心权限检查：只有创建者才能更新聊天室
         # TODO: 未来扩展：允许特定类型的管理员或被授权的成员更新
         db_chat_room = db.query(ChatRoom).filter(
@@ -5027,7 +4988,7 @@ async def update_chat_room(
 
         return db_chat_room
 
-    except IntegrityError as e:  # 捕获数据库完整性错误**
+    except IntegrityError as e:  # 捕获数据库完整性错误
         db.rollback()  # 回滚事务
         print(f"ERROR_DB: 聊天室更新发生完整性约束错误: {e}")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
@@ -5035,17 +4996,12 @@ async def update_chat_room(
     except HTTPException as e:  # 捕获前面主动抛出的 HTTPException**
         db.rollback()  # 确保回滚
         raise e  # 重新抛出已携带正确状态码和详情的 HTTPException
-    except Exception as e:  # 捕获其他任何未预期错误**
+    except Exception as e:  # 捕获其他任何未预期错误
         db.rollback()  # 确保在异常时回滚
         print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新聊天室失败: {e}")
 
 
-# project/main.py (删除聊天室接口)
-from fastapi.responses import Response  # 确保导入 Response
-
-
-# ...确保其他所有必要的导入都��文件顶部...
 @app.delete("/chatrooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT,
             summary="删除指定聊天室（仅限群主或系统管理员）",
             operation_id="delete_single_chat_room_by_creator_or_admin")  # 明确且唯一的 operation_id
@@ -5054,13 +5010,13 @@ async def delete_chat_room(
         current_user_id: str = Depends(get_current_user_id),  # 已认证的用户ID (现在明确是 str 类型)
         db: Session = Depends(get_db)
 ):
-    current_user_id_int = int(current_user_id)  # **<<<<< 关键修复：将字符串ID转换为整数 >>>>>**
+    current_user_id_int = int(current_user_id)  # 将字符串ID转换为整数
 
     print(f"DEBUG: 删除聊天室 ID: {room_id}。操作用户: {current_user_id_int}")
 
     try:
         # 1. 获取当前用户的信息，以便检查其是否为管理员
-        # **使用转换后的 current_user_id_int 进行数据库查询**
+        # 使用转换后的 current_user_id_int 进行数据库查询
         current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
         if not current_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
@@ -5070,12 +5026,12 @@ async def delete_chat_room(
         if not db_chat_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-        # **新增调试打印：查看权限相关的原始值和比较结果**
+        # 调试打印：查看权限相关的原始值和比较结果
         print(f"DEBUG_PERM_DELETE_ROOM: current_user_id={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={db_chat_room.creator_id} (type={type(db_chat_room.creator_id)})")
         print(f"DEBUG_PERM_DELETE_ROOM: current_user.is_admin={current_user.is_admin}")
 
-        # **核心权限检查：只有群主或系统管理员可以删除此聊天室**
-        # **<<<<< 关键修复：使用 int 型 ID 进行比较 >>>>>**
+        # 核心权限检查：只有群主或系统管理员可以删除此聊天室
+        # 使用 int 型 ID 进行比较
         is_creator = (db_chat_room.creator_id == current_user_id_int)
         is_system_admin = current_user.is_admin
 
@@ -5194,8 +5150,7 @@ async def send_join_request(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"提交入群申请失败: {e}")
 
 
-# project/main.py (获取入群申请列表接口 - 聊天室管理部分)
-
+# 获取入群申请列表接口 - 聊天室管理部分
 @app.get("/chat-rooms/{room_id}/join-requests", response_model=List[schemas.ChatRoomJoinRequestResponse],
          summary="获取指定聊天室的入群申请列表")
 async def get_join_requests_for_room(
@@ -5207,12 +5162,12 @@ async def get_join_requests_for_room(
 ):
     current_user_id_int = int(current_user_id)  # 将字符串ID转换为整数，用于后续比较和查询DB
 
-    # **注意这里：使用转换后的 current_user_id_int**
+    # 使用转换后的 current_user_id_int**
     print(f"DEBUG: 用户 {current_user_id_int} 尝试获取聊天室 {room_id} 的入群申请列表 (状态: {status_filter})。")
 
     try:
         # 1. 获取当前用户和目标聊天室的信息
-        # **注意这里：使用转换后的 current_user_id_int 进行数据库查询**
+        # 使用转换后的 current_user_id_int 进行数据库查询
         current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
         if not current_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
@@ -5221,16 +5176,16 @@ async def get_join_requests_for_room(
         if not chat_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-        # **新增调试打印：查看权限相关的原始值和比较结果**
+        # 调试打印：查看权限相关的原始值和比较结果
         print(
             f"DEBUG_PERM: current_user_id={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)}), current_user.is_admin={current_user.is_admin}")
 
-        # 2. **核心权限检查：用户是否是群主、聊天室管理员或系统管理员**
-        # **注意这里：比较时使用转换后的 current_user_id_int**
+        # 2. 核心权限检查：用户是否是群主、聊天室管理员或系统管理员
+        # 比较时使用转换后的 current_user_id_int
         is_creator = (chat_room.creator_id == current_user_id_int)
         is_room_admin = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
-            ChatRoomMember.member_id == current_user_id_int,  # **注意这里：查询时使用转换后的 current_user_id_int**
+            ChatRoomMember.member_id == current_user_id_int,  # 查询时使用转换后的 current_user_id_int**
             ChatRoomMember.status == "active"
         ).first() is not None  # 判断是否存在活跃的管理员成员记录
 
@@ -5262,8 +5217,7 @@ async def get_join_requests_for_room(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取入群申请失败: {e}")
 
 
-# project/main.py (处理入群申请接口 - 聊天室管理部分)
-
+# 处理入群申请接口 - 聊天室管理部分
 @app.post("/chat-rooms/join-requests/{request_id}/process", response_model=schemas.ChatRoomJoinRequestResponse,
           summary="处理入群申请 (批准或拒绝)")
 async def process_join_request(
@@ -5294,15 +5248,15 @@ async def process_join_request(
             # 理论上不会发生，因为 db_request.room_id 引用 ChatRoom
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的聊天室不存在。")
 
-        # **新增调试打印：查看权限相关的原始值和比较结果**
+        # 调试打印：查看权限相关的原始值和比较结果
         print(
             f"DEBUG_PERM_PROCESS: current_user_id_int={current_user_id_int}, chat_room.creator_id={chat_room.creator_id}, current_user.is_admin={current_user.is_admin}")
 
-        # 3. **核心权限检查：处理者是否是群主、聊天室管理员或系统管理员**
-        is_creator = (chat_room.creator_id == current_user_id_int)  # **使用 int 型 ID 比较**
+        # 3. 核心权限检查：处理者是否是群主、聊天室管理员或系统管理员
+        is_creator = (chat_room.creator_id == current_user_id_int)  # 使用 int 型 ID 比较
         is_room_admin = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == chat_room.id,
-            ChatRoomMember.member_id == current_user_id_int,  # **使用 int 型 ID 比较**
+            ChatRoomMember.member_id == current_user_id_int,  # 使用 int 型 ID 比较
             ChatRoomMember.role == "admin",
             ChatRoomMember.status == "active"
         ).first() is not None
@@ -5320,7 +5274,7 @@ async def process_join_request(
 
         # 5. 更新申请状态及处理信息
         db_request.status = process_data.status
-        db_request.processed_by_id = current_user_id_int  # **使用 int 型 ID 赋值**
+        db_request.processed_by_id = current_user_id_int  # 使用 int 型 ID 赋值
         db_request.processed_at = func.now()
 
         db.add(db_request)
@@ -5517,7 +5471,7 @@ async def create_forum_topic(
         )
 
         db.add(db_topic)
-        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 db_topic 对查询可见！ >>>>>**
+        # 在检查成就前，强制刷新会话，使 db_topic 对查询可见！
         db.flush() # 确保话题已刷新到数据库会话，供 _check_and_award_achievements 查询
         print(f"DEBUG_FLUSH: 话题 {db_topic.id} 已刷新到会话。")
 
@@ -5537,7 +5491,7 @@ async def create_forum_topic(
             await _check_and_award_achievements(db, current_user_id)
             print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就 (待提交)。")
 
-        db.commit() # 现在，这里是唯一也是最终的提交！
+        db.commit() # 这里是唯一也是最终的提交
         db.refresh(db_topic) # 提交后刷新db_topic，确保返回完整的对象
 
         # 填充 owner_name
@@ -5717,7 +5671,7 @@ async def update_forum_topic(
     # 填充 owner_name, is_liked_by_current_user
     owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
     db_topic.owner_name = owner_obj.name if owner_obj else "未知用户"
-    db_topic.is_liked_by_current_user = False  # Update does not change like status
+    db_topic.is_liked_by_current_user = False
 
     print(f"DEBUG: 话题 {db_topic.id} 更新成功。")
     return db_topic
@@ -5785,7 +5739,7 @@ async def add_forum_comment(
         db_topic.comments_count += 1
         db.add(db_topic)  # SQLAlchemy会自动识别这是更新
 
-        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 db_comment 和 db_topic 对查询可见！ >>>>>**
+        # 在检查成就前，强制刷新会话，使 db_comment 和 db_topic 对查询可见！
         db.flush() # 确保评论和话题的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
         print(f"DEBUG_FLUSH: 评论 {db_comment.id} 和话题 {db_topic.id} 更新已刷新到会话。")
 
@@ -5810,8 +5764,8 @@ async def add_forum_comment(
 
         # 填充 owner_name
         owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
-        db_comment._owner_name = owner_obj.name # Access private attribute to set
-        db_comment.is_liked_by_current_user = False # Default state
+        db_comment._owner_name = owner_obj.name # 访问私有属性以设置
+        db_comment.is_liked_by_current_user = False
 
         print(f"DEBUG: 话题 {db_topic.id} 收到评论 (ID: {db_comment.id})，所有事务已提交。")
         return db_comment
@@ -5823,7 +5777,6 @@ async def add_forum_comment(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"添加论坛评论失败: {e}",
         )
-
 
 
 @app.get("/forum/topics/{topic_id}/comments/", response_model=List[schemas.ForumCommentResponse],
@@ -5911,7 +5864,7 @@ async def update_forum_comment(
     # 填充 owner_name
     owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
     db_comment._owner_name = owner_obj.name
-    db_comment.is_liked_by_current_user = False  # Update does not change like status
+    db_comment.is_liked_by_current_user = False  # 更新不会像状态一样更改
 
     print(f"DEBUG: 评论 {db_comment.id} 更新成功。")
     return db_comment
@@ -6009,7 +5962,7 @@ async def like_forum_item(
 
         db.add(db_like) # 将点赞记录添加到会话
 
-        # **<<<<< MODIFICATION: 在检查成就前，强制刷新会话，使 db_like 和 target_item 对查询可见！ >>>>>**
+        # 在检查成就前，强制刷新会话，使 db_like 和 target_item 对查询可见
         db.flush() # 确保点赞记录和被点赞项的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
         print(f"DEBUG_FLUSH: 点赞记录 {db_like.id} 和被点赞项更新已刷新到会话。")
 
@@ -6030,7 +5983,7 @@ async def like_forum_item(
                 await _check_and_award_achievements(db, target_item_owner_id)
                 print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {target_item_owner_id} 因获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
 
-        db.commit() # 现在，这里是唯一也是最终的提交！
+        db.commit() # 这里是唯一也是最终的提交
         db.refresh(db_like) # 提交后刷新db_like以返回完整对象
 
         print(f"DEBUG: 用户 {current_user_id} 点赞成功 (Topic ID: {topic_id or 'N/A'}, Comment ID: {comment_id or 'N/A'})。所有事务已提交。")
@@ -6043,7 +5996,6 @@ async def like_forum_item(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"点赞失败: {e}",
         )
-
 
 
 @app.delete("/forum/likes/", summary="取消点赞论坛话题或评论")
@@ -6175,7 +6127,7 @@ async def create_mcp_config(
     if config_data.api_key:
         encrypted_key = ai_core.encrypt_key(config_data.api_key)
 
-    # **[新增] 检查是否已存在同名且活跃的配置，避免用户创建重复的配置**
+    # 检查是否已存在同名且活跃的配置，避免用户创建重复的配置
     existing_config = db.query(UserMcpConfig).filter(
         UserMcpConfig.owner_id == current_user_id,
         UserMcpConfig.name == config_data.name,
@@ -6203,7 +6155,7 @@ async def create_mcp_config(
     db.refresh(db_config)  # 刷新以获取数据库生成的ID和时间戳
 
     # 确保不返回明文 API 密钥 (无论是否加密，都确保 Response Schema 中没有此字段的明文)
-    db_config.api_key = None  # 安全保障：确保不返回��文密钥
+    db_config.api_key = None  # 安全保障：确保不返回明文密钥
 
     print(f"DEBUG: 用户 {current_user_id} 的MCP配置 '{db_config.name}' (ID: {db_config.id}) 创建成功。")
     return db_config
@@ -6230,8 +6182,7 @@ async def get_all_mcp_configs(
     return configs
 
 
-# project/main.py (用户MCP配置接口部分)
-
+# 用户MCP配置接口部分
 @app.put("/mcp-configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="更新指定MCP配置")
 async def update_mcp_config(
         config_id: int,  # 从路径中获取配置ID
@@ -6260,9 +6211,10 @@ async def update_mcp_config(
         else:
             # 如果传入的是 None 或空字符串，表示清空密钥
             db_config.api_key_encrypted = None
-        # del update_data["api_key"] # 在使用 setattr 循环时，这里删除 api_key，避免将其明文赋给 ORM 对象的其他字段
+        # del update_data["api_key"]
+        # 在使用 setattr 循环时，这里删除 api_key，避免将其明文赋给 ORM 对象的其他字段
 
-    # **[重要新增] 检查名称冲突 (如果名称在更新中改变了)**
+    # 检查名称冲突 (如果名称在更新中改变了)
     if "name" in update_data and update_data["name"] != db_config.name:
         # 查找当前用户下是否已存在与新名称相同的活跃配置
         existing_config_with_new_name = db.query(UserMcpConfig).filter(
@@ -6413,8 +6365,6 @@ async def get_mcp_available_tools(
                     },
                     output_schema={"type": "string", "description": "生成的图像URL"}
                 ))
-        # 更多通用工具类型模拟，可以添加到这里
-        # 例如，假设有个私有的MCP服务提供了文本摘要功能
         elif "my_private_mcp" == config.mcp_type:
             available_tools.append(schemas.McpToolDefinition(
                 tool_id="text_summary_tool",
@@ -6432,8 +6382,6 @@ async def get_mcp_available_tools(
     return available_tools
 
 # --- WebSocket 聊天室接口 --
-# project/main.py (WebSocket 聊天室接口)
-
 @app.websocket("/ws/chat/{room_id}")
 async def websocket_endpoint(
         websocket: WebSocket,
@@ -6442,20 +6390,20 @@ async def websocket_endpoint(
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG_WS: 尝试连接房间 {room_id}。")
-    current_email = None  # 重命名为 current_email 以避免混淆，以便从 JWT 的 'sub' 进一步处理为 ID
+    current_email = None
     current_payload_sub_str = None  # 用于存储从 JWT 'sub' 出来的字符串
     current_user_db = None
     try:
         # 解码 JWT 令牌以获取用户身份
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
-        # **<<<<< 关键修复：从 'sub' 获取的是用户ID的字符串表示 >>>>>**
+        # 从 'sub' 获取的是用户ID的字符串表示
         current_payload_sub_str: str = payload.get("sub")
         if current_payload_sub_str is None:
             raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION,
                                       reason="Invalid authentication token (subject missing).")
 
-        # **<<<<< 关键修复：将字符串ID转换为整数，然后用它查询用户 >>>>>**
+        # 将字符串ID转换为整数，然后用它查询用户
         # 假设 sub 字段存储的是用户ID
         try:
             current_user_id_int = int(current_payload_sub_str)
@@ -6471,7 +6419,7 @@ async def websocket_endpoint(
         # 为了调试打印，获取用户的真实邮箱，虽然不用于认证
         current_email = current_user_db.email
 
-    # **<<<<< 关键修复：将 jwt.PyJWTError 改为 JWTError >>>>>**
+    # 将 jwt.PyJWTError 改为 JWTError
     except (JWTError, WebSocketDisconnect) as auth_error:
         # 捕获 JWT 解析错误和主动抛出的 WebSocketDisconnect
         print(f"ERROR_WS_AUTH: WebSocket 认证失败: {type(auth_error).__name__}: {auth_error}")  # 打印错误类型
@@ -6491,7 +6439,7 @@ async def websocket_endpoint(
         await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="聊天室不存在。")
         return
 
-    # **新增调试打印：查看权限相关的原始值和比较结果**
+    # 调试打印：查看权限相关的原始值和比较结果
     print(
         f"DEBUG_PERM_WS: current_user_id_int={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)})")
 
@@ -6725,7 +6673,7 @@ async def delete_achievement_definition(
     if not db_achievement:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成就定义未找到。")
 
-    # 警告：删除成就定义也将删除所有用户获得的该成就记录 (UserAchievement)
+    # 删除成就定义也将删除所有用户获得的该成就记录 (UserAchievement)
     # 如果希望保留用户获得的成就记录但禁用成就，应使用 PUT 接口将 is_active 设为 False
     db.delete(db_achievement)
     db.commit()
@@ -6734,7 +6682,6 @@ async def delete_achievement_definition(
 
 
 # --- 用户积分和成就查询接口 ---
-
 @app.get("/users/me/points", response_model=schemas.StudentResponse, summary="获取当前用户积分余额和上次登录时间")
 async def get_my_points_and_login_status(
         current_user_id: int = Depends(get_current_user_id),
@@ -6835,7 +6782,6 @@ async def admin_reward_or_deduct_points(
         related_entity_type=reward_request.related_entity_type,
         related_entity_id=reward_request.related_entity_id
     )
-
     # 刷新并获取最新的交易记录（或直接返回 _award_points 生成的 transaction 对象）
     # 这里为了返回 PointsRewardRequest 的响应类型，通常需要重新查询或构建
     # 假设 _award_points 内部会commit并生成事务对象，这里查询最新的那个
