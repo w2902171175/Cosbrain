@@ -1,30 +1,22 @@
 # project/import_data.py
 import pandas as pd
 import numpy as np
-import os
-import httpx
-import json
-import asyncio
+import os, httpx, json, asyncio, re
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-import re
-from datetime import datetime, timedelta  # 确保 datetime 和 timedelta 导入
-
-# 导入数据库和模型定义
+from datetime import datetime, timedelta
 from database import SessionLocal, engine, init_db, Base
-from models import Student, Project, Achievement # **<<<<< 新增：导入 Achievement 模型 >>>>>**
+from models import Student, Project, Achievement
 
 # --- 1. 配置数据文件路径 ---
-STUDENTS_CSV_PATH = 'export_tools/data/students.csv'  # 修正路径
-PROJECTS_CSV_PATH = 'export_tools/data/projects.csv'  # 修正路径
+STUDENTS_CSV_PATH = 'export_tools/data/students.csv'
+PROJECTS_CSV_PATH = 'export_tools/data/projects.csv'
 
-
-# 这些是API的固定端点和模型名称，需要保留
+# API的固定端点和模型名称
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 
-# **<<<<< 新增：默认成就列表 >>>>>**
 DEFAULT_ACHIEVEMENTS = [
     {
         "name": "初次见面",
@@ -126,11 +118,9 @@ DEFAULT_ACHIEVEMENTS = [
         "is_active": True
     }
 ]
-# **<<<<< 默认成就列表结束 >>>>>**
 
 
 # --- 3. API 调用函数 ---
-# **<<<<< MODIFICATION: get_embeddings_from_api_async 接受 api_key 参数 >>>>>**
 async def get_embeddings_from_api_async(texts: List[str], api_key: Optional[str] = None) -> List[List[float]]:
     """
     通过硅基流动API异步获取文本嵌入。
@@ -141,13 +131,13 @@ async def get_embeddings_from_api_async(texts: List[str], api_key: Optional[str]
         print("警告：没有有效的文本可以发送给Embedding API。")
         return [np.zeros(1024).tolist()] * len(texts)
 
-    # **<<<<< MODIFICATION: 使用传入的 api_key 进行检查 >>>>>**
+    # 使用传入的 api_key 进行检查
     if not api_key or api_key == "dummy_key_for_testing_without_api":
         print("API密钥未配置或为虚拟密钥，无法获取嵌入。将返回零向量作为占位符。")
         return [np.zeros(1024).tolist()] * len(texts)
 
     headers = {
-        "Authorization": f"Bearer {api_key}", # <-- 使用传入的 api_key
+        "Authorization": f"Bearer {api_key}", # 使用传入的 api_key
         "Content-Type": "application/json",
     }
     payload = {
@@ -202,10 +192,9 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
     for index, row in df.iterrows():
         user_id = int(row['id'])
 
-        # **<<<<< MODIFICATION: 为确保唯一性，这些字段即使在 CSV 里为空，也会生成唯一值 >>>>>**
-        # 以前在 main.py 的 register 中处理过 username 生成，这里也需要保证唯一。
+        # 为确保唯一性，这些字段即使在 CSV 里为空，也会生成唯一值
         # 对于 email, phone_number, school, password_hash 这些唯一或非空的字段，
-        # 如果 CSV 中为空，我们也生成一个唯一的占位符，避免导入时报错
+        # 如果 CSV 中为空，也生成一个唯一的占位符，避免导入时报错
         if pd.isna(row.get('email')) or not str(row.get('email')).strip():
             df.at[index, 'email'] = f"user{user_id:04d}@example.com" # 确保邮箱唯一且有格式
 
@@ -248,7 +237,7 @@ def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
             except Exception as e:
                 print(f"WARNING_PREPROCESS: Error processing skills for student {row.get('id', index)}: {e}")
                 processed_skills_for_cell = []  # 异常发生时也确保是列表
-        else: # **<<<<< MODIFICATION: 新增 else 分支 >>>>>**
+        else:
             processed_skills_for_cell = []  # 明确为空列表，为了安全和IDE提示
 
         df.at[index, 'skills'] = json.dumps(processed_skills_for_cell, ensure_ascii=False)
@@ -330,7 +319,7 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
             except Exception as e:
                 print(f"WARNING_PREPROCESS: Error processing required_skills for project {row.get('id', index)}: {e}")
                 processed_required_skills_for_cell = []
-        else: # **<<<<< MODIFICATION: 新增 else 分支 >>>>>**
+        else:
             processed_required_skills_for_cell = [] # 明确为空列表，为了安全和IDE提示
 
         df.at[index, 'required_skills'] = json.dumps(processed_required_skills_for_cell, ensure_ascii=False)
@@ -344,7 +333,7 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
                     processed_required_roles_for_cell.extend([r.strip() for r in parsed_content if r.strip()])
                 elif isinstance(parsed_content, str) and parsed_content.strip():
                     processed_required_roles_for_cell.append(parsed_content.strip())
-                else:  # Fallback
+                else:
                     role_names = [r.strip() for r in str(required_roles_raw_data).split(',') if r.strip()]
                     processed_required_roles_for_cell.extend(role_names)
             except json.JSONDecodeError:  # 如果不是有效的JSON字符串，按逗号分隔
@@ -353,7 +342,7 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
             except Exception as e:
                 print(f"WARNING_PREPROCESS: Error processing required_roles for project {row.get('id', index)}: {e}")
                 processed_required_roles_for_cell = []
-        else:  # **<<<<< MODIFICATION: 新增 else 分支 >>>>>**
+        else:
            processed_required_roles_for_cell = [] # 明确为空列表，为了安全和IDE提示
         df.at[index, 'required_roles'] = json.dumps(processed_required_roles_for_cell, ensure_ascii=False)
 
@@ -402,10 +391,8 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
 def import_students_to_db(db: Session, students_df: pd.DataFrame):
     """将学生数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入学生数据到数据库...")
-    # **<<<<< MODIFICATION: 在导入脚本中，不再尝试调用外部API生成嵌入 >>>>>**
+    #  在导入脚本中，不再尝试调用外部API生成嵌入
     # 嵌入将由用户在配置API密钥后，通过更新个人资料或在推荐时按需生成
-    # texts = students_df['combined_text'].tolist() # 移除此行
-    # embeddings = asyncio.run(get_embeddings_from_api_async(texts)) # 移除此行
 
     for i, row in students_df.iterrows():
         skills_data = row['skills']
@@ -438,7 +425,7 @@ def import_students_to_db(db: Session, students_df: pd.DataFrame):
             password_hash=row['password_hash'],
 
             combined_text=row['combined_text'],
-            embedding=np.zeros(1024).tolist(), # **<<<<< 新增: 默认生成零向量 >>>>>**
+            embedding=np.zeros(1024).tolist(), #  默认生成零向量
             llm_api_type=None, # 导入时 LLM API 类型默认为 None
             llm_api_key_encrypted=None, # 导入时 API Key 默认为 None
             llm_api_base_url=None,
@@ -456,9 +443,6 @@ def import_students_to_db(db: Session, students_df: pd.DataFrame):
 def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
     """将项目数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入项目数据到数据库...")
-    # **<<<<< MODIFICATION: 在导入脚本中，不再尝试调用外部API生成嵌入 >>>>>**
-    # texts = projects_df['combined_text'].tolist() # 移除此行
-    # embeddings = asyncio.run(get_embeddings_from_api_async(texts)) # 移除此行
 
     for i, row in projects_df.iterrows():
         creator_id_for_db = None
@@ -514,7 +498,7 @@ def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
             location=row['location'],
             creator_id=creator_id_for_db,
             combined_text=row['combined_text'],
-            embedding=np.zeros(1024).tolist() # **<<<<< 新增: 默认生成零向量 >>>>>**
+            embedding=np.zeros(1024).tolist() # 默认生成零向量
         )
         if pd.isna(getattr(project, 'location')):
             setattr(project, 'location', None)
@@ -524,7 +508,7 @@ def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
     db.commit()
     print("项目数据导入完成。")
 
-# **<<<<< 新增：插入默认成就的函数 >>>>>**
+# 插入默认成就的函数
 def insert_default_achievements(db: Session):
     """
     插入预设的成就到数据库中，如果同名成就已存在则跳过。
@@ -553,7 +537,6 @@ def insert_default_achievements(db: Session):
     except Exception as e:
         db.rollback()
         print(f"ERROR_ACHIEVEMENT_IMPORT: 插入默认成就失败: {e}")
-# **<<<<< 插入默认成就函数结束 >>>>>**
 
 
 # --- 主执行流程 ---
@@ -599,7 +582,6 @@ if __name__ == "__main__":
     try:
         import_students_to_db(db_session, students_df)
         import_projects_to_db(db_session, projects_df)
-        # **<<<<< 新增：在导入数据后插入默认成就 >>>>>**
         insert_default_achievements(db_session)
     except Exception as e:
         db_session.rollback()

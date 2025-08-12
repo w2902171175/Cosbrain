@@ -1,5 +1,4 @@
 # project/schemas.py
-
 from pydantic import BaseModel, EmailStr, Field, model_validator, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
@@ -7,7 +6,6 @@ import json
 
 
 # --- 自定义公共Schema ---
-
 # 定义技能熟练度模型，包含古文优雅的描述
 class SkillWithProficiency(BaseModel):
     name: str = Field(..., description="技能名称")
@@ -41,7 +39,6 @@ class StudentBase(BaseModel):
     portfolio_link: Optional[str] = None
     preferred_role: Optional[str] = None
     availability: Optional[str] = None
-    # **<<<<< 新增：学生所在地理位置字段 >>>>>**
     location: Optional[str] = Field(None, description="学生所在地理位置，例如：广州大学城，珠海横琴")
 
 
@@ -64,7 +61,6 @@ class StudentResponse(StudentBase):
     email: Optional[EmailStr] = None
 
     combined_text: Optional[str] = None
-    # <<<< MODIFICATION: Add "custom_openai" to llm_api_type Literal >>>>
     llm_api_type: Optional[Literal[
         "openai", "zhipu", "siliconflow", "huoshanengine", "kimi", "deepseek", "custom_openai"
     ]] = None
@@ -104,7 +100,6 @@ class StudentUpdate(BaseModel): # StudentUpdate 一般直接继承 BaseModel
     portfolio_link: Optional[str] = None
     preferred_role: Optional[str] = None
     availability: Optional[str] = None
-    # **<<<<< 新增：学生所在地理位置字段，在更新时可选 >>>>>**
     location: Optional[str] = Field(None, description="学生所在地理位置，例如：广州大学城，珠海横琴")
 
 
@@ -125,7 +120,6 @@ class ProjectBase(BaseModel):
     start_date: Optional[datetime] = Field(None, description="项目开始日期")
     end_date: Optional[datetime] = Field(None, description="项目结束日期")
     estimated_weekly_hours: Optional[int] = Field(None, description="项目估计每周所需投入小时数")
-    # **<<<<< 新增：项目所在地理位置字段 >>>>>**
     location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
 
 
@@ -162,7 +156,6 @@ class ProjectUpdate(BaseModel): # ProjectUpdate 一般直接继承 BaseModel
     start_date: Optional[datetime] = Field(None, description="项目开始日期")
     end_date: Optional[datetime] = Field(None, description="项目结束日期")
     estimated_weekly_hours: Optional[int] = Field(None, description="项目估计每周所需投入小时数")
-    # **<<<<< 新增：项目所在地理位置字段，在更新时可选 >>>>>**
     location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
 
 
@@ -190,9 +183,8 @@ class NoteResponse(NoteBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- DailyRecord Schemas ---
 
-
+# --- DailyRecord Schemas ---
 class DailyRecordBase(BaseModel):
     """随手记录基础信息模型，用于创建或更新时接收数据"""
     content: str
@@ -217,9 +209,8 @@ class DailyRecordResponse(DailyRecordBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- Folder Schemas ---
 
-
+# --- Folder Schemas ---
 class FolderBase(BaseModel):
     """文件夹基础信息模型，用于创建或更新时接收数据"""
     name: str
@@ -247,9 +238,8 @@ class FolderResponse(FolderBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- CollectedContent Schemas ---
 
-
+# --- CollectedContent Schemas ---
 class CollectedContentBase(BaseModel):
     """具体收藏内容基础信息模型，用于创建或更新时接收数据"""
     title: str
@@ -288,9 +278,8 @@ class CollectedContentResponse(CollectedContentBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- ChatRoom Schemas ---
 
-
+# --- ChatRoom Schemas ---
 class ChatRoomBase(BaseModel):
     """聊天室基础信息模型，用于创建或更新时接收数据"""
     name: str = Field(..., max_length=100) # 明确名称为必填且最大长度
@@ -306,7 +295,7 @@ class ChatRoomMemberBase(BaseModel):
     member_id: int
     role: Literal["admin", "member"] = Field("member", description="成员角色：'admin'或'member'")
     status: Literal["active", "banned", "left"] = Field("active", description="成员状态：'active', 'banned', 'left'")
-    # last_read_at: Optional[datetime] = None # 如果在 models.py 中添加了此字段
+    last_read_at: Optional[datetime] = None
 
 
 # 聊天室成员响应信息 (包含 ID 和时间戳)
@@ -320,7 +309,7 @@ class ChatRoomMemberResponse(ChatRoomMemberBase):
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}  # 保持一致
 
 
-# ** 用于更新成员角色的请求体**
+# 用于更新成员角色的请求体
 class ChatRoomMemberRoleUpdate(BaseModel):
     role: Literal["admin", "member"] = Field(..., description="要设置的新角色：'admin' 或 'member'")
 
@@ -362,7 +351,7 @@ class ChatRoomCreate(ChatRoomBase):
     pass
 
 
-# ** 聊天室更新请求体，所有字段均为可选**
+# 聊天室更新请求体，所有字段均为可选
 class ChatRoomUpdate(ChatRoomBase):
     name: Optional[str] = None
     type: Optional[str] = None
@@ -386,9 +375,8 @@ class ChatRoomResponse(ChatRoomBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- ChatMessage Schemas ---
 
-
+# --- ChatMessage Schemas ---
 class ChatMessageBase(BaseModel):
     """聊天消息基础信息模型，用于创建时接收数据"""
     content_text: str
@@ -413,9 +401,8 @@ class ChatMessageResponse(ChatMessageBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- ForumTopic Schemas ---
 
-
+# --- ForumTopic Schemas ---
 class ForumTopicBase(BaseModel):
     """论坛话题基础信息模型，用于创建或更新时接收数据"""
     title: str
@@ -449,9 +436,8 @@ class ForumTopicResponse(ForumTopicBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- ForumComment Schemas ---
 
-
+# --- ForumComment Schemas ---
 class ForumCommentBase(BaseModel):
     """论坛评论基础信息模型，用于创建或更新时接收数据"""
     content: str
@@ -482,9 +468,8 @@ class ForumCommentResponse(ForumCommentBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- ForumLike Schemas ---
 
-
+# --- ForumLike Schemas ---
 class ForumLikeResponse(BaseModel):
     """点赞操作的响应模型"""
     id: int
@@ -497,9 +482,8 @@ class ForumLikeResponse(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- UserFollow Schemas ---
 
-
+# --- UserFollow Schemas ---
 class UserFollowResponse(BaseModel):
     """用户关注操作的响应模型"""
     id: int
@@ -511,9 +495,8 @@ class UserFollowResponse(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- UserMcpConfig Schemas ---
 
-
+# --- UserMcpConfig Schemas ---
 class UserMcpConfigBase(BaseModel):
     name: Optional[str] = None
     mcp_type: Optional[Literal["modelscope_community", "custom_mcp"]] = None
@@ -540,9 +523,8 @@ class UserMcpConfigResponse(UserMcpConfigBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- McpStatusResponse Schemas ---
 
-
+# --- McpStatusResponse Schemas ---
 class McpStatusResponse(BaseModel):
     status: str
     message: str
@@ -553,9 +535,8 @@ class McpStatusResponse(BaseModel):
     class Config:
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- McpToolDefinition Schemas ---
 
-
+# --- McpToolDefinition Schemas ---
 class McpToolDefinition(BaseModel):
     """表示一个可供智库LLM调用的MCP工具定义"""
     tool_id: str  # 工具的唯一ID，可以用于LLM的function_call
@@ -572,7 +553,6 @@ class McpToolDefinition(BaseModel):
 
 
 # --- UsersSearchEngineConfig Schemas ---
-
 class UserSearchEngineConfigBase(BaseModel):
     name: Optional[str] = None
     engine_type: Optional[Literal["bing", "tavily", "baidu", "google_cse", "custom"]] = None
@@ -612,7 +592,7 @@ class UserTTSConfigBase(BaseModel):
     voice_name: Optional[str] = Field(None, description="语音名称或ID，如：'alloy', 'f_cn_zh_anqi_a_f'")
     is_active: Optional[bool] = Field(False, description="是否当前激活的TTS配置，每个用户只能有一个激活配置")
 
-    # **<<<<< MODIFICATION: 解决 Pydantic 'model_' 命名空间冲突警告 >>>>>**
+    # 解决 Pydantic 'model_' 命名空间冲突警告
     model_config = { # Pydantic V2 的配置方式是 model_config
         'protected_namespaces': () # 解除对 'model_' 命名空间的保护
     }
@@ -626,7 +606,7 @@ class UserTTSConfigCreate(UserTTSConfigBase):
     ] = Field(..., description="语音提供商类型")
     api_key: str = Field(..., description="API密钥（未加密）")
 
-    # **<<<<< MODIFICATION: 解决 Pydantic 'model_' 命名空间冲突警告 >>>>>**
+    #  解决 Pydantic 'model_' 命名空间冲突警告
     model_config = {
         'protected_namespaces': ()
     }
@@ -642,7 +622,7 @@ class UserTTSConfigUpdate(UserTTSConfigBase):
     voice_name: Optional[str] = None
     is_active: Optional[bool] = None # 允许更新激活状态
 
-    # **<<<<< MODIFICATION: 解决 Pydantic 'model_' 命名空间冲突警告 >>>>>**
+    #  解决 Pydantic 'model_' 命名空间冲突警告
     model_config = {
         'protected_namespaces': ()
     }
@@ -654,7 +634,7 @@ class UserTTSConfigResponse(UserTTSConfigBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    # **<<<<< MODIFICATION: 合并 Pydantic 配置，移除 class Config: >>>>>**
+    # 合并 Pydantic 配置，移除 class Config:
     model_config = {
         'protected_namespaces': (), # 解除对 'model_' 命名空间的保护
         'from_attributes': True,   # 从 ORM 模型创建实例
@@ -678,9 +658,8 @@ class SearchEngineStatusResponse(BaseModel):
     class Config:
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- WebSearchResult Schemas ---
 
-
+# --- WebSearchResult Schemas ---
 class WebSearchResult(BaseModel):
     title: str
     url: str
@@ -698,21 +677,12 @@ class WebSearchResponse(BaseModel):
     class Config:
         from_attributes = True
 
-    # --- WebSearchRequest Schemas ---
 
-
+# --- WebSearchRequest Schemas ---
 class WebSearchRequest(BaseModel):
     query: str
     engine_config_id: int
     limit: int = 5
-
-
-# --- TTSTextRequest Schemas ---
-# 注意：这个TTSTextRequest重复定义了，请确认并删除第一个TTSTextRequest
-# 应该保留一个TTSTextRequest在schemas文件中的唯一位置，这里暂时保留。
-# class TTSTextRequest(BaseModel):
-#     text: str
-#     lang: str = "zh-CN"
 
 
 # --- KnowledgeBase Schemas ---
@@ -763,9 +733,8 @@ class KnowledgeArticleResponse(KnowledgeArticleBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- KnowledgeDocument (for uploaded files) Schemas ---
 
-
+# --- KnowledgeDocument (for uploaded files) Schemas ---
 class KnowledgeDocumentBase(BaseModel):
     file_name: str
     file_path: Optional[str] = None
@@ -791,9 +760,8 @@ class KnowledgeDocumentResponse(KnowledgeDocumentBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-    # --- KnowledgeDocumentChunk (for RAG) Schemas ---
 
-
+# --- KnowledgeDocumentChunk (for RAG) Schemas ---
 class KnowledgeDocumentChunkResponse(BaseModel):
     id: int
     document_id: int
@@ -951,6 +919,7 @@ class CollectionItemResponse(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
+
 # --- API Response for Match Results ---
 class MatchedProject(BaseModel):
     project_id: int
@@ -958,7 +927,7 @@ class MatchedProject(BaseModel):
     description: str
     similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
     relevance_score: float   # 最终重排后的相关性得分
-    # **<<<<< 新增：匹配理由字段 >>>>>**
+    # 匹配理由字段
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
 
 
@@ -987,7 +956,7 @@ class MatchedStudent(BaseModel):
     skills: Optional[List[SkillWithProficiency]] = Field(None, description="学生的技能列表及熟练度详情")
     similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
     relevance_score: float   # 最终重排后的相关性得分
-    # **<<<<< 新增：匹配理由字段 >>>>>**
+    # 匹配理由字段
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
 
 
@@ -1153,7 +1122,6 @@ class DashboardCourseCard(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-# **<<<<< 新增：成就系统和积分系统相关 Schemas >>>>>**
 
 # --- Achievement Schemas ---
 class AchievementBase(BaseModel):
@@ -1175,9 +1143,11 @@ class AchievementBase(BaseModel):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
+
 class AchievementCreate(AchievementBase):
     # 创建成就时，所有基础字段都是必需的 (除非它们有默认值)
     pass
+
 
 class AchievementUpdate(AchievementBase):
     # 更新成就时，所有字段都是可选的
@@ -1193,10 +1163,12 @@ class AchievementUpdate(AchievementBase):
     reward_points: Optional[int] = None
     is_active: Optional[bool] = None
 
+
 class AchievementResponse(AchievementBase):
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
+
 
 # --- UserAchievement Schemas ---
 class UserAchievementResponse(BaseModel):
@@ -1216,6 +1188,7 @@ class UserAchievementResponse(BaseModel):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
 
 # --- PointsRewardRequest Schema (用于手动发放/扣除积分) ---
 class PointsRewardRequest(BaseModel):
@@ -1240,6 +1213,4 @@ class PointTransactionResponse(BaseModel):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-
-# **<<<<< 新增成就系统和积分系统相关 Schemas 结束 >>>>>**
 
