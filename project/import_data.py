@@ -19,15 +19,6 @@ from models import Student, Project, Achievement # **<<<<< 新增：导入 Achie
 STUDENTS_CSV_PATH = 'export_tools/data/students.csv'  # 修正路径
 PROJECTS_CSV_PATH = 'export_tools/data/projects.csv'  # 修正路径
 
-# --- 2. 硅基流动API配置（固定端点和模型名称） ---
-# 此脚本不再使用环境变量中的SILICONFLOW_API_KEY，而是明确依赖对get_embeddings_from_api_async的api_key参数传递。
-# 这样，只有当API Key被显式传递（例如，如果将来需要一个特殊的导入密钥），才会进行实际API调用。
-# 否则，它将依赖ai_core内部的占位符逻辑。
-# **<<<<< MODIFICATION: 移除不必要的全局 API KEY 读取 >>>>>**
-# SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY") # 移除此行
-# if not SILICONFLOW_API_KEY or SILICONFLOW_API_KEY == "sk-YOUR_SILICONFLOW_API_KEY_HERE": # 移除此行
-#     print("警告：SILICONFLOW_API_KEY 环境变量未设置或为默认值。AI Embedding/Rerank功能将受限。") # 移除此行
-#     SILICONFLOW_API_KEY = "dummy_key_for_testing_without_api" # 移除此行
 
 # 这些是API的固定端点和模型名称，需要保留
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
