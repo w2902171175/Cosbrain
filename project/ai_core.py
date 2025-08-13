@@ -191,6 +191,13 @@ RERANKER_API_URL = "https://api.siliconflow.cn/v1/rerank"
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 
+# --- 占位符密钥，用于测试或未配置API时 ---
+DUMMY_API_KEY = "dummy_key_for_testing_without_api"
+
+# 全局模型初始化占位符（用于确保返回零向量时不报错） ---
+# 这是一个通用占位符，如果 get_embeddings_from_api 无法获取到合适的 key，就会返回这个。
+GLOBAL_PLACEHOLDER_ZERO_VECTOR = [0.0] * 1024
+
 # --- 通用大模型 API 配置示例 (回答模型由用户选择) ---
 DEFAULT_LLM_API_CONFIG = {
     "openai": {
@@ -542,99 +549,119 @@ async def synthesize_speech(
                                 detail=f"文本转语音失败: {e}. 请联系管理员。")
 
 
-async def get_embeddings_from_api(texts: List[str], api_key: Optional[str] = None) -> List[List[float]]:
-    # Embedding 模型固定使用 BAAAI/bge-m3
-    non_empty_texts = [t for t in texts if t and t.strip()]
-    if not non_empty_texts:
-        print("警告：没有有效的文本可以发送给Embedding API。")
-        return [np.zeros(1024).tolist()] * len(texts)
+# --- 嵌入向量生成函数 (仅在满足条件下调用硅基流动的API) ---
+async def get_embeddings_from_api(
+        texts: List[str],
+        api_key: Optional[str] = None,  # 用户传入的 (解密后的) API key
+        llm_type: Optional[str] = None,  # 用户配置的 LLM 类型
+        llm_base_url: Optional[str] = None,  # 用户配置的 LLM base_url (这里不用于嵌入URL，但作为上下文)
+        llm_model_id: Optional[str] = None  # 用户配置的 LLM model_id (这里不用于嵌入模型名，但作为上下文)
+) -> List[List[float]]:
+    """
+    根据给定的文本生成嵌入向量。
+    优先使用用户配置的'siliconflow'埋点API Key和其专有模型。
+    如果用户未配置'siliconflow'LLM或提供的密钥无效，则返回零向量。
+    """
+    if not texts:
+        return []
 
-    if not api_key or api_key == "dummy_key_for_testing_without_api":
-        print("API密钥未配置或为虚拟密钥，无法获取嵌入。将返回零向量作为占位符。")
-        return [np.zeros(1024).tolist()] * len(texts)
+    # 只有当用户LLM类型为'siliconflow'且提供了有效的API Key时，才进行实际API调用
+    if llm_type == "siliconflow" and api_key and api_key != DUMMY_API_KEY:
+        final_api_key = api_key
+        final_base_url = EMBEDDING_API_URL
+        final_model_name = EMBEDDING_MODEL_NAME
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": EMBEDDING_MODEL_NAME,
-        "input": non_empty_texts
-    }
-    print(f"DEBUG_EMBEDDING: Requesting embeddings for {len(non_empty_texts)} texts using {EMBEDDING_MODEL_NAME}.")
+        headers = {
+            "Authorization": f"Bearer {final_api_key}",
+            "Content-Type": "application/json",
+            "X-DashScope-Apikey": final_api_key  # SiliconFlow也支持X-DashScope-Apikey
+        }
+        payload = {
+            "model": final_model_name,
+            "input": texts
+        }
 
-    async with httpx.AsyncClient() as client:
-        response = None # 确保 response 在 try 块外部被声明
-        try:
-            response = await client.post(EMBEDDING_API_URL, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            embeddings_result = [item['embedding'] for item in data.get('data', [])] # 使用 .get() 安全地访问 'data' 键
+        print(
+            f"DEBUG_EMBEDDING_API: Calling SiliconFlow embedding API ({llm_type}): URL={final_base_url}, Model={final_model_name}")
 
-            full_embeddings = []
-            result_idx = 0
-            for text_orig in texts:
-                if text_orig and text_orig.strip():
-                    if result_idx < len(embeddings_result):
-                        full_embeddings.append(embeddings_result[result_idx])
-                        result_idx += 1
-                    else:
-                        full_embeddings.append(np.zeros(1024).tolist())
-                else:
-                    full_embeddings.append(np.zeros(1024).tolist())
-            print(f"DEBUG_EMBEDDING: Successfully received {len(full_embeddings)} embeddings (including placeholders).")
-            return full_embeddings
-        except httpx.RequestError as e:
-            print(f"API请求错误 (Embedding): {e}")
-            print(f"响应内容: {getattr(e, 'response', None).text if hasattr(e, 'response') and e.response else '无'}")
-            raise
-        except KeyError as e:
-            print(f"API响应格式错误 (Embedding): {e}. 响应: {response.text if response and hasattr(response, 'text') else '无法获取响应数据或响应正文'}")
-            raise
-        except json.JSONDecodeError as e: # 添加特定的JSON解码错误
-            print(f"API响应JSON解码错误 (Embedding): {e}.")
-            print(f"响应: {response.text if response and hasattr(response, 'text') else '无法获取响应数据或响应正文'}")
-            raise
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(final_base_url, headers=headers, json=payload, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                embeddings = [item["embedding"] for item in data["data"]]
+                return embeddings
+            except httpx.RequestError as e:
+                print(f"ERROR_EMBEDDING_API: Request failed for '{final_model_name}': {e}. Returning zero vectors.")
+                # 这里只打印错误，并返回零向量，确保不中断后续流程
+                return [GLOBAL_PLACEHOLDER_ZERO_VECTOR for _ in texts]
+            except KeyError as e:
+                print(
+                    f"ERROR_EMBEDDING_API: Response format error for '{final_model_name}': {e}. Response: {data}. Returning zero vectors.")
+                return [GLOBAL_PLACEHOLDER_ZERO_VECTOR for _ in texts]
+    else:
+        # 如果用户未配置siliconflow LLM或API key无效，则返回零向量。
+        # 不再依赖环境变量中的默认嵌入密钥。
+        print(
+            f"INFO_EMBEDDING_API: User's LLM config is not SiliconFlow or API key is missing/dummy. Returning zero embedding vector.")
+        return [GLOBAL_PLACEHOLDER_ZERO_VECTOR for _ in texts]
 
 
-async def get_rerank_scores_from_api(query: str, documents: List[str], api_key: Optional[str] = None) -> List[float]:
-    # Reranker 模型固定使用 BAAAI/bge-reranker-v2-m3
-    if not api_key or api_key == "dummy_key_for_testing_without_api":
-        print("API密钥未配置或为虚拟密钥，无法获取重排分数。将返回零分数作为占位符。")
-        return [0.0] * len(documents)
+# --- 重排分数生成函数 (仅在满足条件下调用硅基流动的API) ---
+async def get_rerank_scores_from_api(
+        query: str,
+        texts: List[str],
+        api_key: Optional[str] = None,  # 用户传入的 (解密后的) API key
+        llm_type: Optional[str] = None,  # 用户配置的 LLM 类型
+        llm_base_url: Optional[str] = None  # 虽然 reranker 不用 base_url，但保持参数一致性
+) -> List[float]:
+    """
+    根据查询和文本列表生成重排分数。
+    优先使用用户配置的'siliconflow'重排API Key和其专有模型。
+    如果用户未配置'siliconflow'LLM或提供的密钥无效，则返回零分数。
+    """
+    if not texts:
+        return []
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": RERANKER_MODEL_NAME,
-        "query": query,
-        "documents": documents
-    }
-    print(f"DEBUG_RERANKER: Requesting rerank scores for {len(documents)} documents using {RERANKER_MODEL_NAME}.")
+    # 只有当用户LLM类型为'siliconflow'且提供了有效的API Key时，才进行实际API调用
+    if llm_type == "siliconflow" and api_key and api_key != DUMMY_API_KEY:
+        final_api_key = api_key
+        final_base_url = RERANKER_API_URL
+        final_model_name = RERANKER_MODEL_NAME
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(RERANKER_API_URL, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json() # data 定义在这里
-            scores = [item['relevance_score'] for item in data['results']]
-            print(f"DEBUG_RERANKER: Successfully received {len(scores)} rerank scores.")
-            return scores
-        except httpx.RequestError as e:
-            print(f"API请求错误 (Reranker): {e}")
-            print(f"响应内容: {getattr(e, 'response', None).text if getattr(e, 'response', None) else '无'}")
-            raise # Re-raise the exception to be handled by the caller
-        except KeyError as e:
-            print(f"API响应格式错误 (Reranker): {e}.")
-            print(f"响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
-            raise
-        except json.JSONDecodeError as e:
-            print(f"API响应JSON解码错误 (Reranker): {e}.")
-            print(f"响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
-            raise
+        headers = {
+            "Authorization": f"Bearer {final_api_key}",
+            "Content-Type": "application/json",
+            "X-DashScope-Apikey": final_api_key  # SiliconFlow也支持X-DashScope-Apikey
+        }
+        payload = {
+            "model": final_model_name,
+            "query": query,
+            "documents": texts
+        }
 
+        print(
+            f"DEBUG_RERANKER_API: Calling SiliconFlow reranker API ({llm_type}): URL={final_base_url}, Model={final_model_name}")
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(final_base_url, headers=headers, json=payload, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                scores = [item["score"] for item in data["results"]]
+                return scores
+            except httpx.RequestError as e:
+                print(f"ERROR_RERANKER_API: Request failed for '{final_model_name}': {e}. Returning zero scores.")
+                return [0.0] * len(texts)
+            except KeyError as e:
+                print(
+                    f"ERROR_RERANKER_API: Response format error for '{final_model_name}': {e}. Response: {data}. Returning zero scores.")
+                return [0.0] * len(texts)
+    else:
+        # 如果用户未配置siliconflow LLM或API key无效，则返回零分数。
+        print(
+            f"INFO_RERANKER_API: User's LLM config is not SiliconFlow or API key is missing/dummy. Returning zero reranker scores.")
+        return [0.0] * len(texts)
 
 
 def extract_text_from_document(filepath: str, file_type: str) -> str:
