@@ -10,8 +10,8 @@ from database import SessionLocal, engine, init_db, Base
 from models import Student, Project, Achievement
 
 # --- 1. 配置数据文件路径 ---
-STUDENTS_CSV_PATH = 'export_tools/data/students.csv'
-PROJECTS_CSV_PATH = 'export_tools/data/projects.csv'
+STUDENTS_CSV_PATH = 'export_tools/data/export/students.csv'
+PROJECTS_CSV_PATH = 'export_tools/data/export/projects.csv'
 
 # API的固定端点和模型名称
 EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
