@@ -331,7 +331,7 @@ class ChatRoomMemberCreate(ChatRoomMemberBase):
 # 聊天室成员响应信息 (包含 ID 和时间戳)
 class ChatRoomMemberResponse(ChatRoomMemberBase):
     id: int
-    room_id = int,
+    room_id = int
     member_id: int
     joined_at: datetime
     member_name: Optional[str] = Field(None, description="成员的姓名")
