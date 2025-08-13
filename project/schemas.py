@@ -261,6 +261,32 @@ class CollectedContentBase(BaseModel):
     status: Optional[Literal["active", "archived", "deleted"]] = None
 
 
+class CollectedContentSharedItemAddRequest(BaseModel):
+    """
+    用于从平台内部快速收藏一个项目、课程、论坛话题等内容的请求体。
+    后端会根据 shared_item_type 和 shared_item_id 自动填充大部分内容。
+    """
+    shared_item_type: Literal[
+        "project",
+        "course",
+        "forum_topic",
+        "note",
+        "daily_record",
+        "knowledge_article",
+        "chat_message",
+        "knowledge_document"
+    ] = Field(..., description="要收藏的平台内部内容的类型")
+    shared_item_id: int = Field(..., description="要收藏的平台内部内容的ID")
+
+    folder_id: Optional[int] = Field(None, description="要收藏到的文件夹ID")
+    notes: Optional[str] = Field(None, description="收藏时的个人备注")
+    is_starred: Optional[bool] = Field(None, description="是否立即为该收藏添加星标")
+
+    # 允许用户在快速收藏时给一个自定义标题，但如果后端能提取，优先提取
+    # 这个字段在 CollectedContentBase 里面，这里不强制要求
+    title: Optional[str] = Field(None, description="收藏项的自定义标题。如果为空，后端将从共享项中提取。")
+
+
 class CollectedContentCreate(CollectedContentBase):
     """创建具体收藏内容时的数据模型"""
     pass
