@@ -1,5 +1,5 @@
 # project/models.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean, text, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean, text, Index, UniqueConstraint, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, remote
 from sqlalchemy.sql import func
@@ -210,6 +210,16 @@ class Folder(Base):
 class CollectedContent(Base):
     __tablename__ = "collected_contents"
 
+    # 确保同一用户不能重复收藏同一个共享实体
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_id", "shared_item_type", "shared_item_id",
+            name="_owner_shared_item_uc"
+        ),
+        # 为 title + owner_id 添加唯一约束，如果要求收藏标题在用户维度唯一
+        # UniqueConstraint("owner_id", "title", name="_owner_title_uc"),
+    )
+
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("students.id"))
     folder_id = Column(Integer, ForeignKey("folders.id"), nullable=True)
@@ -226,13 +236,18 @@ class CollectedContent(Base):
     thumbnail = Column(String, nullable=True)
     author = Column(String, nullable=True)
     duration = Column(String, nullable=True)
-    file_size = Column(String, nullable=True)
+    file_size = Column(BigInteger, nullable=True, comment="文件大小（字节）")
     status = Column(String, default="active")
 
-    combined_text = Column(Text)
-    embedding = Column(Vector(1024))
+    access_count = Column(Integer, default=0, nullable=False, comment="访问（查看）次数")
+    shared_item_type = Column(String, nullable=True,
+                              comment="如果收藏平台内部内容，记录其类型（例如'project', 'course', 'forum_topic', 'note', 'daily_record', 'knowledge_article', 'chat_message'）")
+    shared_item_id = Column(Integer, nullable=True, comment="如果收藏平台内部内容，记录其ID")
 
-    created_at = Column(DateTime, server_default=func.now())
+    combined_text = Column(Text, nullable=True, comment="用于AI模型嵌入的组合文本")
+    embedding = Column(Vector(1024), nullable=True, comment="文本内容的嵌入向量")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, onupdate=func.now())
 
     owner = relationship("Student", back_populates="collected_contents")
