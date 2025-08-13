@@ -5201,10 +5201,11 @@ async def create_chat_room(
         db.add(db_chat_room)
         db.commit()  # 首次提交以获取 db_chat_room 的 ID
         db.refresh(db_chat_room)  # 刷新以加载数据库生成的 ID 和创建时间
+
         db_chat_room_member = ChatRoomMember(
             room_id=db_chat_room.id,
             member_id=current_user_id,
-            role="member",  # 初始设置为 'member'，因为群主身份已由 ChatRoom.creator_id 表示
+            role="king",
             status="active"
         )
         db.add(db_chat_room_member)
@@ -5563,7 +5564,7 @@ async def set_chat_room_member_role(
         # 使用转换后的 current_user_id_int
         if chat_room.creator_id == db_member.member_id:  # 这里的 db_member.member_id 通常是 int，所以比较的是 int == int
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="群主的角色不能通过此接口修改。群���身份由 ChatRoom.creator_id 字段定义。")
+                                detail="群主的角色不能通过此接口修改。群主身份由 ChatRoom.creator_id 字段定义。")
 
         # 调试打印：查看权限相关的原始值和比较结果
         print(

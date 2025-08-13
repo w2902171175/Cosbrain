@@ -320,14 +320,19 @@ class ChatRoomBase(BaseModel):
 class ChatRoomMemberBase(BaseModel):
     room_id: int
     member_id: int
-    role: Literal["admin", "member"] = Field("member", description="成员角色：'admin'或'member'")
-    status: Literal["active", "banned", "left"] = Field("active", description="成员状态：'active', 'banned', 'left'")
+    role: Literal["king", "admin", "member"] = Field("member",
+                                                     description="成员角色 (king: 群主, admin: 管理员, member: 普通成员)")
+    status: Literal["active", "banned", "left"] = Field("active", description="成员状态 (active: 活跃, banned: 被踢出, left: 已离开)")
     last_read_at: Optional[datetime] = None
 
+class ChatRoomMemberCreate(ChatRoomMemberBase):
+    pass
 
 # 聊天室成员响应信息 (包含 ID 和时间戳)
 class ChatRoomMemberResponse(ChatRoomMemberBase):
     id: int
+    room_id = int,
+    member_id: int
     joined_at: datetime
     member_name: Optional[str] = Field(None, description="成员的姓名")
 
