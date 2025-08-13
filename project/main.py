@@ -11,9 +11,9 @@ from datetime import timedelta, datetime, timezone, date
 from sqlalchemy.sql import func
 from sqlalchemy import and_, or_, ForeignKey
 from jose import JWTError, jwt
-from fastapi.security import OAuth2PasswordBearer #
+from fastapi.security import OAuth2PasswordBearer
 from dotenv import load_dotenv
-import requests,schemas,secrets,json,os,uuid,asyncio,httpx
+import requests, schemas, secrets, json, os, uuid, asyncio, httpx, re
 load_dotenv()
 # 密码哈希
 from passlib.context import CryptContext
@@ -22,7 +22,7 @@ from passlib.context import CryptContext
 from database import SessionLocal, engine, init_db, get_db
 from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse, CollectedContentSharedItemAddRequest
 # 导入重构后的 ai_core 模块
 import ai_core
 
@@ -478,6 +478,235 @@ def _get_text_part(value: Any) -> str: # 将 Optional[str] 变为 Any，以处�
         # 为小时数添加单位，或根据需要返回原始字符串表示
         return str(value) + "" # 此处不需要加“小时”，因为这只是一个通用函数
     return str(value).strip() if str(value).strip() else ""
+
+
+# --- 辅助函数：创建收藏内容的内部逻辑 (用于复用) ---
+async def _create_collected_content_item_internal(
+        db: Session,
+        current_user_id: int,
+        content_data: schemas.CollectedContentBase  # 接收 CollectedContentBase，包含所有可能的收藏字段
+) -> CollectedContent:
+    """
+    内部辅助函数：处理收藏内容的创建逻辑，包括从共享项提取信息和生成嵌入。
+    """
+    # 1. 验证目标文件夹是否存在且属于当前用户 (如果提供了folder_id)
+    if content_data.folder_id:
+        target_folder = db.query(Folder).filter(
+            Folder.id == content_data.folder_id,
+            Folder.owner_id == current_user_id
+        ).first()
+        if not target_folder:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="目标文件夹未找到或无权访问。")
+
+    # 2. 处理共享内部资源逻辑
+    # 这些变量将存储最终用于创建CollectedContent实例的值
+    final_title = content_data.title  # 优先使用用户提供的或从调用者处传入的title
+    final_type = content_data.type  # 优先使用用户提供的或从调用者处传入的type
+    final_url = content_data.url
+    final_content = content_data.content
+    final_author = content_data.author
+    final_tags = content_data.tags
+    final_thumbnail = content_data.thumbnail
+    final_duration = content_data.duration
+    final_file_size = content_data.file_size
+    final_status = content_data.status
+
+    # 如果有 shared_item_type，说明是收藏内部资源
+    if content_data.shared_item_type and content_data.shared_item_id is not None:
+        model_map = {
+            "project": Project,
+            "course": Course,
+            "forum_topic": ForumTopic,
+            "note": Note,
+            "daily_record": DailyRecord,
+            "knowledge_article": KnowledgeArticle,
+            "chat_message": ChatMessage,
+            "knowledge_document": KnowledgeDocument
+        }
+        source_model = model_map.get(content_data.shared_item_type)
+
+        if not source_model:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"不支持的共享项类型: {content_data.shared_item_type}")
+
+        # 获取源数据对象
+        source_item = db.get(source_model, content_data.shared_item_id)  # 使用 db.get 更高效
+        if not source_item:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"共享项 (类型: {content_data.shared_item_type}, ID: {content_data.shared_item_id}) 未找到。")
+
+        # 从源数据对象提取信息来填充收藏内容，仅当对应字段在 content_data 中为 None 时才进行填充
+        if final_title is None:
+            final_title = getattr(source_item, 'title', None) or getattr(source_item, 'name',
+                                                                         None) or f"{content_data.shared_item_type} #{content_data.shared_item_id}"
+
+        if final_content is None:
+            final_content = getattr(source_item, 'description', None) or getattr(source_item, 'content', None)
+
+        if final_url is None:
+            final_url = getattr(source_item, 'url', None)
+            if final_url is None and content_data.shared_item_type == "chat_message":
+                final_url = getattr(source_item, 'media_url', None)
+
+        if final_author is None:
+            if hasattr(source_item, 'owner') and source_item.owner and hasattr(source_item.owner, 'name'):
+                final_author = source_item.owner.name
+            elif hasattr(source_item, 'creator') and source_item.creator and hasattr(source_item.creator, 'name'):
+                final_author = source_item.creator.name
+            elif hasattr(source_item, 'author') and source_item.author and hasattr(source_item.author, 'name'):
+                final_author = source_item.author.name
+            elif hasattr(source_item, 'sender') and source_item.sender and hasattr(source_item.sender,
+                                                                                   'name'):  # chat_message
+                final_author = source_item.sender.name
+
+        if final_tags is None:
+            final_tags = getattr(source_item, 'tags', None)
+
+        # 自动确定收藏类型，仅当 final_type 为 None 时才进行自动推断
+        if final_type is None:
+            if content_data.shared_item_type == "chat_message" and final_url:
+                # 使用正则表达式判断是否为图片URL
+                if_image_url_pattern = r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))"
+                if re.match(if_image_url_pattern, final_url, re.IGNORECASE):
+                    final_type = "image"
+                elif final_url.lower().endswith(('.pdf', '.doc', '.docx', '.mp4', '.avi', '.mov')):
+                    final_type = "file"
+                else:
+                    final_type = "url"
+            elif content_data.shared_item_type in ["knowledge_document"] or (
+                    content_data.shared_item_type == "course_material" and hasattr(source_item, 'file_type')):
+                if getattr(source_item, 'file_type', '').startswith('image/'):
+                    final_type = "image"
+                elif getattr(source_item, 'file_type', '') and not getattr(source_item, 'file_type', '').startswith(
+                        'text/plain'):
+                    final_type = "file"
+                else:  # Fallback for documents content or text material
+                    final_type = "text"
+            elif content_data.shared_item_type in ["project", "course", "forum_topic", "note", "daily_record",
+                                                   "knowledge_article"]:
+                final_type = content_data.shared_item_type  # 例如：type="project", type="course"
+            else:
+                final_type = "text"  # 兜底，如果没有明确类型，默认文本
+
+        # 兼容旧系统或确保用户可以直接覆盖这些字段
+        # thumbnail, duration, file_size, status 优先使用 user_data 中传入的值
+        # 如果 user_data 中没有，再尝试从 source_item 中提取
+        if final_thumbnail is None: final_thumbnail = getattr(source_item, 'thumbnail', None) or getattr(source_item,
+                                                                                                         'cover_image_url',
+                                                                                                         None)
+        if final_duration is None: final_duration = getattr(source_item, 'duration', None)
+        if final_file_size is None: final_file_size = getattr(source_item, 'file_size', None)
+        if final_status is None: final_status = getattr(source_item, 'status', None)  # 例如 project status, course status
+
+    else:  # 如果不是共享内部资源，则使用用户提交的 title, type, url, content
+        if final_type is None: final_type = "text"  # 如果没有提供共享项，且未指定类型，默认为文本
+
+    # 如果此时 final_title 依然为空，进行最后兜底
+    if not final_title:
+        if final_type == "text" and final_content:
+            final_title = final_content[:30] + "..." if len(final_content) > 30 else final_content
+        elif final_type == "url" and final_url:
+            final_title = final_url
+        elif final_type in ["file", "image"] and content_data.title:  # 如果是文件/图片且用户提供了原始标题
+            final_title = content_data.title
+        elif content_data.shared_item_type and content_data.shared_item_id:
+            final_title = f"{content_data.shared_item_type.capitalize()} #{content_data.shared_item_id}"  # 兜底标题格式
+        else:
+            final_title = "无标题收藏"
+
+    # 3. 组合文本用于嵌入 (现在使用最终确定的值)
+    combined_text_for_embedding = ". ".join(filter(None, [
+        _get_text_part(final_title),
+        _get_text_part(final_content),
+        _get_text_part(final_url),
+        _get_text_part(final_tags),
+        _get_text_part(final_type),
+        _get_text_part(final_author)
+    ])).strip()
+
+    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+    # 获取当前用户的LLM配置用于嵌入生成
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    user_llm_api_key = None
+    user_llm_type = None
+    user_llm_base_url = None
+    user_llm_model_id = None
+
+    if current_user_obj.llm_api_type == "siliconflow" and current_user_obj.llm_api_key_encrypted:
+        try:
+            user_llm_api_key = ai_core.decrypt_key(current_user_obj.llm_api_key_encrypted)
+            user_llm_type = current_user_obj.llm_api_type
+            user_llm_base_url = current_user_obj.llm_api_base_url
+            user_llm_model_id = current_user_obj.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用收藏创建者配置的硅基流动 API 密钥为收藏内容生成嵌入。")
+        except Exception as e:
+            print(
+                f"WARNING_COLLECTION_EMBEDDING: 解密用户 {current_user_id} LLM API密钥失败: {e}. 收藏内容嵌入将使用零向量或默认行为。")
+            user_llm_api_key = None  # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 收藏创建者未配置硅基流动 API 类型或密钥，收藏内容嵌入将使用零向量或默认行为。")
+
+    if combined_text_for_embedding:
+        try:
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_for_embedding],
+                api_key=user_llm_api_key,
+                llm_type=user_llm_type,
+                llm_base_url=user_llm_base_url,
+                llm_model_id=user_llm_model_id
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            print(f"DEBUG: 收藏内容嵌入向量已生成。")
+        except Exception as e:
+            print(f"ERROR: 生成收藏内容嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING: 收藏内容 combined_text 为空，嵌入向量设为零。")
+
+    # 4. 创建数据库记录
+    db_item = CollectedContent(
+        owner_id=current_user_id,
+        folder_id=content_data.folder_id,
+        title=final_title,  # 使用最终确定的标题
+        type=final_type,  # 使用最终确定的类型
+        url=final_url,  # 使用最终确定的URL
+        content=final_content,  # 使用最终确定的内容
+        tags=final_tags,  # 使用最终确定的标签
+        priority=content_data.priority,  # 优先级从传入数据获取
+        notes=content_data.notes,  # 备注从传入数据获取
+        is_starred=content_data.is_starred,  # 星标从传入数据获取
+        thumbnail=final_thumbnail,  # 缩略图使用最终确定的
+        author=final_author,  # 作者使用最终确定的
+        duration=final_duration,
+        file_size=final_file_size,
+        status=final_status,  # 使用最终确定的状态
+
+        # 共享项信息 (直接从 input_data 获取，因为它们是用户明确提供的)
+        shared_item_type=content_data.shared_item_type,
+        shared_item_id=content_data.shared_item_id,
+
+        combined_text=combined_text_for_embedding,
+        embedding=embedding
+    )
+
+    db.add(db_item)
+    try:
+        db.commit()
+        db.refresh(db_item)
+        return db_item  # 返回新创建的 CollectedContent 实例
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建收藏内容发生完整性约束错误: {e}")
+        if "_owner_shared_item_uc" in str(e):  # 捕获我们新增的唯一约束错误
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="此内容已被您收藏。")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建收藏内容失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建收藏内容发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建收藏内容失败: {e}")
 
 
 # --- 辅助函数：检查搜索引擎服务连通性 ---
@@ -4505,12 +4734,17 @@ async def create_collected_content(
         db: Session = Depends(get_db)
 ):
     """
-    为当前用户创建一条新收藏内容。
+    为当前用户创建一条新收藏内容。支持直接创建文本/链接/图片/文件内容，
+    或通过 shared_item_type 和 shared_item_id 收藏平台内部资源（项目、课程、论坛话题、笔记、随手记录、知识库文章、聊天消息等）。
     后端会根据内容生成 combined_text 和 embedding。
     """
-    print(f"DEBUG: 用户 {current_user_id} 尝试创建收藏: {content_data.title}")
+    print(
+        f"DEBUG: 用户 {current_user_id} 尝试创建收藏。标题: {content_data.title}, 共享类型: {content_data.shared_item_type}")
 
-    # 验证文件夹是否存在且属于当前用户 (如果提供了folder_id)
+    # 直接调用内部辅助函数来处理所有业务逻辑
+    return await _create_collected_content_item_internal(db, current_user_id, content_data)
+
+    # 1. 验证目标文件夹是否存在且属于当前用户 (如果提供了folder_id)
     if content_data.folder_id:
         target_folder = db.query(Folder).filter(
             Folder.id == content_data.folder_id,
@@ -4518,51 +4752,259 @@ async def create_collected_content(
         ).first()
         if not target_folder:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                detail="Target folder not found or not authorized.")
+                                detail="目标文件夹未找到或无权访问。")
 
-    # 组合文本用于嵌入
-    combined_text = (
-            (content_data.title or "") + ". " +
-            (content_data.content or "") + ". " +
-            (content_data.tags or "") + ". " +
-            (content_data.type or "") + ". " +
-            (content_data.author or "")
-    ).strip()
+    # 2. 处理共享内部资源逻辑
+    final_title = content_data.title  # 优先使用用户提供的标题
+    final_type = content_data.type  # 优先使用用户提供的类型
+    final_url = content_data.url
+    final_content = content_data.content
+    final_author = content_data.author
+    final_tags = content_data.tags
+    final_thumbnail = content_data.thumbnail
+    final_duration = content_data.duration
+    final_file_size = content_data.file_size
+    final_status = content_data.status
 
-    embedding = [0.0] * 1024  # 默认零向量
-    if combined_text:
+    # 如果有 shared_item_type，说明是收藏内部资源
+    if content_data.shared_item_type and content_data.shared_item_id is not None:
+        model_map = {
+            "project": Project,
+            "course": Course,
+            "forum_topic": ForumTopic,
+            "note": Note,
+            "daily_record": DailyRecord,
+            "knowledge_article": KnowledgeArticle,
+            "chat_message": ChatMessage,  # 用于收藏聊天中的文件/图片等特定消息
+            "knowledge_document": KnowledgeDocument  # 收藏知识文档，而不是其文章
+        }
+        source_model = model_map.get(content_data.shared_item_type)
+
+        if not source_model:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"不支持的共享项类型: {content_data.shared_item_type}")
+
+        # 获取源数据对象
+        source_item = db.query(source_model).filter(source_model.id == content_data.shared_item_id).first()
+        if not source_item:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"共享项 (类型: {content_data.shared_item_type}, ID: {content_data.shared_item_id}) 未找到。")
+
+        # 从源数据对象提取信息来填充收藏内容
+        final_title = source_item.title if hasattr(source_item, 'title') else source_item.name if hasattr(source_item,
+                                                                                                          'name') else f"{content_data.shared_item_type} #{content_data.shared_item_id}"
+        final_content = source_item.description if hasattr(source_item,
+                                                           'description') and source_item.description else source_item.content if hasattr(
+            source_item, 'content') else None
+
+        # 尝试提取URL、文件信息（特别是针对 ChatMessage 或 CourseMaterial 中的文件/图片）
+        if hasattr(source_item, 'url') and source_item.url:
+            final_url = source_item.url
+        elif hasattr(source_item,
+                     'media_url') and source_item.media_url and content_data.shared_item_type == "chat_message":
+            final_url = source_item.media_url
+        elif hasattr(source_item, 'file_path') and source_item.file_path and content_data.shared_item_type in [
+            "course_material", "knowledge_document"]:
+            # 注意：file_path是服务器本地路径，如果提供给前端，需要通过接口转换成可访问URL
+            # 这里简化处理，直接存储。如果需要，应转换为公共访问URL
+            # 也可以不在这里自动设置url，让用户自己指定或通过前端处理
+            # 或者更合理的，在CollectedContent中增加一个 file_storage_path 字段
+            # 目前，我们只提供可直接访问的URL。如果file_path是本地的，不做自动设置。
+            pass
+
+        if hasattr(source_item, 'owner') and source_item.owner and hasattr(source_item.owner, 'name'):
+            final_author = source_item.owner.name
+        elif hasattr(source_item, 'creator') and source_item.creator and hasattr(source_item.creator, 'name'):
+            final_author = source_item.creator.name
+        elif hasattr(source_item, 'author') and source_item.author and hasattr(source_item.author,
+                                                                               'name'):  # knowledge_article 的 author 是用户对象
+            final_author = source_item.author.name
+        elif hasattr(source_item, 'sender') and source_item.sender and hasattr(source_item.sender,
+                                                                               'name'):  # chat_message 的 sender 是用户对象
+            final_author = source_item.sender.name
+
+        # 自动确定收藏类型
+        if content_data.shared_item_type == "chat_message" and final_url and (
+                content_data.type is None or content_data.type == "file"):
+            final_type = "file" if final_url.startswith(app.root_path + "/uploads") or final_url.endswith(
+                ('.pdf', '.doc', '.docx', '.mp4', '.avi', '.mov')) else "url"
+            if_image_url_pattern = r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))"
+            if final_url and re.match(if_image_url_pattern, final_url, re.IGNORECASE):
+                final_type = "image"
+            elif final_url:  # 如果是其他url类型，但不是文件或图片
+                final_type = "url"
+            else:  # 普通文本消息的collected type
+                final_type = "text"
+        elif content_data.shared_item_type == "knowledge_document" or (
+                content_data.shared_item_type == "course_material" and hasattr(source_item,
+                                                                               'file_type') and source_item.file_type):
+            if hasattr(source_item, 'file_type') and source_item.file_type and source_item.file_type.startswith(
+                    'image/'):
+                final_type = "image"
+            elif hasattr(source_item, 'file_path') and source_item.file_path:
+                final_type = "file"
+            else:
+                final_type = "text"
+        elif content_data.shared_item_type in ["project", "course", "forum_topic", "note", "daily_record",
+                                               "knowledge_article", "knowledge_document"]:
+            # 对于这些有结构化内容的内部资源，我们将其 type 设置为对应的 shared_item_type 字符串，以便前端区分
+            final_type = content_data.shared_item_type  # 例如：type="project", type="course"
+        else:  # 兜底，如果用户未提供 type, 默认设为 text
+            final_type = "text"  # TODO: Re-evaluate this default more generally for CollectedContent
+
+        # 提取 tags
+        if hasattr(source_item, 'tags') and source_item.tags:
+            final_tags = source_item.tags
+
+    if final_type is None and not (content_data.shared_item_type and content_data.shared_item_id is not None):
+        final_type = content_data.type or "text"  # Fallback if no shared item and no explicit type
+
+    # 如果此时 final_title 依然为空（例如纯内容文件），进行最后兜底
+    if not final_title:
+        if final_type == "text" and final_content:
+            final_title = final_content[:30] + "..." if len(final_content) > 30 else final_content
+        elif final_type == "url" and final_url:
+            final_title = final_url
+        elif final_type in ["file", "image"] and content_data.original_filename:
+            final_title = content_data.original_filename
+        else:
+            final_title = "无标题收藏"
+
+    # 3. 组合文本用于嵌入
+    # 组合文本现在更依赖于最终生成的字段
+    combined_text_for_embedding = ". ".join(filter(None, [
+        _get_text_part(final_title),
+        _get_text_part(final_content),  # 使用最终内容
+        _get_text_part(final_url),  # 使用最终URL
+        _get_text_part(final_tags),
+        _get_text_part(final_type),
+        _get_text_part(final_author)
+    ])).strip()
+
+    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+    # 获取当前用户的LLM配置用于嵌入生成
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    user_llm_api_key = None
+    user_llm_type = None
+    user_llm_base_url = None
+    user_llm_model_id = None
+
+    if current_user_obj.llm_api_type == "siliconflow" and current_user_obj.llm_api_key_encrypted:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([combined_text])
-            embedding = new_embedding[0]
+            user_llm_api_key = ai_core.decrypt_key(current_user_obj.llm_api_key_encrypted)
+            user_llm_type = current_user_obj.llm_api_type
+            user_llm_base_url = current_user_obj.llm_api_base_url
+            user_llm_model_id = current_user_obj.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用收藏创建者配置的硅基流动 API 密钥为收藏内容生成嵌入。")
+        except Exception as e:
+            print(
+                f"WARNING_COLLECTION_EMBEDDING: 解密用户 {current_user_id} LLM API密钥失败: {e}. 收藏内容嵌入将使用零向量。")
+            user_llm_api_key = None  # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 收藏创建者未配置硅基流动 API 类型或密钥，收藏内容嵌入将使用零向量或默认行为。")
+
+    if combined_text_for_embedding:
+        try:
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_for_embedding],
+                api_key=user_llm_api_key,
+                llm_type=user_llm_type,
+                llm_base_url=user_llm_base_url,
+                llm_model_id=user_llm_model_id
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
             print(f"DEBUG: 收藏内容嵌入向量已生成。")
         except Exception as e:
-            print(f"ERROR: 生成收藏内容嵌入向量失败: {e}")
+            print(f"ERROR: 生成收藏内容嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING: 收藏内容 combined_text 为空，嵌入向量设为零。")
 
+    # 4. 创建数据库记录
     db_item = CollectedContent(
         owner_id=current_user_id,
         folder_id=content_data.folder_id,
-        title=content_data.title,
-        type=content_data.type,
-        url=content_data.url,
-        content=content_data.content,
-        tags=content_data.tags,
+        title=final_title,
+        type=final_type,  # 使用最终类型
+        url=final_url,  # 使用最终URL
+        content=final_content,  # 使用最终内容
+        tags=final_tags,
         priority=content_data.priority,
         notes=content_data.notes,
         is_starred=content_data.is_starred,
-        thumbnail=content_data.thumbnail,
-        author=content_data.author,
-        duration=content_data.duration,
-        file_size=content_data.file_size,
-        status=content_data.status,
-        combined_text=combined_text,
+        thumbnail=final_thumbnail,  # 缩略图当前仍然从 input_data 获取
+        author=final_author,
+        duration=final_duration,
+        file_size=final_file_size,
+        status=final_status,  # 使用最终status
+
+        # 共享项信息 (直接从 input_data 获取，因为它们是用户明确提供的)
+        shared_item_type=content_data.shared_item_type,
+        shared_item_id=content_data.shared_item_id,
+
+        combined_text=combined_text_for_embedding,
         embedding=embedding
     )
 
     db.add(db_item)
-    db.commit()
-    db.refresh(db_item)
+    try:
+        db.commit()
+        db.refresh(db_item)
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建收藏内容发生完整性约束错误: {e}")
+        if "_owner_shared_item_uc" in str(e):  # 捕获我们新增的唯一约束错误
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="此内容已被您收藏。")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建收藏内容失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建收藏内容发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建收藏内容失败: {e}")
+
     print(f"DEBUG: 收藏内容 '{db_item.title}' (ID: {db_item.id}) 创建成功。")
     return db_item
+
+
+@app.post("/collections/add-from-platform", response_model=schemas.CollectedContentResponse,
+          summary="快速收藏平台内部内容（课程、项目、话题等）")
+async def add_platform_item_to_collection(
+        request_data: schemas.CollectedContentSharedItemAddRequest,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    用户可以通过这个便捷接口，将平台内的课程、项目、论坛话题、笔记、随手记录、知识库文章或聊天消息等内容，
+    快速添加到自己的收藏中。后端将自动提取并填充标题、内容等信息。
+    """
+    print(
+        f"DEBUG: 用户 {current_user_id} 尝试快速收藏平台内容。类型: {request_data.shared_item_type}, ID: {request_data.shared_item_id}")
+
+    # 构造一个 CollectedContentBase 对象，只填充 shared_item 相关字段和用户主动提供的可选字段
+    # 其他默认字段（如 title, type, url, content, tags, author等）将留空，由 _create_collected_content_item_internal 自动填充。
+    collected_content_base_data = schemas.CollectedContentBase(
+        title=request_data.title,  # 允许快速收藏时提供一个标题，如果不提供则由后端推断
+        type=None,  # 类型由后端推断
+        url=None,  # URL由后端推断
+        content=None,  # content由后端推断
+        tags=None,  # 标签由后端推断
+        priority=None,  # 优先级使用默认
+        notes=request_data.notes,  # 备注从请求中获取
+        is_starred=request_data.is_starred,  # 星标从请求中获取
+        thumbnail=None,  # 缩略图由后端推断
+        author=None,  # 作者由后端推断
+        duration=None,  # 时长由后端推断
+        file_size=None,  # 文件大小由后端推断
+        status=None,  # 状态由后端推断
+
+        shared_item_type=request_data.shared_item_type,
+        shared_item_id=request_data.shared_item_id,
+        folder_id=request_data.folder_id
+    )
+
+    # 调用核心辅助函数进行实际的收藏创建
+    return await _create_collected_content_item_internal(db, current_user_id, collected_content_base_data)
 
 
 @app.get("/collections/", response_model=List[schemas.CollectedContentResponse], summary="获取当前用户所有收藏内容")
@@ -4908,7 +5350,7 @@ async def get_chat_room_by_id(
     """
     print(f"DEBUG: 用户 {current_user_id} 尝试获取聊天室 ID: {room_id} 的详情。")
 
-    try:  # 将整个核心逻辑放入 try 块中
+    try:
         # 1. 获取当前用户和目标聊天室的信息
         current_user = db.query(Student).filter(Student.id == current_user_id).first()
         if not current_user:
@@ -4918,14 +5360,23 @@ async def get_chat_room_by_id(
         if not chat_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-        # 2. 填充动态统计字段
-        # 获取活跃成员数量 (从 ChatRoomMember 表中动态统计)
+        # 2. 权限检查：用户是否是群主、活跃成员或系统管理员**
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member or current_user.is_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权查看该聊天室的详情。")
+
+        # 3. 填充动态统计字段
         chat_room.members_count = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == chat_room.id,
             ChatRoomMember.status == "active"
         ).count()
 
-        # 一次性获取最新消息和发送者名称 (保持之前优化过的逻辑)
         latest_message_data = (
             db.query(ChatMessage.content_text, Student.name)
             .filter(ChatMessage.room_id == chat_room.id)
@@ -4938,22 +5389,20 @@ async def get_chat_room_by_id(
             content_text, sender_name = latest_message_data
             chat_room.last_message = {
                 "sender": sender_name or "未知",
-                "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (
-                            content_text or "")
+                "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (content_text or "")
             }
         else:
             chat_room.last_message = {"sender": "系统", "content": "暂无消息"}
 
-        # 未读消息数和在线状态暂时模拟为0
         chat_room.unread_messages_count = 0
         chat_room.online_members_count = 0
 
         return chat_room
 
-    except HTTPException as e:  # 捕获主动抛出的 HTTPException
-        raise e  # 重新抛出，不进行回滚
-    except Exception as e:  # 捕获其他任何未预期错误
-        db.rollback()  # 确保在异常时回滚
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
         print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取聊天室详情失败: {e}")
 
@@ -5709,19 +6158,31 @@ async def send_chat_message(
 ):
     """
     在指定聊天室中发送一条新消息。
-    目前简化为只要房间存在且用户存在即可发送。
+    只有活跃成员和群主可以发送消息。
     """
     print(f"DEBUG: 用户 {current_user_id} 在聊天室 {room_id} 发送消息。")
 
-    # 验证聊天室是否存在
+    # 1. 验证聊天室是否存在
     db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if not db_room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found.")
 
-    # 验证发送者是否存在 (get_current_user_id 已经验证了，这里是双重检查)
+    # 2. 权限检查：发送者是否是活跃成员或群主**
+    is_creator = (db_room.creator_id == current_user_id)
+    is_active_member = db.query(ChatRoomMember).filter(
+        ChatRoomMember.room_id == room_id,
+        ChatRoomMember.member_id == current_user_id,
+        ChatRoomMember.status == "active"
+    ).first() is not None
+
+    if not (is_creator or is_active_member):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权在该聊天室发送消息。请先加入聊天室。")
+
+    # 3. 验证发送者用户是否存在 (get_current_user_id 已经验证了，这里是双重检查)
     db_sender = db.query(Student).filter(Student.id == current_user_id).first()
     if not db_sender:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sender user not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到。")
+
 
     db_message = ChatMessage(
         room_id=room_id,
@@ -5734,45 +6195,66 @@ async def send_chat_message(
     db.add(db_message)
     # 更新聊天室的 updated_at，作为最后活跃时间
     db_room.updated_at = func.now()
-    db.add(db_room)  # SQLAlchemy会自动识别这是更新
+    db.add(db_room)
     db.commit()
     db.refresh(db_message)
 
     # 填充 sender_name
-    db_message.sender_name = db_sender.name  # 补齐 sender_name 字段
+    db_message.sender_name = db_sender.name
 
     print(f"DEBUG: 聊天室 {room_id} 收到消息 (ID: {db_message.id})。")
     return db_message
 
 
+# project/main.py
 @app.get("/chatrooms/{room_id}/messages/", response_model=List[schemas.ChatMessageResponse],
          summary="获取指定聊天室的历史消息")
 async def get_chat_messages(
         room_id: int,
-        current_user_id: int = Depends(get_current_user_id),  # 确保用户有权查看
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
         limit: int = 50,  # 限制返回消息数量
         offset: int = 0  # 偏移量，用于分页加载
 ):
     """
-    获取指定聊天室的历史消息。用户只能获取自己所属聊天室的消息。
+    获取指定聊天室的历史消息。
+    所有活跃成员 (包括群主和管理员) 以及系统管理员都可以查看。
     """
     print(f"DEBUG: 获取聊天室 {room_id} 的历史消息，用户 {current_user_id}。")
 
-    # 验证聊天室是否存在且用户有访问权限 (简化为创建者)
-    db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id, ChatRoom.creator_id == current_user_id).first()
-    if not db_room:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found or not authorized.")
+    # 1. 获取当前用户和目标聊天室的信息
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
+    db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not db_room:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+    # 2. 权限检查：用户是否是群主、活跃成员或系统管理员**
+    is_creator = (db_room.creator_id == current_user_id)
+    is_active_member = db.query(ChatRoomMember).filter(
+        ChatRoomMember.room_id == room_id,
+        ChatRoomMember.member_id == current_user_id,
+        ChatRoomMember.status == "active"
+    ).first() is not None
+
+    if not (is_creator or is_active_member or current_user.is_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权查看该聊天室的历史消息。")
+
+    # 3. 查询消息
     messages = db.query(ChatMessage).filter(ChatMessage.room_id == room_id) \
         .order_by(ChatMessage.sent_at.asc()) \
         .offset(offset).limit(limit).all()
 
-    # 填充 sender_name
+    # 4. 填充 sender_name
     response_messages = []
+    # 预加载所有发送者信息，以避免 N+1 查询问题
+    sender_ids = list(set([msg.sender_id for msg in messages])) # 获取所有不重复的发送者ID
+    senders_map = {s.id: s.name for s in db.query(Student).filter(Student.id.in_(sender_ids)).all()}
+
     for msg in messages:
-        sender_name = db.query(Student).filter(Student.id == msg.sender_id).first().name or "未知"
-        msg.sender_name = sender_name
+        msg.sender_name = senders_map.get(msg.sender_id, "未知用户")
         response_messages.append(msg)
 
     print(f"DEBUG: 聊天室 {room_id} 获取到 {len(messages)} 条历史消息。")
