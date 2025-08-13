@@ -338,7 +338,7 @@ class ChatRoomMemberResponse(ChatRoomMemberBase):
 
 # 用于更新成员角色的请求体
 class ChatRoomMemberRoleUpdate(BaseModel):
-    role: Literal["admin", "member"] = Field(..., description="要设置的新角色：'admin' 或 'member'")
+    role: Literal["king", "admin", "member"] = Field(..., description="要设置的新角色：'admin' 或 'member'")
 
 
 # 入群申请请求体
