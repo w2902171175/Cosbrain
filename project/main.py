@@ -1221,12 +1221,17 @@ async def register_user(
     embedding = None
     if combined_text_content:
         try:
-            # 新注册用户不再使用系统级密钥，依赖 ai_core 内部判断
-            # 如果用户尚未配置密钥，ai_core.get_embeddings_from_api 会返回零向量
-            new_embedding = await ai_core.get_embeddings_from_api([combined_text_content])
-            if new_embedding:
+            # 对于新注册用户，LLM配置最初是空的。ai_core.get_embeddings_from_api会返回零向量。
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text_content],
+                api_key=None,  # 新注册用户未配置密钥
+                llm_type=None,  # 新注册用户未配置LLM类型
+                llm_base_url=None,
+                llm_model_id=None
+            )
+            if new_embedding:  # ai_core现在会在没有有效key时返回零向量的List
                 embedding = new_embedding[0]
-            print(f"DEBUG_REGISTER: 用户嵌入向量已生成。")
+            print(f"DEBUG_REGISTER: 用户嵌入向量已生成。")  # 此时应是零向量
         except Exception as e:
             print(f"ERROR_REGISTER: 生成用户嵌入向量失败: {e}")
     else:
@@ -1535,15 +1540,41 @@ async def update_users_me(
         print(f"DEBUG_EMBEDDING_KEY: 用户未配置硅基流动 API 类型或密钥，使用默认占位符。")
 
     # 更新 embedding
+    # 确定用于嵌入的API密钥和LLM配置
+    user_llm_api_type_for_embedding = db_student.llm_api_type
+    user_llm_api_base_url_for_embedding = db_student.llm_api_base_url
+    user_llm_model_id_for_embedding = db_student.llm_model_id
+    user_api_key_for_embedding = None
+
+    if db_student.llm_api_key_encrypted:
+        try:
+            user_api_key_for_embedding = ai_core.decrypt_key(db_student.llm_api_key_encrypted)
+            print(f"DEBUG_EMBEDDING_KEY: 使用当前用户配置的LLM API 密钥进行嵌入生成。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密用户LLM API 密钥失败: {e}。将使用零向量。")
+            user_api_key_for_embedding = None
+
     if db_student.combined_text:
         try:
-            #  将获取到的密钥传递给 ai_core.get_embeddings_from_api
-            new_embedding = await ai_core.get_embeddings_from_api([db_student.combined_text], api_key=siliconflow_api_key_for_embedding)
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_student.combined_text],
+                api_key=user_api_key_for_embedding,
+                llm_type=user_llm_api_type_for_embedding,
+                llm_base_url=user_llm_api_base_url_for_embedding,
+                llm_model_id=user_llm_model_id_for_embedding  # 尽管 embedding API 不直接用，但传过去更好
+            )
             if new_embedding:
                 db_student.embedding = new_embedding[0]
-            print(f"DEBUG: 用户 {db_student.id} 嵌入向量已更新。")
+                print(f"DEBUG: 用户 {db_student.id} 嵌入向量已更新。")
+            else:
+                db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
         except Exception as e:
-            print(f"ERROR: 更新用户 {db_student.id} 嵌入向量失败: {e}")
+            print(f"ERROR: 更新用户 {db_student.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+            db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING_RECALC: 用户 {current_user_id} 的 combined_text 为空，无法重新计算嵌入向量。")
+        if db_student.embedding is None:
+            db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
     db.add(db_student)
     db.commit()
@@ -1612,53 +1643,56 @@ async def update_llm_config(
 
     db.add(db_student)  # 将所有 LLM 配置的修改暂存到session中
 
-    #  在LLM配置更新后重新计算用户嵌入向量
+    # 在LLM配置更新后重新计算用户嵌入向量
     # 目的：确保用户的个人资料嵌入与新的LLM配置同步
     # 只有当用户个人资料的 combined_text 存在时才进行计算
     if db_student.combined_text:
         print(f"DEBUG_EMBEDDING_RECALC: 尝试为用户 {current_user_id} 重新计算嵌入向量。")
 
         # 确定用于嵌入的API密钥和LLM配置
-        # 优先使用当前用户刚刚更新的或现有LLM密钥进行嵌入生成
-        key_for_embedding_recalc = None
-        current_llm_api_type = db_student.llm_api_type
-        current_llm_api_base_url = db_student.llm_api_base_url
-        current_llm_model_id = db_student.llm_model_id
+        # 优先使用本次更新提供的明文密钥；否则尝试解密现有密钥
+        key_for_embedding_recalc = None  # 最终传递给 ai_core 的解密密钥
 
-        if decrypted_new_key:  # 如果本次更新提供了新的明文密钥
+        # 从 db_student 获取最新的 LLM 配置字段，确保是更新后的值
+        effective_llm_api_type = db_student.llm_api_type
+        effective_llm_api_base_url = db_student.llm_api_base_url
+        effective_llm_model_id = db_student.llm_model_id
+
+        if decrypted_new_key:  # 如果本次更新显式提供了新的明文密钥
             key_for_embedding_recalc = decrypted_new_key
-        elif db_student.llm_api_key_encrypted:  # 否则，尝试解密现有密钥
+        elif db_student.llm_api_key_encrypted:  # 否则，尝试解密数据库中现有的加密密钥
             try:
                 key_for_embedding_recalc = ai_core.decrypt_key(db_student.llm_api_key_encrypted)
             except Exception as e:
                 print(
-                    f"WARNING_EMBEDDING_RECALC: 解密用户 {current_user_id} 的LLM API Key失败: {e}。将使用系统默认嵌入服务。")
+                    f"WARNING_EMBEDDING_RECALC: 解密用户 {current_user_id} 的LLM API Key失败: {e}。嵌入将使用零向量或默认行为。")
                 key_for_embedding_recalc = None  # 无法解密则不使用用户密钥
 
         try:
-            # 调用 ai_core.get_embeddings_from_api，传入用户最新的 LLM 配置
-            # ai_core.get_embeddings_from_api 将根据传入的参数和环境变量进行优先级判断
+            # 将用户 LLM 配置的各个参数传入 get_embeddings_from_api
             new_embedding = await ai_core.get_embeddings_from_api(
                 [db_student.combined_text],
-                api_key=key_for_embedding_recalc,  # 用户提供的密钥
-                llm_type=current_llm_api_type,  # 用户选择的LLM类型 (如 'siliconflow', 'openai')
-                llm_base_url=current_llm_api_base_url,  # 用户提供的Base URL
-                llm_model_id=current_llm_model_id  # 用户提供的模型ID
+                api_key=key_for_embedding_recalc,  # 传入解密后的API Key
+                llm_type=effective_llm_api_type,  # 传入用户配置的LLM类型，用于ai_core判断
+                llm_base_url=effective_llm_api_base_url,
+                llm_model_id=effective_llm_model_id
             )
             if new_embedding:
                 db_student.embedding = new_embedding[0]
                 print(f"DEBUG_EMBEDDING_RECALC: 用户 {current_user_id} 嵌入向量已成功重新计算。")
             else:
-                db_student.embedding = [0.0] * 1024  # 如果API没有返回嵌入，则设置为零向量
+                # 这种情况应该由 ai_core 处理，但这里也确保一下
+                db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
                 print(f"DEBUG_EMBEDDING_RECALC: 嵌入API未返回结果。用户 {current_user_id} 嵌入向量设为零。")
         except Exception as e:
             print(f"ERROR_EMBEDDING_RECALC: 为用户 {current_user_id} 重新计算嵌入向量失败: {e}。嵌入向量设为零。")
-            db_student.embedding = [0.0] * 1024  # 发生错误时，确保设置为零向量，而不是 None 或旧值
+            db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
     else:
         print(f"WARNING_EMBEDDING_RECALC: 用户 {current_user_id} 的 combined_text 为空，无法重新计算嵌入向量。")
         # 确保embedding字段是有效的向量格式，即使没内容也为零向量
         if db_student.embedding is None:
-            db_student.embedding = [0.0] * 1024
+            db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+
 
     db.commit()  # 提交所有更改，包括LLM配置更新和新的嵌入向量
     db.refresh(db_student)
@@ -1745,22 +1779,27 @@ async def create_course(
     embedding = None
     if combined_text_content:
         try:
-            # 课程嵌入生成可以使用管理员的API Key，或通用占位符
-            # 先尝试使用管理员的API Key，如果管理员没有硅基流动配置，则使用默认的零向量
             admin_api_key_for_embedding = None
-            if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+            admin_llm_type = current_admin_user.llm_api_type
+            admin_llm_base_url = current_admin_user.llm_api_base_url
+            admin_llm_model_id = current_admin_user.llm_model_id
+
+            if admin_llm_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
                 try:
                     admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
                     print(f"DEBUG_EMBEDDING_KEY: 使用管理员配置的硅基流动 API 密钥为课程生成嵌入。")
                 except Exception as e:
-                    print(f"ERROR_EMBEDDING_KEY: 解密管理员硅基流动 API 密钥失败: {e}。课程嵌入将使用占位符。")
+                    print(f"ERROR_EMBEDDING_KEY: 解密管理员硅基流动 API 密钥失败: {e}。课程嵌入将使用零向量或默认行为。")
                     admin_api_key_for_embedding = None
             else:
-                print(f"DEBUG_EMBEDDING_KEY: 管理员未配置硅基流动 API 类型或密钥，课程嵌入将使用占位符。")
+                print(f"DEBUG_EMBEDDING_KEY: 管理员未配置硅基流动 API 类型或密钥，课程嵌入将使用零向量或默认行为。")
 
             new_embedding = await ai_core.get_embeddings_from_api(
                 [combined_text_content],
-                api_key=admin_api_key_for_embedding
+                api_key=admin_api_key_for_embedding,
+                llm_type=admin_llm_type,
+                llm_base_url=admin_llm_base_url,
+                llm_model_id=admin_llm_model_id  # 传入管理员的模型ID
             )
             if new_embedding:
                 embedding = new_embedding[0]
@@ -1805,6 +1844,27 @@ async def create_course(
         db.rollback()
         print(f"ERROR_DB: 创建课程发生未知错误: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建课程失败: {e}")
+
+
+@app.get("/courses/", response_model=List[schemas.CourseResponse], summary="获取所有课程列表")
+def get_all_courses(db: Session = Depends(get_db)):
+    """
+    获取平台上所有课程的概要列表。
+    """
+    # 将变量名从 `projects` 改为 `courses` 并返回 `courses`
+    courses = db.query(Course).all()
+    print(f"DEBUG: 获取所有课程列表，共 {len(courses)} 个。")
+
+    for course in courses:
+        if isinstance(course.required_skills, str):
+            try:
+                course.required_skills = json.loads(course.required_skills)
+            except json.JSONDecodeError:
+                course.required_skills = []
+        elif course.required_skills is None:
+            course.required_skills = []
+
+    return courses  # 返回 Course 对象的列表
 
 
 @app.get("/courses/{course_id}", response_model=schemas.CourseResponse, summary="获取指定课程详情")
@@ -1882,12 +1942,15 @@ async def update_course(
         ])).strip()
 
         # 重新生成 embedding
-        embedding = None
+        embedding = None  # 每次更新都重新生成
         if db_course.combined_text:
             try:
-                # 嵌入生成可以使用管理员的API Key，或通用占位符
                 admin_api_key_for_embedding = None
-                if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+                admin_llm_type = current_admin_user.llm_api_type
+                admin_llm_base_url = current_admin_user.llm_api_base_url
+                admin_llm_model_id = current_admin_user.llm_model_id  # 传入管理员的模型ID
+
+                if admin_llm_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
                     try:
                         admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
                     except Exception:
@@ -1895,13 +1958,21 @@ async def update_course(
 
                 new_embedding = await ai_core.get_embeddings_from_api(
                     [db_course.combined_text],
-                    api_key=admin_api_key_for_embedding
+                    api_key=admin_api_key_for_embedding,
+                    llm_type=admin_llm_type,
+                    llm_base_url=admin_llm_base_url,
+                    llm_model_id=admin_llm_model_id
                 )
                 if new_embedding:
                     db_course.embedding = new_embedding[0]
+                else:  # 如果没有返回嵌入，设为零向量
+                    db_course.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
                 print(f"DEBUG: 课程 {course_id} 嵌入向量已更新。")
             except Exception as e:
                 print(f"ERROR: 更新课程 {course_id} 嵌入向量失败: {e}")
+                db_course.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保失败时是零向量
+        else:  # 如果combined_text为空，也确保embedding是零向量
+            db_course.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
         db.add(db_course)
 
@@ -2013,20 +2084,41 @@ async def create_project(
     else:
         print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
 
-
     embedding = None
     if combined_text_content:
         try:
-            # 将获取到的密钥传递给 ai_core.get_embeddings_from_api
+            project_creator_llm_api_key = None
+            project_creator_llm_type = current_user.llm_api_type
+            project_creator_llm_base_url = current_user.llm_api_base_url
+            project_creator_llm_model_id = current_user.llm_model_id
+
+            if project_creator_llm_type == "siliconflow" and current_user.llm_api_key_encrypted:
+                try:
+                    project_creator_llm_api_key = ai_core.decrypt_key(current_user.llm_api_key_encrypted)
+                    print(f"DEBUG_EMBEDDING_KEY: 使用创建者配置的硅基流动 API 密钥为项目生成嵌入。")
+                except Exception as e:
+                    print(f"ERROR_EMBEDDING_KEY: 解密创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用零向量或默认行为。")
+                    project_creator_llm_api_key = None
+            else:
+                print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用零向量或默认行为。")
+
             new_embedding = await ai_core.get_embeddings_from_api(
                 [combined_text_content],
-                api_key=siliconflow_api_key_for_embedding # 使用创建者配置的密钥
+                api_key=project_creator_llm_api_key,
+                llm_type=project_creator_llm_type,
+                llm_base_url=project_creator_llm_base_url,
+                llm_model_id=project_creator_llm_model_id
             )
             if new_embedding:
                 embedding = new_embedding[0]
+            else:
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
             print(f"DEBUG: 项目嵌入向量已生成。")
         except Exception as e:
             print(f"ERROR: 生成项目嵌入向量失败: {e}")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保失败时是零向量
+    else:  # 如果 combined_text_content 为空
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
     try:
         db_project = Project(
@@ -2212,30 +2304,48 @@ async def update_project(
             _get_text_part(db_project.location)
         ])).strip()
 
-        siliconflow_api_key_for_embedding = None
+        project_creator_llm_api_key = None
         # 重新从数据库查询创建者，确保获取最新状态
         project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
-        if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
-            try:
-                siliconflow_api_key_for_embedding = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
-                print(f"DEBUG_EMBEDDING_KEY: 使用项目创建者配置的硅基流动 API 密钥更新项目嵌入。")
-            except Exception as e:
-                print(f"ERROR_EMBEDDING_KEY: 解密项目创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用占位符。")
-                siliconflow_api_key_for_embedding = None
-        else:
-            print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
+        if project_creator:  # 确保创建者存在
+            project_creator_llm_type = project_creator.llm_api_type
+            project_creator_llm_base_url = project_creator.llm_api_base_url
+            project_creator_llm_model_id = project_creator.llm_model_id
+
+            if project_creator_llm_type == "siliconflow" and project_creator.llm_api_key_encrypted:
+                try:
+                    project_creator_llm_api_key = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
+                    print(f"DEBUG_EMBEDDING_KEY: 使用项目创建者配置的硅基流动 API 密钥更新项目嵌入。")
+                except Exception as e:
+                    print(
+                        f"ERROR_EMBEDDING_KEY: 解密项目创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用零向量或默认行为。")
+                    project_creator_llm_api_key = None
+            else:
+                print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用零向量或默认行为。")
+        else:  # 如果创建者不存在，则相关LLM配置也空
+            project_creator_llm_type = None
+            project_creator_llm_base_url = None
+            project_creator_llm_model_id = None
 
         if db_project.combined_text:
             try:
                 new_embedding = await ai_core.get_embeddings_from_api(
                     [db_project.combined_text],
-                    api_key=siliconflow_api_key_for_embedding
+                    api_key=project_creator_llm_api_key,
+                    llm_type=project_creator_llm_type,
+                    llm_base_url=project_creator_llm_base_url,
+                    llm_model_id=project_creator_llm_model_id
                 )
                 if new_embedding:
                     db_project.embedding = new_embedding[0]
+                else:  # 如果没有返回嵌入，设为零向量
+                    db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
                 print(f"DEBUG: 项目 {project_id} 嵌入向量已更新。")
             except Exception as e:
                 print(f"ERROR: 更新项目 {project_id} 嵌入向量失败: {e}")
+                db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保失败时是零向量
+        else:  # 如果 combined_text 为空
+            db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
         db.add(db_project)  # 再次添加，确保 combined_text 和 embedding 的更新被会话跟踪
 
@@ -2410,16 +2520,50 @@ async def create_note(
 
     # 组合文本用于嵌入
     combined_text = (note_data.title or "") + ". " + (note_data.content or "") + ". " + (note_data.tags or "")
+    if not combined_text.strip():  # 如果组合文本为空，直接跳过嵌入
+        combined_text = ""
 
-    embedding = [0.0] * 1024  # 默认零向量
+    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+    # 获取当前用户的LLM配置用于嵌入生成
+    note_owner = db.query(Student).filter(Student.id == current_user_id).first()
+    owner_llm_api_key = None
+    owner_llm_type = None
+    owner_llm_base_url = None
+    owner_llm_model_id = None
+
+    if note_owner.llm_api_type == "siliconflow" and note_owner.llm_api_key_encrypted:
+        try:
+            owner_llm_api_key = ai_core.decrypt_key(note_owner.llm_api_key_encrypted)
+            owner_llm_type = note_owner.llm_api_type
+            owner_llm_base_url = note_owner.llm_api_base_url
+            owner_llm_model_id = note_owner.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用笔记创建者配置的硅基流动 API 密钥为笔记生成嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密笔记创建者硅基流动 API 密钥失败: {e}。笔记嵌入将使用零向量。")
+            owner_llm_api_key = None  # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 笔记创建者未配置硅基流动 API 类型或密钥，笔记嵌入将使用零向量或默认行为。")
+
     if combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([combined_text])
-            embedding = new_embedding[0]
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text],
+                api_key=owner_llm_api_key,
+                llm_type=owner_llm_type,
+                llm_base_url=owner_llm_base_url,
+                llm_model_id=owner_llm_model_id
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            else:
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
             print(f"DEBUG: 笔记嵌入向量已生成。")
         except Exception as e:
-            print(f"ERROR: 生成笔记嵌入向量失败: {e}")
-            # 不阻止笔记创建，但记录错误
+            print(f"ERROR: 生成笔记嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING: 笔记 combined_text 为空，嵌入向量设为零。")
 
     db_note = Note(
         owner_id=current_user_id,
@@ -2486,14 +2630,49 @@ async def update_note(
 
     # 重新生成 combined_text
     db_note.combined_text = (db_note.title or "") + ". " + (db_note.content or "") + ". " + (db_note.tags or "")
+    if not db_note.combined_text.strip():
+        db_note.combined_text = ""
+
+    # 获取当前用户的LLM配置用于嵌入更新
+    note_owner = db.query(Student).filter(Student.id == current_user_id).first()
+    owner_llm_api_key = None
+    owner_llm_type = None
+    owner_llm_base_url = None
+    owner_llm_model_id = None
+
+    if note_owner.llm_api_type == "siliconflow" and note_owner.llm_api_key_encrypted:
+        try:
+            owner_llm_api_key = ai_core.decrypt_key(note_owner.llm_api_key_encrypted)
+            owner_llm_type = note_owner.llm_api_type
+            owner_llm_base_url = note_owner.llm_api_base_url
+            owner_llm_model_id = note_owner.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用笔记创建者配置的硅基流动 API 密钥更新笔记嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密笔记创建者硅基流动 API 密钥失败: {e}。笔记嵌入将使用零向量。")
+            owner_llm_api_key = None  # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 笔记创建者未配置硅基流动 API 类型或密钥，笔记嵌入将使用零向量或默认行为。")
 
     if db_note.combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([db_note.combined_text])
-            db_note.embedding = new_embedding[0]
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_note.combined_text],
+                api_key=owner_llm_api_key,
+                llm_type=owner_llm_type,
+                llm_base_url=owner_llm_base_url,
+                llm_model_id=owner_llm_model_id
+            )
+            if new_embedding:
+                db_note.embedding = new_embedding[0]
+            else:
+                db_note.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
             print(f"DEBUG: 笔记 {db_note.id} 嵌入向量已更新。")
         except Exception as e:
-            print(f"ERROR: 更新笔记 {db_note.id} 嵌入向量失败: {e}")
+            print(f"ERROR: 更新笔记 {db_note.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+            db_note.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING: 笔记 combined_text 为空，嵌入向量设为零。")
+        db_note.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
     db.add(db_note)
     db.commit()
@@ -2646,15 +2825,49 @@ async def create_knowledge_article(
 
     # 组合文本用于嵌入
     combined_text = (article_data.title or "") + ". " + (article_data.content or "") + ". " + (article_data.tags or "")
+    if not combined_text.strip():
+        combined_text = ""
 
-    embedding = [0.0] * 1024  # 默认零向量
+    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+    article_author = db.query(Student).filter(Student.id == current_user_id).first()
+    author_llm_api_key = None
+    author_llm_type = None
+    author_llm_base_url = None
+    author_llm_model_id = None
+
+    if article_author.llm_api_type == "siliconflow" and article_author.llm_api_key_encrypted:
+        try:
+            author_llm_api_key = ai_core.decrypt_key(article_author.llm_api_key_encrypted)
+            author_llm_type = article_author.llm_api_type
+            author_llm_base_url = article_author.llm_api_base_url
+            author_llm_model_id = article_author.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用文章作者配置的硅基流动 API 密钥为文章生成嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密文章作者硅基流动 API 密钥失败: {e}。文章嵌入将使用零向量。")
+            author_llm_api_key = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 文章作者未配置硅基流动 API 类型或密钥，文章嵌入将使用零向量或默认行为。")
+
     if combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([combined_text])
-            embedding = new_embedding[0]
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text],
+                api_key=author_llm_api_key,
+                llm_type=author_llm_type,
+                llm_base_url=author_llm_base_url,
+                llm_model_id=author_llm_model_id
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            else:
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
             print(f"DEBUG: 文章嵌入向量已生成。")
         except Exception as e:
-            print(f"ERROR: 生成文章嵌入向量失败: {e}")
+            print(f"ERROR: 生成文章嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING: 文章 combined_text 为空，嵌入向量设为零。")
 
     db_article = KnowledgeArticle(
         kb_id=kb_id,
@@ -2728,14 +2941,50 @@ async def update_knowledge_article(
 
     # 重新生成 combined_text
     db_article.combined_text = (db_article.title or "") + ". " + (db_article.content or "") + ". " + (
-                db_article.tags or "")
+            db_article.tags or "")
+    if not db_article.combined_text.strip():
+        db_article.combined_text = ""
+
+    # 获取当前用户的LLM配置用于嵌入更新
+    article_author = db.query(Student).filter(Student.id == current_user_id).first()
+    author_llm_api_key = None
+    author_llm_type = None
+    author_llm_base_url = None
+    author_llm_model_id = None
+
+    if article_author.llm_api_type == "siliconflow" and article_author.llm_api_key_encrypted:
+        try:
+            author_llm_api_key = ai_core.decrypt_key(article_author.llm_api_key_encrypted)
+            author_llm_type = article_author.llm_api_type
+            author_llm_base_url = article_author.llm_api_base_url
+            author_llm_model_id = article_author.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用文章作者配置的硅基流动 API 密钥更新文章嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密文章作者硅基流动 API 密钥失败: {e}。文章嵌入将使用零向量。")
+            author_llm_api_key = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 文章作者未配置硅基流动 API 类型或密钥，文章嵌入将使用零向量或默认行为。")
+
     if db_article.combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([db_article.combined_text])
-            db_article.embedding = new_embedding[0]
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_article.combined_text],
+                api_key=author_llm_api_key,
+                llm_type=author_llm_type,
+                llm_base_url=author_llm_base_url,
+                llm_model_id=author_llm_model_id
+            )
+            if new_embedding:
+                db_article.embedding = new_embedding[0]
+            else:
+                db_article.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
             print(f"DEBUG: 文章 {db_article.id} 嵌入向量已更新。")
         except Exception as e:
-            print(f"ERROR: 更新文章 {db_article.id} 嵌入向量失败: {e}")
+            print(f"ERROR: 更新文章 {db_article.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+            db_article.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING: 文章 combined_text 为空，嵌入向量设为零。")
+        db_article.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
     db.add(db_article)
     db.commit()
@@ -3020,16 +3269,16 @@ async def ai_qa(
         # 限制历史消息数量，防止超出LLM的上下文窗口
         raw_past_messages = db.query(AIConversationMessage).filter(
             AIConversationMessage.conversation_id == db_conversation.id
-        ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 限制为最后10条消息作为上下文
+        ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 例如，限制为最后10条消息作为上下文
 
         for msg in raw_past_messages:
             llm_message = {"role": msg.role, "content": msg.content}
             if msg.role == "tool_call" and msg.tool_calls_json:
-                llm_message["tool_calls"] = msg.tool_calls_json
+                llm_message["tool_calls"] = msg.tool_calls_json  # for LLM format
             elif msg.role == "tool_output" and msg.tool_output_json:
-                llm_message["name"] = "tool_response_name"
+                llm_message["name"] = "tool_response_name"  # LLM通常需要一个工具名作为 "name" 字段
                 llm_message["content"] = json.dumps(msg.tool_output_json,
-                                                    ensure_ascii=False)
+                                                    ensure_ascii=False)  # LLM 的工具输出内容
 
             past_messages_for_llm.append(llm_message)
 
@@ -3038,7 +3287,7 @@ async def ai_qa(
     else:
         db_conversation = AIConversation(user_id=current_user_id)
         db.add(db_conversation)
-        db.flush()  # 刷新以获取 conversation_id，但尚未提交事务
+        db.flush()  # 这里刷新一次以获取新对话的 ID
         print(f"DEBUG_AI_CONV: 创建了新的对话 session ID: {db_conversation.id}")
 
     llm_type = user.llm_api_type
@@ -3059,7 +3308,7 @@ async def ai_qa(
     try:
         # 2. 调用 invoke_agent 获取当前轮次的所有消息和最终答案
         agent_raw_response = await ai_core.invoke_agent(
-            db=db,
+            db=db, # 确保传递 db 会话
             user_id=current_user_id,
             query=qa_request.query,
             llm_api_type=llm_type,
@@ -3069,7 +3318,7 @@ async def ai_qa(
             kb_ids=qa_request.kb_ids,
             note_ids=qa_request.note_ids,
             preferred_tools=qa_request.preferred_tools,
-            past_messages=past_messages_for_llm  # 传入历史消息
+            past_messages=past_messages_for_llm
         )
 
         response_to_client = schemas.AIQAResponse(
@@ -3078,10 +3327,11 @@ async def ai_qa(
             llm_type_used=agent_raw_response.get("llm_type_used"),
             llm_model_used=agent_raw_response.get("llm_model_used"),
             conversation_id=db_conversation.id,
-            turn_messages=[]  # 先初始化为空，下面填充
+            turn_messages=[] # 先初始化为空，后面填充
         )
 
-        # 3. 持久化当前轮次的所有消息
+        # 3. 持久化当前轮次的所有消息并立即刷新，以便获取 ID 和时间戳
+        messages_to_refresh_and_validate = [] # 用于暂存 db_message 对象
         for msg_data in agent_raw_response.get("turn_messages_to_log", []):
             db_message = AIConversationMessage(
                 conversation_id=db_conversation.id,
@@ -3093,17 +3343,23 @@ async def ai_qa(
                 llm_model_used=msg_data.get("llm_model_used")
             )
             db.add(db_message)
+            messages_to_refresh_and_validate.append(db_message) # 添加到临时列表
+
+        db.flush() # 将所有新消息写入数据库（但不提交）
+
+        for db_msg in messages_to_refresh_and_validate:
+            db.refresh(db_msg) # 从数据库加载 id 和 sent_at
             response_to_client.turn_messages.append(
-                schemas.AIConversationMessageResponse.model_validate(db_message, from_attributes=True))
+                schemas.AIConversationMessageResponse.model_validate(db_msg, from_attributes=True)
+            )
 
         # 4. 更新对话的 last_updated 时间
         db_conversation.last_updated = func.now()
         db.add(db_conversation)
 
-        db.commit()  # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
+        db.commit() # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
 
         # 如果需要，这里可以进一步处理 source_articles 和 search_results
-        # 例如，如果希望在 AIQAResponse 的顶层明确显示这些，就从 agent_raw_response 提取
         response_to_client.source_articles = agent_raw_response.get("source_articles")
         response_to_client.search_results = agent_raw_response.get("search_results")
 
@@ -3113,6 +3369,7 @@ async def ai_qa(
     except Exception as e:
         db.rollback()
         print(f"ERROR: AI问答请求失败: {e}")
+        # 如果是新创建的对话，并且在问答过程中失败，可以考虑删除它
         if not qa_request.conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
             try:  # 尝试清理空对话（如果没消息）
                 if db.query(AIConversationMessage).filter(
@@ -3122,14 +3379,15 @@ async def ai_qa(
                     print(f"DEBUG_AI_CONV_CLEANUP: 问答失败，已删除空对话 {db_conversation.id}。")
             except Exception as cleanup_e:
                 print(f"ERROR_AI_CONV_CLEANUP: 问答失败后清理空对话 {db_conversation.id} 失败: {cleanup_e}")
-                db.rollback()  # 再次回滚以防清理也出错
+                db.rollback() # 再次回滚以防清理也出错
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI问答失败: {e}")
+
 
 
 @app.post("/search/semantic", response_model=List[schemas.SemanticSearchResult], summary="智能语义搜索")
 async def semantic_search(
         search_request: schemas.SemanticSearchRequest,
-        current_user_id: int = Depends(get_current_user_id),
+        current_user_id: int = Depends(get_current_user_id),  # 依赖注入提供用户ID
         db: Session = Depends(get_db)
 ):
     """
@@ -3137,24 +3395,35 @@ async def semantic_search(
     """
     print(f"DEBUG: 用户 {current_user_id} 语义搜索: {search_request.query}，范围: {search_request.item_types}")
 
+    # 从数据库中加载完整的用户对象
+    user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not user:
+        # 理论上 get_current_user_id 已经验证了用户存在，但这里是安全校验
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前用户未找到。")
+
     searchable_items = []
 
     target_types = search_request.item_types if search_request.item_types else ["project", "course",
                                                                                 "knowledge_article", "note"]
+    # ... (从这里开始到 semantic_search 结束，所有内容都是更新过的，请完整替换) ...
 
     if "project" in target_types:
+        # 获取所有项目。如果项目有权限控制，这里需要细化筛选逻辑。
+        # 暂时简化为所有用户可见所有项目的文本信息。（可根据实际需求调整为只获取自己创建的或公开的项目）
         projects = db.query(Project).all()
         for p in projects:
             if p.embedding is not None:
                 searchable_items.append({"obj": p, "type": "project"})
 
     if "course" in target_types:
+        # 获取所有课程。课程通常也是公开的。
         courses = db.query(Course).all()
         for c in courses:
             if c.embedding is not None:
                 searchable_items.append({"obj": c, "type": "course"})
 
     if "knowledge_article" in target_types:
+        # 获取用户拥有或公开的知识库中的文章
         kbs = db.query(KnowledgeBase).filter(
             (KnowledgeBase.owner_id == current_user_id) | (KnowledgeBase.access_type == "public")
         ).all()
@@ -3165,6 +3434,7 @@ async def semantic_search(
                     searchable_items.append({"obj": article, "type": "knowledge_article"})
 
     if "note" in target_types:
+        # 只获取当前用户自己的笔记
         notes = db.query(Note).filter(Note.owner_id == current_user_id).all()
         for note in notes:
             if note.embedding is not None:
@@ -3173,13 +3443,32 @@ async def semantic_search(
     if not searchable_items:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到可搜索的内容或指定类型无数据。")
 
-    # 2. 获取查询嵌入
-    query_embedding_list = ai_core.get_embeddings_from_api([search_request.query])
-    if not query_embedding_list:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="无法生成查询嵌入。")
+    # 2. 获取查询嵌入 (使用当前用户的LLM配置)
+    user_llm_type = user.llm_api_type
+    user_llm_base_url = user.llm_api_base_url
+    user_llm_model_id = user.llm_model_id
+    user_llm_api_key = None
+    if user.llm_api_key_encrypted:
+        try:
+            user_llm_api_key = ai_core.decrypt_key(user.llm_api_key_encrypted)
+        except Exception as e:
+            print(f"WARNING_SEMANTIC_SEARCH: 解密用户 {current_user_id} LLM API Key失败: {e}. 语义搜索将无法使用嵌入。")
+            user_llm_api_key = None  # 解密失败，不要使用
+
+    query_embedding_list = await ai_core.get_embeddings_from_api(
+        [search_request.query],
+        api_key=user_llm_api_key,
+        llm_type=user_llm_type,
+        llm_base_url=user_llm_base_url,
+        llm_model_id=user_llm_model_id
+    )
+    # 检查是否成功获得了非零嵌入向量。如果返回零向量，说明嵌入服务不可用或未配置。
+    if not query_embedding_list or query_embedding_list[0] == ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="无法生成查询嵌入，请确保您的LLM配置正确，LLM类型为硅基流动且API密钥有效。")
     query_embedding_np = np.array(query_embedding_list[0]).reshape(1, -1)
 
-    # 3. 粗召回
+    # 3. 粗召回 (Embedding Similarity)
     item_combined_texts = [item['obj'].combined_text for item in searchable_items]
     item_embeddings_np = np.array([item['obj'].embedding for item in searchable_items])
 
@@ -3198,13 +3487,27 @@ async def semantic_search(
     if not initial_candidates:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到与查询相关的初步结果。")
 
-    # 4. 精排
+    # 4. 精排 (Reranker) - 同样使用用户的LLM配置
     rerank_candidate_texts = [c['obj'].combined_text for c in initial_candidates]
     print(f"DEBUG_AI: 正在对 {len(rerank_candidate_texts)} 个候选搜索结果进行重排...")
-    rerank_scores = ai_core.get_rerank_scores_from_api(search_request.query, rerank_candidate_texts)
 
-    for i, score in enumerate(rerank_scores):
-        initial_candidates[i]['relevance_score'] = float(score)
+    rerank_scores = await ai_core.get_rerank_scores_from_api(
+        search_request.query,
+        rerank_candidate_texts,
+        api_key=user_llm_api_key,  # 传入用户的解密Key
+        llm_type=user_llm_type,  # 传入用户的LLM Type
+        llm_base_url=user_llm_base_url  # 尽管 reranker API 不直接用 base_url，但保持参数一致性
+    )
+    # 检查返回的rerank_scores是否是零分数（表示API调用失败或未配置）
+    if all(score == 0.0 for score in rerank_scores):
+        print(f"WARNING_AI: 重排服务未能返回有效分数，可能是API配置问题。将回退到嵌入相似度进行排序。")
+        # 如果重排失败，回退到使用粗召回的相似度作为最终相关性得分
+        for i, score in enumerate(rerank_scores):  # 遍历所有候选者
+            initial_candidates[i]['relevance_score'] = initial_candidates[i]['similarity_stage1']
+    else:
+        for i, score in enumerate(rerank_scores):
+            initial_candidates[i]['relevance_score'] = float(score)
+
     initial_candidates.sort(key=lambda x: x['relevance_score'], reverse=True)
 
     # 5. 格式化最终结果
@@ -3212,14 +3515,18 @@ async def semantic_search(
     for item in initial_candidates[:search_request.limit]:
         obj = item['obj']
         content_snippet = ""
+        # 尝试从不同的属性中提取内容摘要
         if hasattr(obj, 'content') and obj.content:
             content_snippet = obj.content[:150] + "..." if len(obj.content) > 150 else obj.content
         elif hasattr(obj, 'description') and obj.description:
             content_snippet = obj.description[:150] + "..." if len(obj.description) > 150 else obj.description
+        elif hasattr(obj, 'bio') and obj.bio and item['type'] == 'student':  # 针对学生（如果语义搜索也搜索学生）
+            content_snippet = obj.bio[:150] + "..." if len(obj.bio) > 150 else obj.bio
 
         final_results.append(schemas.SemanticSearchResult(
             id=obj.id,
-            title=obj.title if hasattr(obj, 'title') else obj.name,
+            title=obj.title if hasattr(obj, 'title') else obj.name if hasattr(obj, 'name') else str(obj.id),
+            # Fallback to name or ID
             type=item['type'],
             content_snippet=content_snippet,
             relevance_score=item['relevance_score']
@@ -3607,11 +3914,9 @@ async def update_user_course_progress(
           summary="为指定课程上传新材料（文件或链接）")
 async def create_course_material(
         course_id: int,
-        # 使用 Union 允许接收 Form 表单数据 (用于文件上传) 或 JSON 数据 (用于链接/文本)
-        # 文件上传（UploadFile）必须放在 Form 参数前面
         file: Optional[UploadFile] = File(None, description="上传课程文件，如PDF、视频等"),
-        material_data: schemas.CourseMaterialCreate = Depends(),  # 使用 Depends() 来解析 Form 或 JSON
-        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能创建/管理课程材料
+        material_data: schemas.CourseMaterialCreate = Depends(),
+        current_admin_user: Student = Depends(is_admin_user),  # 管理员创建材料
         db: Session = Depends(get_db)
 ):
     print(
@@ -3622,7 +3927,7 @@ async def create_course_material(
     if not db_course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
 
-    # 2. 根据材料类型处理数据
+    # 2. 根据材料类型处理数据 (这部分逻辑保持不变)
     material_params = {
         "course_id": course_id,
         "title": material_data.title,
@@ -3631,18 +3936,14 @@ async def create_course_material(
     }
 
     file_path = None
-
     if material_data.type == "file":
         if not file:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'file' 时，必须上传文件。")
-
         file_extension = os.path.splitext(file.filename)[1]
         unique_filename = f"{uuid.uuid4().hex}{file_extension}"
         file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_filename)
-
         try:
             with open(file_path, "wb") as f:
-                # 假设文件不会太大，一次性写入，否则需要分块读取
                 contents = await file.read()
                 f.write(contents)
             material_params["file_path"] = file_path
@@ -3653,24 +3954,20 @@ async def create_course_material(
         except Exception as e:
             print(f"ERROR_COURSE_MATERIAL: 保存文件失败: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件保存失败: {e}")
-
     elif material_data.type == "link":
         if not material_data.url:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'link' 时，'url' 字段为必填。")
         material_params["url"] = material_data.url
-        # 链接类型不应有文件属性
-        material_params["original_filename"] = None
-        material_params["file_type"] = None
+        material_params["original_filename"] = None;
+        material_params["file_type"] = None;
         material_params["size_bytes"] = None
-
     elif material_data.type == "text":
         if not material_data.content:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="类型为 'text' 时，'content' 字段为必填。")
-        # 文本类型不应有文件和URL属性
-        material_params["url"] = None
-        material_params["original_filename"] = None
-        material_params["file_type"] = None
+        material_params["url"] = None;
+        material_params["original_filename"] = None;
+        material_params["file_type"] = None;
         material_params["size_bytes"] = None
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效的材料类型。")
@@ -3683,25 +3980,49 @@ async def create_course_material(
         _get_text_part(material_data.original_filename),
         _get_text_part(material_data.file_type)
     ])).strip()
+    if not combined_text_content.strip():
+        combined_text_content = ""
 
-    embedding = None
+    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+    # 获取管理员的LLM配置用于嵌入生成
+    admin_llm_api_key = None
+    admin_llm_type = None
+    admin_llm_base_url = None
+    admin_llm_model_id = None
+
+    if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
+        try:
+            admin_llm_api_key = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+            admin_llm_type = current_admin_user.llm_api_type
+            admin_llm_base_url = current_admin_user.llm_api_base_url
+            admin_llm_model_id = current_admin_user.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用管理员配置的硅基流动 API 密钥为课程材料生成嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密管理员硅基流动 API 密钥失败: {e}。课程材料嵌入将使用零向量。")
+            admin_llm_api_key = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 管理员未配置硅基流动 API 类型或密钥，课程材料嵌入将使用零向量或默认行为。")
+
     if combined_text_content:
         try:
-            admin_api_key_for_embedding = None  # 默认为None，使用 ai_core 内部的占位符逻辑
-            if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
-                try:
-                    admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
-                except Exception:
-                    pass
             new_embedding = await ai_core.get_embeddings_from_api(
                 [combined_text_content],
-                api_key=admin_api_key_for_embedding
+                api_key=admin_llm_api_key,
+                llm_type=admin_llm_type,
+                llm_base_url=admin_llm_base_url,
+                llm_model_id=admin_llm_model_id
             )
             if new_embedding:
                 embedding = new_embedding[0]
+            else:
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
             print(f"DEBUG_COURSE_MATERIAL: 材料嵌入向量已生成。")
         except Exception as e:
-            print(f"ERROR_COURSE_MATERIAL: 生成材料嵌入向量失败: {e}")
+            print(f"ERROR_COURSE_MATERIAL: 生成材料嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING: 课程材料 combined_text 为空，嵌入向量设为零。")
 
     material_params["combined_text"] = combined_text_content
     material_params["embedding"] = embedding
@@ -3715,20 +4036,16 @@ async def create_course_material(
         db.refresh(db_material)
     except IntegrityError as e:
         db.rollback()
-        # 如果文件已上传，回滚时尝试删除文件
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"DEBUG_COURSE_MATERIAL: 回滚时删除了文件: {file_path}")
+        if file_path and os.path.exists(file_path): os.remove(file_path); print(
+            f"DEBUG_COURSE_MATERIAL: 回滚时删除了文件: {file_path}")
         print(f"ERROR_DB: 创建课程材料发生完整性约束错误: {e}")
-        # 检查是否是标题冲突
-        if "_course_material_title_uc" in str(e):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同一课程下已存在同名材料。")
+        if "_course_material_title_uc" in str(e): raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                                                      detail="同一课程下已存在同名材料。")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建课程材料失败，可能存在数据冲突。")
     except Exception as e:
         db.rollback()
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"DEBUG_COURSE_MATERIAL: 错误回滚时删除了文件: {file_path}")
+        if file_path and os.path.exists(file_path): os.remove(file_path); print(
+            f"DEBUG_COURSE_MATERIAL: 错误回滚时删除了文件: {file_path}")
         print(f"ERROR_DB: 创建课程材料发生未知错误: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建课程材料失败: {e}")
 
@@ -3783,8 +4100,8 @@ async def update_course_material(
         course_id: int,
         material_id: int,
         file: Optional[UploadFile] = File(None, description="可选：上传新文件替换旧文件"),
-        material_data: schemas.CourseMaterialUpdate = Depends(),  # 允许只更新部分字段
-        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能更新课程材料
+        material_data: schemas.CourseMaterialUpdate = Depends(),
+        current_admin_user: Student = Depends(is_admin_user),  # 管理员更新
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG_COURSE_MATERIAL: 管理员 {current_admin_user.id} 尝试更新课程 {course_id} 材料 ID: {material_id}。")
@@ -3796,7 +4113,7 @@ async def update_course_material(
     if not db_material:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程材料未找到或不属于该课程。")
 
-    # 验证课程是否存在 (与创建时保持一致，虽然通常在此时材料已存在且课程也存在)
+    # 验证课程是否存在 (保持不变)
     db_course = db.query(Course).filter(Course.id == course_id).first()
     if not db_course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
@@ -3804,11 +4121,10 @@ async def update_course_material(
     update_dict = material_data.dict(exclude_unset=True)  # 获取所有明确传入的字段及其值
     old_file_path = db_material.file_path  # 记录旧文件路径，以便替换时删除
 
-    # 类型转换的复杂逻辑
-    # 只有当 'type' 字段在 update_dict 中明确提供，并且其值与当前数据库中的类型不同时才触发类型转换逻辑
+    # 类型转换的复杂逻辑 (保持不变)
     if "type" in update_dict and update_dict["type"] != db_material.type:
+        # ... (类型转换逻辑保持不变) ...
         new_type = update_dict["type"]
-        # 如果旧材料是文件类型，新材料是链接或文本，则删除旧文件并清理文件相关属性
         if db_material.type == "file" and new_type in ["link", "text"]:
             if old_file_path and os.path.exists(old_file_path):
                 os.remove(old_file_path)
@@ -3818,14 +4134,12 @@ async def update_course_material(
             db_material.file_type = None
             db_material.size_bytes = None
 
-        # 清除不适用于新类型的旧字段值，并进行新类型特有的验证
         if new_type == "link":
             db_material.file_path = None
             db_material.original_filename = None
             db_material.file_type = None
             db_material.size_bytes = None
-            db_material.content = None  # 链接不应该有content
-            # 强制要求 'url' 字段存在 (如果更新中通过 update_dict 提供了，用其值；否则检查当前 db_material.url)
+            db_material.content = None
             if not update_dict.get("url") and not db_material.url:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="类型为 'link' 时，'url' 字段为必填。")
@@ -3834,38 +4148,30 @@ async def update_course_material(
             db_material.original_filename = None
             db_material.file_type = None
             db_material.size_bytes = None
-            db_material.url = None  # 文本类型不应该有url
-            # 强制要求 'content' 字段存在
+            db_material.url = None
             if not update_dict.get("content") and not db_material.content:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="类型为 'text' 时，'content' 字段为必填。")
         elif new_type == "file":
-            db_material.url = None  # 文件类型不应该有url
-            db_material.content = None  # 文件类型不应该有content (除非是文件描述之类的)
-            # 如果类型变更为 'file'，但没有新文件上传，也没有旧文件，且 update_dict 中没有相关文件字段，则报错。
-            # （此处简略处理，后续文件上传逻辑会做更细致验证）
+            db_material.url = None
+            db_material.content = None
 
-        # 最后，更新 db_material 的 type 属性
         db_material.type = new_type
 
-    # 如果上传了新文件 (file takes precedence for file-related properties)
+    # 如果上传了新文件 (保持不变)
     new_file_path = None  # 初始化为None，用于捕获异常时的清理
     if file:
-        # 如果当前材料类型不是 'file'，并且没有显式在 update_dict 中将类型改为 'file'，则不允许上传文件
         if db_material.type != "file" and ("type" not in update_dict or update_dict["type"] != "file"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="只有类型为 'file' 的材料才能上传文件。如需更改材料类型，请在material_data中同时指定 type='file'。")
 
-        # 删除旧文件（如果存在且是文件类型）
         if old_file_path and os.path.exists(old_file_path) and db_material.type == "file":
             try:
                 os.remove(old_file_path)
                 print(f"DEBUG_COURSE_MATERIAL: Deleted old file: {old_file_path}")
             except Exception as e:
                 print(f"ERROR_COURSE_MATERIAL: Failed to delete old file {old_file_path}: {e}")
-                # 不阻碍后续流程，但记录错误
 
-        # 保存新文件
         new_file_extension = os.path.splitext(file.filename)[1]
         unique_new_filename = f"{uuid.uuid4().hex}{new_file_extension}"
         new_file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_new_filename)
@@ -3879,12 +4185,10 @@ async def update_course_material(
             db_material.file_type = file.content_type
             db_material.size_bytes = file.size
 
-            # 如果当前材料的数据库类型不是 'file' (比如原来是link/text但没改type, 或改了type但还没提交)，且当前上传了文件，则将其类型修正为 'file'
             if db_material.type != "file":
                 db_material.type = "file"
                 print(f"DEBUG_COURSE_MATERIAL: Material type automatically changed to 'file' due to file upload.")
 
-            # 强制清除不属于文件类型的字段
             db_material.url = None
             db_material.content = None
 
@@ -3894,24 +4198,16 @@ async def update_course_material(
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 detail=f"Failed to save new file: {e}")
 
-    # 遍历 update_dict 中的键值对，应用更新
+    # 应用 material_data 中的其他更新 (保持不变)
     for key, value in update_dict.items():
-        # 跳过已通过文件上传或类型转换处理的字段，以及文件参数本身
         if key in ["type", "url", "content", "original_filename", "file_type", "size_bytes"]:
-            # 类型验证逻辑已经处理过了 `type`, `url`, `content` 的相互排斥和必填
-            # original_filename, file_type, size_bytes 由文件上传逻辑填充，不从 update_dict 直接赋值
             continue
-
         if hasattr(db_material, key):
-            # 对非空字段进行显式检查
             if key == "title":
-                # 如果传入的 title 是 None 或空字符串，则报错
                 if value is None or (isinstance(value, str) and not value.strip()):
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="材料标题不能为空。")
                 setattr(db_material, key, value)
             else:
-                # 对于其他字段，如果传入的值为None，允许它覆盖
-                # Pydantic的Optional字段在这里会表现为None，直接赋值即可
                 setattr(db_material, key, value)
 
     # 重新生成 combined_text 和 embedding
@@ -3923,27 +4219,41 @@ async def update_course_material(
         _get_text_part(db_material.file_type)
     ])).strip()
 
-    embedding = None
+    # 获取管理员LLM配置和API密钥用于嵌入生成 (管理员对象已从依赖注入提供)
+    admin_llm_api_key = None
+    admin_llm_type = current_admin_user.llm_api_type
+    admin_llm_base_url = current_admin_user.llm_api_base_url
+    admin_llm_model_id = current_admin_user.llm_model_id
+
+    if current_admin_user.llm_api_key_encrypted:
+        try:
+            admin_llm_api_key = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+        except Exception as e:
+            print(
+                f"WARNING_COURSE_MATERIAL_EMBEDDING: 解密管理员 {current_admin_user.id} LLM API密钥失败: {e}. 课程材料嵌入将使用零向量或默认行为。")
+
+    embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
     if combined_text_content:
         try:
-            admin_api_key_for_embedding = None
-            if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
-                try:
-                    admin_api_key_for_embedding = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
-                except Exception:
-                    pass
             new_embedding = await ai_core.get_embeddings_from_api(
                 [combined_text_content],
-                api_key=admin_api_key_for_embedding
+                api_key=admin_llm_api_key,
+                llm_type=admin_llm_type,
+                llm_base_url=admin_llm_base_url,
+                llm_model_id=admin_llm_model_id
             )
             if new_embedding:
-                embedding = new_embedding[0]
+                embedding_recalculated = new_embedding[0]
             print(f"DEBUG_COURSE_MATERIAL: 材料嵌入向量已更新。")
         except Exception as e:
-            print(f"ERROR_COURSE_MATERIAL: 更新材料嵌入向量失败: {e}")
+            print(f"ERROR_COURSE_MATERIAL: 更新材料嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:  # 如果 combined_text_content 为空
+        print(f"WARNING: 课程材料内容为空，无法更新有效嵌入向量。")
+        embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
     db_material.combined_text = combined_text_content
-    db_material.embedding = embedding
+    db_material.embedding = embedding_recalculated  # 赋值给DB对象
 
     db.add(db_material)
     try:
@@ -3951,18 +4261,15 @@ async def update_course_material(
         db.refresh(db_material)
     except IntegrityError as e:
         db.rollback()
-        # 如果有新文件上传（无论成功与否），在回滚时删除它
         if new_file_path and os.path.exists(new_file_path):
             os.remove(new_file_path)
             print(f"DEBUG_COURSE_MATERIAL: Deleted new file on rollback: {new_file_path}")
         print(f"ERROR_DB: Update course material integrity constraint error: {e}")
-        # 针对具体错误提供更友好的提示
         if "_course_material_title_uc" in str(e):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同一课程下已存在同名材料。")
-        # 补上 type 列的 Null 值错误捕获 (虽然理论上在上面已经通过 validation 拦截了)
         elif 'null value in column "type"' in str(e):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="材料类型不能为空。")
-        else:  # 其他完整性错误
+        else:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新课程材料失败，可能存在数据冲突。")
     except Exception as e:
         db.rollback()

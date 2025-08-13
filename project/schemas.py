@@ -61,6 +61,7 @@ class StudentResponse(StudentBase):
     email: Optional[EmailStr] = None
 
     combined_text: Optional[str] = None
+    embedding: Optional[List[float]] = None
     llm_api_type: Optional[Literal[
         "openai", "zhipu", "siliconflow", "huoshanengine", "kimi", "deepseek", "custom_openai"
     ]] = None
