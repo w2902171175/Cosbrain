@@ -1294,7 +1294,7 @@ async def process_document_in_background(
 
         # 1. 提取文本
         extracted_text = await loop.run_in_executor(
-            None,
+            None,  # 使用默认的线程池执行器
             ai_core.extract_text_from_document,  # 要执行的同步函数
             filepath,  # 传递给函数的第一个参数
             file_type  # 传递给函数的第二个参数
@@ -1323,18 +1323,42 @@ async def process_document_in_background(
         db_session.commit()
 
         # 3. 生成嵌入并存储
-        all_embeddings = await loop.run_in_executor(
-            None,  # 使用默认的线程池执行器
-            ai_core.get_embeddings_from_api,  # 要执行的同步函数
-            chunks  # 传递给函数的参数
+        # 获取文档所有者（知识库的owner）的LLM配置进行嵌入生成
+        document_owner = db_session.query(Student).filter(Student.id == owner_id).first()
+        owner_llm_api_key = None
+        owner_llm_type = None
+        owner_llm_base_url = None
+        owner_llm_model_id = None
+
+        if document_owner and document_owner.llm_api_type == "siliconflow" and document_owner.llm_api_key_encrypted:
+            try:
+                owner_llm_api_key = ai_core.decrypt_key(document_owner.llm_api_key_encrypted)
+                owner_llm_type = document_owner.llm_api_type
+                owner_llm_base_url = document_owner.llm_api_base_url
+                owner_llm_model_id = document_owner.llm_model_id
+                print(f"DEBUG_EMBEDDING_KEY_DOC: 使用文档拥有者配置的硅基流动 API 密钥为文档生成嵌入。")
+            except Exception as e:
+                print(f"ERROR_EMBEDDING_KEY_DOC: 解密文档拥有者硅基流动 API 密钥失败: {e}。文档嵌入将使用零向量。")
+        else:
+            print(f"DEBUG_EMBEDDING_KEY_DOC: 文档拥有者未配置硅基流动 API 类型或密钥，文档嵌入将使用零向量或默认行为。")
+
+        # **<<<<< 关键修改：在这里添加 await >>>>>**
+        all_embeddings = await ai_core.get_embeddings_from_api(
+            chunks,
+            api_key=owner_llm_api_key,
+            llm_type=owner_llm_type,
+            llm_base_url=owner_llm_base_url,
+            llm_model_id=owner_llm_model_id
         )
 
         if not all_embeddings or len(all_embeddings) != len(chunks):
+            # ai_core.get_embeddings_from_api 在无法生成时会返回与 chunks 等长的零向量列表
+            # 这里检查的是极端情况或API返回了不完整/不合法的响应
             db_document.status = "failed"
-            db_document.processing_message = "嵌入生成失败或数量不匹配。"
+            db_document.processing_message = "嵌入生成失败或数量不匹配。请检查您的LLM配置。"
             db_session.add(db_document)
             db_session.commit()
-            print(f"ERROR_DOC_PROCESS: 文档 {document_id} 嵌入生成失败。")
+            print(f"ERROR_DOC_PROCESS: 文档 {document_id} 嵌入生成失败或数量不匹配。")
             return
 
         for i, chunk_content in enumerate(chunks):
@@ -1348,7 +1372,7 @@ async def process_document_in_background(
             )
             db_session.add(db_chunk)
 
-        db_session.commit()
+        db_session.commit()  # 提交所有文本块
 
         # 4. 更新文档状态
         db_document.status = "completed"
@@ -1359,7 +1383,7 @@ async def process_document_in_background(
         print(f"DEBUG_DOC_PROCESS: 文档 {document_id} 处理完成，{len(chunks)} 个块已嵌入。")
 
     except Exception as e:
-        print(f"ERROR_DOC_PROCESS: 后台处理文档 {document_id} 发生未预期错误: {e}")
+        print(f"ERROR_DOC_PROCESS: 后台处理文档 {document_id} 发生未预期错误: {type(e).__name__}: {e}")
         # 尝试更新文档状态为失败
         try:
             db_document.status = "failed"
@@ -1370,7 +1394,6 @@ async def process_document_in_background(
             print(f"CRITICAL_ERROR: 无法更新文档 {document_id} 的失败状态: {update_e}")
     finally:
         db_session.close()  # 确保会话关闭
-
 
 
 # --- 用户认证与管理接口 ---
