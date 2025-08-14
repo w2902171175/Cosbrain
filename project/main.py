@@ -5536,19 +5536,18 @@ async def update_collected_content(
     更新指定ID的收藏内容。用户只能更新自己的收藏。
     更新后会重新生成 combined_text 和 embedding。
     """
-    print(f"DEBUG: 更新收藏内容 ID: {content_id}。")
+    print(f"DEBUG: 更新收藏内容 ID: {content_id}。")[3]
     db_item = db.query(CollectedContent).filter(CollectedContent.id == content_id,
-                                                CollectedContent.owner_id == current_user_id).first()
+                                                CollectedContent.owner_id == current_user_id).first()[3]
     if not db_item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Collected content not found or not authorized")
+                            detail="Collected content not found or not authorized")[3]
 
     update_data = content_data.dict(exclude_unset=True)
 
     # 验证新的文件夹 (如果folder_id被修改)
     if "folder_id" in update_data and update_data["folder_id"] is not None:
         new_folder_id = update_data["folder_id"]
-        # 如果 new_folder_id 是 0，表示移到根目录，将 folder_id 设为 None
         if new_folder_id == 0:
             setattr(db_item, "folder_id", None)
         else:
@@ -5561,7 +5560,7 @@ async def update_collected_content(
                                     detail="Target folder not found or not authorized.")
             setattr(db_item, "folder_id", new_folder_id)
         update_data.pop("folder_id")
-    elif "folder_id" in update_data and update_data["folder_id"] is None:  # 允许显式设为None
+    elif "folder_id" in update_data and update_data["folder_id"] is None:
         setattr(db_item, "folder_id", None)
         update_data.pop("folder_id")
 
@@ -5577,17 +5576,53 @@ async def update_collected_content(
             (db_item.author or "")
     ).strip()
 
+    # 获取当前用户的LLM配置用于嵌入更新
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    user_llm_api_key = None
+    user_llm_type = None
+    user_llm_base_url = None
+    user_llm_model_id = None
+
+    if current_user_obj and current_user_obj.llm_api_type == "siliconflow" and current_user_obj.llm_api_key_encrypted:
+        try:
+            user_llm_api_key = ai_core.decrypt_key(current_user_obj.llm_api_key_encrypted)
+            user_llm_type = current_user_obj.llm_api_type
+            user_llm_base_url = current_user_obj.llm_api_base_url
+            user_llm_model_id = current_user_obj.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用收藏更新者配置的硅基流动 API 密钥更新收藏内容嵌入。")
+        except Exception as e:
+            print(
+                f"WARNING_COLLECTION_EMBEDDING: 解密用户 {current_user_id} LLM API密钥失败: {e}. 收藏内容嵌入将使用零向量。")
+            user_llm_api_key = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 收藏更新者未配置硅基流动 API 类型或密钥，收藏内容嵌入将使用零向量或默认行为。")
+
+    embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
     if db_item.combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([db_item.combined_text])
-            db_item.embedding = new_embedding[0]
-            print(f"DEBUG: 收藏内容 {db_item.id} 嵌入向量已更新。")
+            # 传递所有LLM配置参数给 get_embeddings_from_api
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_item.combined_text],
+                api_key=user_llm_api_key,
+                llm_type=user_llm_type,
+                llm_base_url=user_llm_base_url,
+                llm_model_id=user_llm_model_id
+            )[17]
+            if new_embedding:
+                embedding_recalculated = new_embedding[0]
+            print(f"DEBUG: 收藏内容 {db_item.id} 嵌入向量已更新。")[32]
         except Exception as e:
-            print(f"ERROR: 更新收藏内容 {db_item.id} 嵌入向量失败: {e}")
+            print(f"ERROR: 更新收藏内容 {db_item.id} 嵌入向量失败: {e}. 嵌入向量设为零。")[32]
+            embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING: 收藏内容 combined_text 为空，嵌入向量设为零。")
+        embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
-    db.add(db_item)
-    db.commit()
-    db.refresh(db_item)
+    db_item.embedding = embedding_recalculated  # 赋值给DB对象
+
+    db.add(db_item)[32]
+    db.commit()[32]
+    db.refresh(db_item)[24]
     print(f"DEBUG: 收藏内容 {db_item.id} 更新成功。")
     return db_item
 
@@ -6726,7 +6761,7 @@ async def create_forum_topic(
     """
     print(f"DEBUG: 用户 {current_user_id} 尝试发布话题: {topic_data.title}")
 
-    try: # 将整个接口逻辑包裹在一个 try 块中，统一提交
+    try:
         # 验证共享内容是否存在 (如果提供了 shared_item_type 和 shared_item_id)
         if topic_data.shared_item_type and topic_data.shared_item_id:
             model = None
@@ -6753,16 +6788,47 @@ async def create_forum_topic(
                 (topic_data.content or "") + ". " +
                 (topic_data.tags or "") + ". " +
                 (topic_data.shared_item_type or "")
-        ).strip()
+        ).strip()[13]
 
-        embedding = [0.0] * 1024  # 默认零向量
+        # 获取话题发布者的LLM配置用于嵌入生成
+        topic_author = db.query(Student).filter(Student.id == current_user_id).first()[7]
+        author_llm_api_key = None
+        author_llm_type = None
+        author_llm_base_url = None
+        author_llm_model_id = None
+
+        if topic_author and topic_author.llm_api_type == "siliconflow" and topic_author.llm_api_key_encrypted:
+            try:
+                author_llm_api_key = ai_core.decrypt_key(topic_author.llm_api_key_encrypted)
+                author_llm_type = topic_author.llm_api_type
+                author_llm_base_url = topic_author.llm_api_base_url
+                author_llm_model_id = topic_author.llm_model_id
+                print(f"DEBUG_EMBEDDING_KEY: 使用话题发布者配置的硅基流动 API 密钥为话题生成嵌入。")
+            except Exception as e:
+                print(f"ERROR_EMBEDDING_KEY: 解密话题发布者硅基流动 API 密钥失败: {e}。话题嵌入将使用零向量或默认行为。")
+                author_llm_api_key = None
+        else:
+            print(f"DEBUG_EMBEDDING_KEY: 话题发布者未配置硅基流动 API 类型或密钥，话题嵌入将使用零向量或默认行为。")
+
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
         if combined_text:
             try:
-                new_embedding = ai_core.get_embeddings_from_api([combined_text])
-                embedding = new_embedding[0]
-                print(f"DEBUG: 话题嵌入向量已生成。")
+                # 传递所有LLM配置参数给 get_embeddings_from_api
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [combined_text],
+                    api_key=author_llm_api_key,
+                    llm_type=author_llm_type,
+                    llm_base_url=author_llm_base_url,
+                    llm_model_id=author_llm_model_id
+                )[13]
+                if new_embedding:
+                    embedding = new_embedding[0]
+                print(f"DEBUG: 话题嵌入向量已生成。")[13]
             except Exception as e:
-                print(f"ERROR: 生成话题嵌入向量失败: {e}")
+                print(f"ERROR: 生成话题嵌入向量失败: {e}. 嵌入向量设为零。")[12]
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
+            print(f"WARNING: 话题 combined_text 为空，嵌入向量设为零。")
 
         db_topic = ForumTopic(
             owner_id=current_user_id,
@@ -6773,16 +6839,14 @@ async def create_forum_topic(
             tags=topic_data.tags,
             combined_text=combined_text,
             embedding=embedding
-        )
+        )[12]
 
-        db.add(db_topic)
-        # 在检查成就前，强制刷新会话，使 db_topic 对查询可见！
-        db.flush() # 确保话题已刷新到数据库会话，供 _check_and_award_achievements 查询
-        print(f"DEBUG_FLUSH: 话题 {db_topic.id} 已刷新到会话。")
+        db.add(db_topic)[7]
+        db.flush()[7]
+        print(f"DEBUG_FLUSH: 话题 {db_topic.id} 已刷新到会话。")[7]
 
         # 发布话题奖励积分
-        topic_author = db.query(Student).filter(Student.id == current_user_id).first()
-        if topic_author:
+        if topic_author:  # 从 db.query(Student) 获取到的 topic_author
             topic_post_points = 15
             await _award_points(
                 db=db,
@@ -6794,19 +6858,22 @@ async def create_forum_topic(
                 related_entity_id=db_topic.id
             )
             await _check_and_award_achievements(db, current_user_id)
-            print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就 (待提交)。")
+            print(
+                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就 (待提交)。")[
+                7]
 
-        db.commit() # 这里是唯一也是最终的提交
-        db.refresh(db_topic) # 提交后刷新db_topic，确保返回完整的对象
+        db.commit()[7]
+        db.refresh(db_topic)[7]
 
         # 填充 owner_name
         owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
         db_topic.owner_name = owner_obj.name if owner_obj else "未知用户"
+        db_topic.is_liked_by_current_user = False
 
         print(f"DEBUG: 话题 '{db_topic.title}' (ID: {db_topic.id}) 发布成功，所有事务已提交。")
         return db_topic
 
-    except Exception as e: # 捕获所有异常并回滚
+    except Exception as e:
         db.rollback()
         print(f"ERROR_CREATE_TOPIC_GLOBAL: 创建论坛话题失败，事务已回滚: {e}")
         raise HTTPException(
@@ -6918,10 +6985,10 @@ async def update_forum_topic(
     更新指定ID的论坛话题内容。只有话题发布者能更新。
     更新后会重新生成 combined_text 和 embedding。
     """
-    print(f"DEBUG: 更新话题 ID: {topic_id}。")
-    db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id, ForumTopic.owner_id == current_user_id).first()
+    print(f"DEBUG: 更新话题 ID: {topic_id}。")[1]
+    db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id, ForumTopic.owner_id == current_user_id).first()[1]
     if not db_topic:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found or not authorized.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found or not authorized.")[1]
 
     update_data = topic_data.dict(exclude_unset=True)
 
@@ -6946,9 +7013,10 @@ async def update_forum_topic(
                 if not shared_item:
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                         detail=f"Shared item of type {update_data['shared_item_type']} with ID {update_data['shared_item_id']} not found.")
-        else:  # 如果只提供了一部分共享信息，但不能构成完整指向
+        else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Both shared_item_type and shared_item_id must be provided together, or neither.")
+                                detail="Both shared_item_type and shared_item_id must be provided together, or neither.")[
+                50]
 
     for key, value in update_data.items():
         setattr(db_topic, key, value)
@@ -6959,18 +7027,50 @@ async def update_forum_topic(
             (db_topic.content or "") + ". " +
             (db_topic.tags or "") + ". " +
             (db_topic.shared_item_type or "")
-    ).strip()
+    ).strip()[50]
+
+    # 获取话题发布者的LLM配置用于嵌入更新
+    topic_author = db.query(Student).filter(Student.id == current_user_id).first()
+    author_llm_api_key = None
+    author_llm_type = None
+    author_llm_base_url = None
+    author_llm_model_id = None
+
+    if topic_author and topic_author.llm_api_type == "siliconflow" and topic_author.llm_api_key_encrypted:
+        try:
+            author_llm_api_key = ai_core.decrypt_key(topic_author.llm_api_key_encrypted)
+            author_llm_type = topic_author.llm_api_type
+            author_llm_base_url = topic_author.llm_api_base_url
+            author_llm_model_id = topic_author.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用话题发布者配置的硅基流动 API 密钥更新话题嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密话题发布者硅基流动 API 密钥失败: {e}。话题嵌入将使用零向量或默认行为。")
+            author_llm_api_key = None
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 话题发布者未配置硅基流动 API 类型或密钥，话题嵌入将使用零向量或默认行为。")
 
     if db_topic.combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([db_topic.combined_text])
-            db_topic.embedding = new_embedding[0]
-            print(f"DEBUG: 话题 {db_topic.id} 嵌入向量已更新。")
+            # 传递所有LLM配置参数给 get_embeddings_from_api
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_topic.combined_text],
+                api_key=author_llm_api_key,
+                llm_type=author_llm_type,
+                llm_base_url=author_llm_base_url,
+                llm_model_id=author_llm_model_id
+            )[20]
+            if new_embedding:
+                db_topic.embedding = new_embedding[0]
+            print(f"DEBUG: 话题 {db_topic.id} 嵌入向量已更新。")[20]
         except Exception as e:
-            print(f"ERROR: 更新话题 {db_topic.id} 嵌入向量失败: {e}")
+            print(f"ERROR: 更新话题 {db_topic.id} 嵌入向量失败: {e}. 嵌入向量设为零。")[20]
+            db_topic.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING: 话题 combined_text 为空，嵌入向量设为零。")
+        db_topic.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
-    db.add(db_topic)
-    db.commit()
+    db.add(db_topic)[20]
+    db.commit()[20]
     db.refresh(db_topic)
 
     # 填充 owner_name, is_liked_by_current_user
