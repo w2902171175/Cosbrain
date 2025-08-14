@@ -160,6 +160,60 @@ class ProjectUpdate(BaseModel): # ProjectUpdate 一般直接继承 BaseModel
     location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
 
 
+# --- Project Application Schemas ---
+class ProjectApplicationBase(BaseModel):
+    message: Optional[str] = Field(None, description="申请留言，例如为什么想加入")
+
+
+class ProjectApplicationCreate(ProjectApplicationBase):
+    # project_id 和 student_id 会通过路径或认证上下文获取，不需在 body 中
+    pass
+
+
+class ProjectApplicationResponse(ProjectApplicationBase):
+    id: int
+    project_id: int
+    student_id: int
+    status: Literal["pending", "approved", "rejected"]
+    applied_at: datetime
+    processed_at: Optional[datetime] = None
+    processed_by_id: Optional[int] = None
+
+    # 为了方便前端显示，可以嵌套申请者和审批者的基本信息
+    applicant_name: Optional[str] = Field(None, description="申请者姓名")
+    applicant_email: Optional[EmailStr] = Field(None, description="申请者邮箱")
+    processor_name: Optional[str] = Field(None, description="审批者姓名")
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+class ProjectApplicationProcess(BaseModel):
+    status: Literal["approved", "rejected"] = Field(..., description="处理结果: approved (批准) 或 rejected (拒绝)")
+    process_message: Optional[str] = Field(None, description="审批附言，例如拒绝原因")
+
+
+# --- Project Member Schemas ---
+class ProjectMemberBase(BaseModel):
+    role: Literal["admin", "member"] = Field("member", description="项目成员角色: admin (管理员) 或 member (普通成员)")
+
+
+class ProjectMemberResponse(ProjectMemberBase):
+    id: int
+    project_id: int
+    student_id: int
+    joined_at: datetime
+
+    # 嵌套成员的用户信息，方便前端显示成员列表
+    member_name: Optional[str] = Field(None, description="成员姓名")
+    member_email: Optional[EmailStr] = Field(None, description="成员邮箱")
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
 # --- Note Schemas ---
 class NoteBase(BaseModel):
     title: Optional[str] = None

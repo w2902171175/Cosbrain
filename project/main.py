@@ -20,9 +20,9 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage, ProjectApplication, ProjectMember
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse, CollectedContentSharedItemAddRequest
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse, CollectedContentSharedItemAddRequest,ProjectApplicationResponse, ProjectApplicationProcess, ProjectMemberResponse
 # 导入重构后的 ai_core 模块
 import ai_core
 
@@ -1971,6 +1971,282 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
     print(f"DEBUG: 获取项目 ID: {project_id} 的详情。")
     return project
+
+
+@app.post("/projects/{project_id}/apply", response_model=schemas.ProjectApplicationResponse, summary="学生申请加入项目")
+async def apply_to_project(
+        project_id: int,
+        application_data: schemas.ProjectApplicationCreate,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    允许学生申请加入指定项目。
+    - 如果用户已是项目成员，则无法申请。
+    - 如果用户已提交待处理的申请，则无法重复申请。
+    """
+    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 尝试申请加入项目 {project_id}。")
+
+    # 1. 验证项目是否存在
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+    # 2. 检查用户是否已是项目成员
+    existing_member = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.student_id == current_user_id
+    ).first()
+    if existing_member:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="您已经是该项目的成员，无需申请加入。")
+
+    # 3. 检查是否已有待处理或已拒绝的申请
+    existing_application = db.query(ProjectApplication).filter(
+        ProjectApplication.project_id == project_id,
+        ProjectApplication.student_id == current_user_id
+    ).first()
+
+    if existing_application:
+        if existing_application.status == "pending":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已有待处理的项目申请，请勿重复提交。")
+        elif existing_application.status == "approved":
+            # 理论上这里不会走到，因为如果 approved 就会成为 ProjectMember
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="您已批准加入该项目，请勿重复申请。")
+        elif existing_application.status == "rejected":
+            # 如果是已拒绝的申请，可以考虑是返回冲突，还是允许重新申请
+            # 这里选择返回冲突，如果需要重新申请，可能由前端引导用户先删除旧申请
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="您有此项目已被拒绝的申请，请联系项目创建者。")
+
+            # 4. 创建新的项目申请
+    db_application = ProjectApplication(
+        project_id=project_id,
+        student_id=current_user_id,
+        message=application_data.message,  # 允许 message 为 None
+        status="pending"
+    )
+
+    db.add(db_application)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 提交项目申请时发生完整性错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="提交申请失败：可能已存在您的申请，或发生并发冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 提交项目申请 {project_id} 失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"提交项目申请失败: {e}")
+    db.refresh(db_application)
+
+    # Populate applicant name/email for response
+    applicant_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if applicant_user:
+        db_application.applicant_name = applicant_user.name
+        db_application.applicant_email = applicant_user.email
+    else:
+        db_application.applicant_name = "未知用户"  # 理论上不发生
+        db_application.applicant_email = None
+
+    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 成功向项目 {project_id} 提交了申请 (ID: {db_application.id})。")
+    return db_application
+
+
+@app.get("/projects/{project_id}/applications", response_model=List[schemas.ProjectApplicationResponse],
+         summary="获取项目所有申请列表")
+async def get_project_applications(
+        project_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        status_filter: Optional[Literal["pending", "approved", "rejected"]] = None
+):
+    """
+    项目创建者或系统管理员可以获取指定项目的申请列表。
+    可根据 status_filter (pending, approved, rejected) 筛选。
+    """
+    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 尝试获取项目 {project_id} 的申请列表。")
+
+    # 1. 验证项目和权限 (只有项目创建者或系统管理员能查看)
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user_obj:  # 理论上不会发生
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+    if not (db_project.creator_id == current_user_id or current_user_obj.is_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="无权查看该项目的申请列表。只有项目创建者或系统管理员可以。")
+
+    # 2. 查询申请列表，并预加载申请者信息
+    # 使用 joinedload 避免 N+1 查询问题
+    query = db.query(ProjectApplication).options(joinedload(ProjectApplication.applicant)).filter(
+        ProjectApplication.project_id == project_id
+    )
+    if status_filter:
+        query = query.filter(ProjectApplication.status == status_filter)
+
+    applications = query.order_by(ProjectApplication.applied_at.desc()).all()
+
+    # 3. 填充响应模型
+    response_applications = []
+    for app in applications:
+        app_response = schemas.ProjectApplicationResponse.model_validate(app, from_attributes=True)
+        app_response.applicant_name = app.applicant.name if app.applicant else "未知用户"
+        app_response.applicant_email = app.applicant.email if app.applicant else None
+
+        # 填充审批者信息 (如果已处理)
+        if app.processed_by_id:
+            processor_user = db.query(Student).filter(Student.id == app.processed_by_id).first()
+            app_response.processor_name = processor_user.name if processor_user else "未知审批者"
+        response_applications.append(app_response)
+
+    print(f"DEBUG_PROJECT_APP: 项目 {project_id} 获取到 {len(response_applications)} 条申请。")
+    return response_applications
+
+
+@app.post("/projects/applications/{application_id}/process", response_model=schemas.ProjectApplicationResponse,
+          summary="处理项目申请")
+async def process_project_application(
+        application_id: int,
+        process_data: schemas.ProjectApplicationProcess,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    项目创建者或系统管理员可以批准或拒绝项目申请。
+    如果申请被批准，用户将成为项目成员。
+    """
+    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 尝试处理申请 {application_id} 为 '{process_data.status}'。")
+
+    # 1. 验证申请是否存在且为 'pending' 状态
+    db_application = db.query(ProjectApplication).filter(ProjectApplication.id == application_id).first()
+    if not db_application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目申请未找到。")
+    if db_application.status != "pending":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该申请已处理或状态异常，无法再次处理。")
+
+    # 2. 验证操作者权限 (只有项目创建者或系统管理员能处理)
+    # 预加载 project 和 applicant
+    db_project = db.query(Project).filter(Project.id == db_application.project_id).first()
+    if not db_project:  # 理论上不会发生，因为 db_application 关联 Project
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目未找到。")
+
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user_obj:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+    if not (db_project.creator_id == current_user_id or current_user_obj.is_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="无权处理该项目申请。只有项目创建者或系统管理员可以。")
+
+    # 3. 更新申请状态
+    db_application.status = process_data.status
+    db_application.processed_at = func.now()
+    db_application.processed_by_id = current_user_id
+    # 允许更新 message (如拒绝原因)
+    db_application.message = process_data.process_message if process_data.process_message is not None else db_application.message
+
+    db.add(db_application)
+
+    # 4. 如果批准，则添加为项目成员或激活现有成员
+    if process_data.status == "approved":
+        # 检查是否已是成员 (避免重复添加，ProjectMember 表有唯一约束)
+        existing_member = db.query(ProjectMember).filter(
+            ProjectMember.project_id == db_application.project_id,
+            ProjectMember.student_id == db_application.student_id
+        ).first()
+
+        if existing_member:
+            # 如果申请者之前是成员（例如被移除了又申请），这里可以更新其状态或角色
+            # 简化处理为确认其为“member”角色。如果需要更复杂的角色管理，这里需细化。
+            existing_member.role = "member"
+            existing_member.joined_at = func.now()  # 更新加入时间
+            db.add(existing_member)
+            print(
+                f"DEBUG_PROJECT_APP: 用户 {db_application.student_id} 已再次激活为项目 {db_application.project_id} 的成员。")
+        else:
+            new_member = ProjectMember(
+                project_id=db_application.project_id,
+                student_id=db_application.student_id,
+                role="member"  # 默认角色
+            )
+            db.add(new_member)
+            print(
+                f"DEBUG_PROJECT_APP: 用户 {db_application.student_id} 已添加为项目 {db_application.project_id} 的新成员。")
+
+        # 可选：如果希望在加入项目时奖励积分或触发成就，可以在这里调用
+        # if db_application.applicant: # 确保 applicant 关系已加载
+        #     await _award_points(db, db_application.applicant, amount=10, reason=f"成功加入项目 {db_project.title}")
+        #     await _check_and_award_achievements(db, db_application.applicant.id)
+
+    db.commit()
+    db.refresh(db_application)
+
+    # 填充响应模型中的申请者和审批者信息
+    applicant_user = db.query(Student).filter(Student.id == db_application.student_id).first()
+    processor_user = db.query(Student).filter(Student.id == db_application.processed_by_id).first()
+
+    db_application.applicant_name = applicant_user.name if applicant_user else "未知用户"
+    db_application.applicant_email = applicant_user.email if applicant_user else None
+    db_application.processor_name = processor_user.name if processor_user else "未知审批者"
+
+    print(f"DEBUG_PROJECT_APP: 项目申请 {db_application.id} 已处理为 '{process_data.status}'。")
+    return db_application
+
+
+@app.get("/projects/{project_id}/members", response_model=List[schemas.ProjectMemberResponse],
+         summary="获取项目成员列表")
+async def get_project_members(
+        project_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定项目的所有成员列表。
+    项目创建者、项目成员或系统管理员可以查看。
+    """
+    print(f"DEBUG_PROJECT_MEMBERS: 用户 {current_user_id} 尝试获取项目 {project_id} 的成员列表。")
+
+    # 1. 验证项目是否存在
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user_obj:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+    # 2. 权限检查：项目创建者、项目成员或系统管理员
+    is_creator = (db_project.creator_id == current_user_id)
+    is_project_member = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.student_id == current_user_id
+    ).first() is not None
+
+    if not (is_creator or is_project_member or current_user_obj.is_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该项目的成员列表。")
+
+    # 3. 查询成员列表，并预加载成员信息
+    # 使用 joinedload 避免 N+1 查询问题
+    query = db.query(ProjectMember).options(joinedload(ProjectMember.member)).filter(
+        ProjectMember.project_id == project_id
+    )
+
+    memberships = query.order_by(ProjectMember.joined_at).all()
+
+    # 4. 填充响应模型
+    response_members = []
+    for member_ship in memberships:
+        member_response = schemas.ProjectMemberResponse.model_validate(member_ship, from_attributes=True)
+        member_response.member_name = member_ship.member.name if member_ship.member else "未知用户"
+        member_response.member_email = member_ship.member.email if member_ship.member else None
+        response_members.append(member_response)
+
+    print(f"DEBUG_PROJECT_MEMBERS: 项目 {project_id} 获取到 {len(response_members)} 位成员。")
+    return response_members
 
 
 # --- 课程管理接口 ---
@@ -4156,6 +4432,67 @@ async def delete_daily_record(
 
 
 # --- 用户课程管理接口 ---
+@app.post("/courses/{course_id}/enroll", response_model=schemas.UserCourseResponse, summary="用户报名课程")
+async def enroll_course(
+        course_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    允许用户报名（注册）一门课程。
+    如果用户已报名，则返回已有的报名信息，不会重复创建。
+    """
+    print(f"DEBUG_COURSE_ENROLL: 用户 {current_user_id} 尝试报名课程 {course_id}。")
+
+    # 1. 验证课程是否存在
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    # 2. 检查用户是否已报名该课程
+    existing_enrollment = db.query(UserCourse).filter(
+        UserCourse.student_id == current_user_id,
+        UserCourse.course_id == course_id
+    ).first()
+
+    if existing_enrollment:
+        print(f"DEBUG_COURSE_ENROLL: 用户 {current_user_id} 已报名课程 {course_id}，返回现有报名信息。")
+        # 确保返回的UserCourseResponse包含课程标题
+        if existing_enrollment.course is None:  # 如果course关系没有被加载
+            existing_enrollment.course = db_course  # 暂时赋值以填充响应模型
+        return existing_enrollment
+
+    # 3. 创建新的报名记录
+    new_enrollment = UserCourse(
+        student_id=current_user_id,
+        course_id=course_id,
+        progress=0.0,
+        status="registered",  # 初始状态为“已注册”
+        last_accessed=func.now()
+    )
+
+    db.add(new_enrollment)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        # 捕获可能的并发冲突，如果同时有多个请求尝试创建
+        print(f"ERROR_DB: 报名课程时发生完整性错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="报名失败：课程已被您注册，或发生并发冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 报名课程 {course_id} 失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"报名课程失败: {e}")
+    db.refresh(new_enrollment)
+
+    # 确保返回的UserCourseResponse包含课程标题
+    if new_enrollment.course is None:  # 如果course关系没有被加载
+        new_enrollment.course = db_course  # 暂时赋值以填充响应模型
+
+    print(f"DEBUG_COURSE_ENROLL: 用户 {current_user_id} 成功报名课程 {course_id}。")
+    return new_enrollment
+
+
 @app.put("/users/me/courses/{course_id}", response_model=schemas.UserCourseResponse,
          summary="更新当前用户课程学习进度和状态")
 async def update_user_course_progress(

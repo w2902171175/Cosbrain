@@ -92,7 +92,6 @@ Create/
 ├── README.md                      # 项目说明文档
 ├── requirements.txt               # Python依赖包列表
 ├── run.py                        # 应用启动脚本
-├── 数据库表格字段说明文档.md        # 数据库结构文档
 ├── alembic/                      # 数据库迁移工具
 │   └── env.py                    # Alembic环境配置
 └── project/                      # 主要代码目录
@@ -224,7 +223,6 @@ uvicorn project.main:app --reload --host 0.0.0.0 --port 8000
 - **积分成就**: `achievements`, `user_achievements`, `point_transactions`
 - **系统配置**: `user_mcp_configs`, `user_search_engine_configs`, `user_tts_configs`
 
-详细的数据库结构说明请参考：[数据库表格字段说明文档.md](数据库表格字段说明文档.md)
 
 
 

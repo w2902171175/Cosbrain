@@ -10,6 +10,50 @@ from base import Base
 import json
 from datetime import datetime
 
+
+class ProjectApplication(Base):
+    __tablename__ = "project_applications"
+    __table_args__ = (
+        # 确保同一学生对同一项目只有一条待处理或已批准的申请记录
+        UniqueConstraint("project_id", "student_id", name="_project_student_application_uc"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True, comment="申请项目ID")
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True, comment="申请学生ID")
+
+    status = Column(String, default="pending", nullable=False, comment="申请状态: pending, approved, rejected")
+    message = Column(Text, nullable=True, comment="申请留言")
+
+    applied_at = Column(DateTime, server_default=func.now(), nullable=False, comment="申请提交时间")
+    processed_at = Column(DateTime, nullable=True, comment="申请处理时间")
+    processed_by_id = Column(Integer, ForeignKey("students.id"), nullable=True, comment="审批者ID")
+
+    # Relationships
+    project = relationship("Project", back_populates="applications")
+    applicant = relationship("Student", foreign_keys=[student_id], back_populates="project_applications")
+    processor = relationship("Student", foreign_keys=[processed_by_id])  # 审批者
+
+
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+    __table_args__ = (
+        # 确保同一学生在同一项目下只有一条成员记录
+        UniqueConstraint("project_id", "student_id", name="_project_student_member_uc"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True, comment="所属项目ID")
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True, comment="成员学生ID")
+
+    role = Column(String, default="member", nullable=False, comment="成员角色: admin, member")  # 项目管理员或普通成员
+    joined_at = Column(DateTime, server_default=func.now(), nullable=False, comment="加入时间")
+
+    # Relationships
+    project = relationship("Project", back_populates="members")
+    member = relationship("Student", foreign_keys=[student_id], back_populates="project_memberships")
+
+
 class Student(Base):
     __tablename__ = "students"
 
@@ -92,6 +136,9 @@ class Student(Base):
     point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
 
     ai_conversations = relationship("AIConversation", back_populates="user_owner", cascade="all, delete-orphan")
+    project_applications = relationship("ProjectApplication", foreign_keys=[ProjectApplication.student_id],
+                                        back_populates="applicant", cascade="all, delete-orphan")
+    project_memberships = relationship("ProjectMember", back_populates="member", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Student(id={self.id}, email='{self.email}', username='{self.username}')>"
@@ -128,6 +175,8 @@ class Project(Base):
 
     chat_room = relationship("ChatRoom", back_populates="project", uselist=False, cascade="all, delete-orphan")
     creator = relationship("Student", back_populates="projects_created")
+    applications = relationship("ProjectApplication", back_populates="project", cascade="all, delete-orphan")
+    members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Project(id={self.id}, title='{self.title}')>"
