@@ -13,10 +13,6 @@ from models import Student, Project, Achievement
 STUDENTS_CSV_PATH = 'export_tools/data/export/students.csv'
 PROJECTS_CSV_PATH = 'export_tools/data/export/projects.csv'
 
-# API的固定端点和模型名称
-EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
-
 DEFAULT_ACHIEVEMENTS = [
     {
         "name": "初次见面",
@@ -120,62 +116,7 @@ DEFAULT_ACHIEVEMENTS = [
 ]
 
 
-# --- 3. API 调用函数 ---
-async def get_embeddings_from_api_async(texts: List[str], api_key: Optional[str] = None) -> List[List[float]]:
-    """
-    通过硅基流动API异步获取文本嵌入。
-    此版本明确接受api_key参数。如果api_key为None或虚拟key，则返回零向量。
-    """
-    non_empty_texts = [t for t in texts if t and t.strip()]
-    if not non_empty_texts:
-        print("警告：没有有效的文本可以发送给Embedding API。")
-        return [np.zeros(1024).tolist()] * len(texts)
-
-    # 使用传入的 api_key 进行检查
-    if not api_key or api_key == "dummy_key_for_testing_without_api":
-        print("API密钥未配置或为虚拟密钥，无法获取嵌入。将返回零向量作为占位符。")
-        return [np.zeros(1024).tolist()] * len(texts)
-
-    headers = {
-        "Authorization": f"Bearer {api_key}", # 使用传入的 api_key
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": EMBEDDING_MODEL_NAME,
-        "input": non_empty_texts
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(EMBEDDING_API_URL, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            embeddings_result = [item['embedding'] for item in response.json()['data']]
-
-            full_embeddings = []
-            result_idx = 0
-            for text_orig in texts:
-                if text_orig and text_orig.strip():
-                    if result_idx < len(embeddings_result):
-                        full_embeddings.append(embeddings_result[result_idx])
-                        result_idx += 1
-                    else:
-                        full_embeddings.append(np.zeros(1024).tolist())
-                else:
-                    full_embeddings.append(np.zeros(1024).tolist())
-            return full_embeddings
-
-    except httpx.RequestError as e:
-        print(f"API请求错误 (Embedding): {e}")
-        print(f"响应内容: {getattr(e, 'response', None).text if hasattr(e, 'response') and e.response else '无'}")
-        return [np.zeros(1024).tolist()] * len(texts)
-    except KeyError as e:
-        print(f"API响应格式错误 (Embedding): {e}. 响应: {response.json() if 'response' in locals() and hasattr(response, 'json') else '无法获取响应数据'}")
-        return [np.zeros(1024).tolist()] * len(texts) # 确保返回列表以匹配预期
-    except json.JSONDecodeError as e:
-        print(f"API响应JSON解码错误 (Embedding): {e}. 响应: {response.text if 'response' in locals() and hasattr(response, 'text') else '无响应内容可获取'}")
-        return [np.zeros(1024).tolist()] * len(texts)
-
-
-# --- 4. 数据预处理函数 ---
+# --- 3. 数据预处理函数 ---
 def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
     """为学生数据生成 combined_text，并处理 skills 字段和确保 username 唯一。"""
 
@@ -387,7 +328,7 @@ def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# --- 5. 数据导入函数 ---
+# --- 4. 数据导入函数 ---
 def import_students_to_db(db: Session, students_df: pd.DataFrame):
     """将学生数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入学生数据到数据库...")

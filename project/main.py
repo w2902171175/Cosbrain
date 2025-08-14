@@ -2715,8 +2715,14 @@ async def get_dashboard_courses(
         db: Session = Depends(get_db),
         status_filter: Optional[str] = None
 ):
+    """
+    获取当前用户学习的课程卡片列表。
+    可选择通过 `status_filter` (例如 "in_progress", "completed") 筛选课程。
+    """
     print(f"DEBUG: 获取用户 {current_user_id} 的仪表板课程列表。")
-    query = db.query(UserCourse).filter(UserCourse.student_id == current_user_id)
+
+    # 优化查询：使用 joinedload 预加载关联的 Course 对象，避免 N+1 查询问题
+    query = db.query(UserCourse).options(joinedload(UserCourse.course)).filter(UserCourse.student_id == current_user_id)
 
     if status_filter:
         query = query.filter(UserCourse.status == status_filter)
@@ -2725,16 +2731,31 @@ async def get_dashboard_courses(
 
     course_cards = []
     for uc in user_courses:
-        # 获取 Course 详情
-        course = db.query(Course).filter(Course.id == uc.course_id).first()
-        if course:
+        # 确保 uc.course (预加载的 Course 对象) 存在
+        if uc.course:
+            # 确保 Course 对象的 required_skills 字段在返回时是正确的列表形式
+            # 尽管 DashboardCourseCard 不直接显示 skills，但 Course 对象本身可能在ORM层加载了。
+            # 这里统一处理其解析，以防万一或作为良好实践。
+            course_skills = uc.course.required_skills
+            if isinstance(course_skills, str):
+                try:
+                    course_skills = json.loads(course_skills)
+                except json.JSONDecodeError:
+                    course_skills = []
+            elif course_skills is None:
+                course_skills = []
+            uc.course.required_skills = course_skills  # 更新ORM对象确保一致性
+
             course_cards.append(schemas.DashboardCourseCard(
-                id=course.id,
-                title=course.title,
+                id=uc.course.id,  # 直接从预加载的 Course 对象获取 ID
+                title=uc.course.title,  # 直接从预加载的 Course 对象获取 Title
                 progress=uc.progress,
                 last_accessed=uc.last_accessed
             ))
+        else:
+            print(f"WARNING: 用户 {current_user_id} 关联的课程 {uc.course_id} 未找到。")
 
+    print(f"DEBUG: 获取到 {len(course_cards)} 门课程卡片。")
     return course_cards
 
 
@@ -3915,8 +3936,8 @@ async def delete_ai_conversation(
 # --- 随手记录管理接口 ---
 @app.post("/daily-records/", response_model=schemas.DailyRecordResponse, summary="创建新随手记录")
 async def create_daily_record(
-        record_data: schemas.DailyRecordBase,  # 接收记录内容
-        current_user_id: int = Depends(get_current_user_id),  # 记录属于当前用户
+        record_data: schemas.DailyRecordBase,
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
@@ -3931,17 +3952,51 @@ async def create_daily_record(
             (record_data.mood or "") + ". " +
             (record_data.tags or "")
     ).strip()
+    # 如果组合文本为空，直接跳过嵌入
+    if not combined_text:
+        combined_text = ""
 
-    embedding = [0.0] * 1024  # 默认零向量
+    # 获取当前用户的LLM配置用于嵌入生成
+    record_owner = db.query(Student).filter(Student.id == current_user_id).first()
+    owner_llm_api_key = None
+    owner_llm_type = None
+    owner_llm_base_url = None
+    owner_llm_model_id = None
+
+    # 检查用户是否配置了硅基流动的LLM，并尝试解密API Key
+    if record_owner and record_owner.llm_api_type == "siliconflow" and record_owner.llm_api_key_encrypted:
+        try:
+            owner_llm_api_key = ai_core.decrypt_key(record_owner.llm_api_key_encrypted)
+            owner_llm_type = record_owner.llm_api_type
+            owner_llm_base_url = record_owner.llm_api_base_url
+            owner_llm_model_id = record_owner.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用随手记录创建者配置的硅基流动 API 密钥为随手记录生成嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密随手记录创建者硅基流动 API 密钥失败: {e}。随手记录嵌入将使用零向量。")
+            owner_llm_api_key = None  # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 随手记录创建者未配置硅基流动 API 类型或密钥，随手记录嵌入将使用零向量或默认行为。")
+
+    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
     if combined_text:
         try:
-            # 调用AI服务生成嵌入
-            new_embedding = ai_core.get_embeddings_from_api([combined_text])
-            embedding = new_embedding[0]
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [combined_text],
+                api_key=owner_llm_api_key,
+                llm_type=owner_llm_type,
+                llm_base_url=owner_llm_base_url,
+                llm_model_id=owner_llm_model_id
+            )
+            if new_embedding:
+                embedding = new_embedding[0]
+            # else: ai_core.get_embeddings_from_api 已经在不生成时返回零向量的List
             print(f"DEBUG: 随手记录嵌入向量已生成。")
         except Exception as e:
-            print(f"ERROR: 生成随手记录嵌入向量失败: {e}")
-            # 不阻止记录创建，但记录错误
+            print(f"ERROR: 生成随手记录嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 发生错误时，确保设置为零向量
+    else:
+        print(f"WARNING_EMBEDDING: 随手记录 combined_text 为空，嵌入向量设为零。")
+        # 如果 combined_text 为空，embedding 保持为默认的零向量
 
     db_record = DailyRecord(
         owner_id=current_user_id,
@@ -4002,7 +4057,7 @@ async def get_daily_record_by_id(
 @app.put("/daily-records/{record_id}", response_model=schemas.DailyRecordResponse, summary="更新指定随手记录")
 async def update_daily_record(
         record_id: int,
-        record_data: schemas.DailyRecordBase,  # 接收部分更新数据
+        record_data: schemas.DailyRecordBase,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
@@ -4026,14 +4081,51 @@ async def update_daily_record(
             (db_record.mood or "") + ". " +
             (db_record.tags or "")
     ).strip()
+    # 如果组合文本为空，跳过嵌入
+    if not db_record.combined_text:
+        db_record.combined_text = ""
 
+    # 获取当前用户的LLM配置用于嵌入更新
+    record_owner = db.query(Student).filter(Student.id == current_user_id).first()
+    owner_llm_api_key = None
+    owner_llm_type = None
+    owner_llm_base_url = None
+    owner_llm_model_id = None
+
+    if record_owner and record_owner.llm_api_type == "siliconflow" and record_owner.llm_api_key_encrypted:
+        try:
+            owner_llm_api_key = ai_core.decrypt_key(record_owner.llm_api_key_encrypted)
+            owner_llm_type = record_owner.llm_api_type
+            owner_llm_base_url = record_owner.llm_api_base_url
+            owner_llm_model_id = record_owner.llm_model_id
+            print(f"DEBUG_EMBEDDING_KEY: 使用随手记录创建者配置的硅基流动 API 密钥更新随手记录嵌入。")
+        except Exception as e:
+            print(f"ERROR_EMBEDDING_KEY: 解密随手记录创建者硅基流动 API 密钥失败: {e}。随手记录嵌入将使用零向量。")
+            owner_llm_api_key = None  # 解密失败，不要使用
+    else:
+        print(f"DEBUG_EMBEDDING_KEY: 随手记录创建者未配置硅基流动 API 类型或密钥，随手记录嵌入将使用零向量或默认行为。")
+
+    embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
     if db_record.combined_text:
         try:
-            new_embedding = ai_core.get_embeddings_from_api([db_record.combined_text])
-            db_record.embedding = new_embedding[0]
-            print(f"DEBUG: 随手记录 {db_record.id} 嵌��向量已更新。")
+            new_embedding = await ai_core.get_embeddings_from_api(
+                [db_record.combined_text],
+                api_key=owner_llm_api_key,
+                llm_type=owner_llm_type,
+                llm_base_url=owner_llm_base_url,
+                llm_model_id=owner_llm_model_id
+            )
+            if new_embedding:
+                embedding_recalculated = new_embedding[0]
+            print(f"DEBUG: 随手记录 {db_record.id} 嵌入向量已更新。")
         except Exception as e:
-            print(f"ERROR: 更新随手记录 {db_record.id} 嵌入向量失败: {e}")
+            print(f"ERROR: 更新随手记录 {db_record.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+            embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    else:
+        print(f"WARNING_EMBEDDING: 随手记录 combined_text 为空，嵌入向量设为零。")
+        # 如果 combined_text 为空，embedding 保持为默认的零向量
+
+    db_record.embedding = embedding_recalculated  # 赋值给DB对象
 
     db.add(db_record)
     db.commit()
