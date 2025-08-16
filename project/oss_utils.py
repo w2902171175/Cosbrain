@@ -5,7 +5,7 @@ from fastapi import HTTPException # New: Import HTTPException
 from oss2 import Auth, Bucket # Removed SizedFileAdaptor, put_object
 from oss2.credentials import EnvironmentVariableCredentialsProvider # Although not directly used here, keep it if it's a common pattern in your project
 from dotenv import load_dotenv
-
+from functools import partial
 load_dotenv()
 
 # 从环境变量加载OSS配置
@@ -38,13 +38,14 @@ def get_oss_bucket() -> Bucket:
             raise
     return _oss_bucket
 
+
 async def upload_file_to_oss(
-    file_bytes: bytes,
-    object_name: str,
-    content_type: str
+        file_bytes: bytes,
+        object_name: str,
+        content_type: str
 ) -> str:
     """
-    将文件字节流上传到OSS。
+    将文件字节流上传到OSS。(兼容 Python < 3.9)
     :param file_bytes: 文件内容的字节流
     :param object_name: OSS对象存储的完整路径和文件名，例如 'uploads/my_file.pdf'
     :param content_type: 文件的MIME类型，例如 'application/pdf'
@@ -53,22 +54,34 @@ async def upload_file_to_oss(
     bucket = get_oss_bucket()
     try:
         file_like_object = io.BytesIO(file_bytes)
-        # Wrap the synchronous oss2.put_object call in asyncio.to_thread
-        result = await asyncio.to_thread(
+        # 获取当前正在运行的事件循环
+        loop = asyncio.get_running_loop()
+        # 因为 run_in_executor 不能很好地直接处理关键字参数，
+        # 我们使用 functools.partial 来创建一个已经“内嵌”了所有参数的新函数。
+        blocking_call = partial(
             bucket.put_object,
             object_name,
             file_like_object,
             headers={'Content-Type': content_type}
         )
+
+        # 在默认的线程池执行器中运行这个同步（阻塞）的函数。
+        result = await loop.run_in_executor(
+            None,  # 'None' 表示使用默认的执行器
+            blocking_call
+        )
+
         if result.status == 200:
             print(f"DEBUG_OSS: 文件 '{object_name}' 上传到OSS成功。")
+            # 假设你有 OSS_BASE_URL 这个配置
             return f"{OSS_BASE_URL.rstrip('/')}/{object_name}"
         else:
-            print(f"ERROR_OSS: 文件 '{object_name}' 上传到OSS失败，状态码: {result.status}, 响应: {result.resp.response}")
+            print(
+                f"ERROR_OSS: 文件 '{object_name}' 上传到OSS失败，状态码: {result.status}, 响应: {result.resp.response}")
             raise Exception(f"OSS上传失败，状态码: {result.status}")
     except Exception as e:
         print(f"ERROR_OSS: 上传文件 '{object_name}' 到OSS时发生错误: {e}")
-        # Re-raise HTTPException to be handled by FastAPI
+        # 重新抛出 HTTPException，让 FastAPI 框架来处理
         raise HTTPException(status_code=500, detail=f"文件上传到云存储失败: {e}")
 
 async def delete_file_from_oss(object_name: str):
@@ -90,23 +103,38 @@ async def delete_file_from_oss(object_name: str):
         # Here, we don't necessarily want to raise an HTTPException as deletion might be idempotent
         return {"status": "failure", "message": f"Failed to delete object {object_name}: {e}"}
 
+
 async def download_file_from_oss(object_name: str) -> bytes:
     """
-    从OSS下载文件内容。
+    从OSS下载文件内容。(兼容 Python < 3.9)
     :param object_name: OSS对象存储的完整路径和文件名，例如 'uploads/my_file.pdf'
     :return: 文件内容的字节流
     """
     bucket = get_oss_bucket()
     try:
-        # Wrap the synchronous oss2.get_object call in asyncio.to_thread
-        oss_obj_result = await asyncio.to_thread(bucket.get_object, object_name)
-        file_content_bytes = await asyncio.to_thread(oss_obj_result.read) # Read the content (also synchronus)
+
+        # 获取当前正在运行的事件循环
+        loop = asyncio.get_running_loop()
+
+        # 1. 异步执行 bucket.get_object (这是一个阻塞操作)
+        blocking_get_call = partial(bucket.get_object, object_name)
+        oss_obj_result = await loop.run_in_executor(
+            None,
+            blocking_get_call
+        )
+
+        # 2. 异步执行 oss_obj_result.read() (这同样是阻塞操作)
+        blocking_read_call = partial(oss_obj_result.read)
+        file_content_bytes = await loop.run_in_executor(
+            None,
+            blocking_read_call
+        )
+
         print(f"DEBUG_OSS: 文件 '{object_name}' 从OSS下载成功。")
         return file_content_bytes
     except Exception as e:
         print(f"ERROR_OSS: 从OSS下载文件 '{object_name}' 时发生错误: {e}")
         raise HTTPException(status_code=500, detail=f"从云存储下载文件失败: {e}")
-
 
 
 def is_oss_url(url: Optional[str]) -> bool:
