@@ -15,9 +15,7 @@ class SkillWithProficiency(BaseModel):
     ] = Field(..., description="熟练度等级：初窥门径, 登堂入室, 融会贯通, 炉火纯青")
 
     class Config:
-        # 允许从ORM对象创建，但由于它通常是内嵌在其他模型中，其父模型有 from_attributes 即可
-        # 也可以在此明确指定 from_attributes = True
-        pass
+        from_attributes = True
 
 
 # --- Student Schemas ---
@@ -84,12 +82,11 @@ class StudentResponse(StudentBase):
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 
-class StudentUpdate(BaseModel): # StudentUpdate 一般直接继承 BaseModel
+class StudentUpdate(BaseModel):
     """更新学生信息时的模型，所有字段均为可选"""
     username: Optional[str] = Field(None, min_length=1, max_length=50, description="用户在平台内唯一的用户名/昵称")
     phone_number: Optional[str] = Field(None, min_length=11, max_length=11, description="用户手机号")
     school: Optional[str] = Field(None, max_length=100, description="用户所属学校名称")
-
     name: Optional[str] = Field(None, description="用户真实姓名")
     major: Optional[str] = None
     skills: Optional[List[SkillWithProficiency]] = Field(None, description="用户技能列表及熟练度")
@@ -126,7 +123,7 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     """创建项目时的数据模型"""
-    pass # ProjectCreate 继承 ProjectBase，自动拥有新字段
+    pass
 
 
 class ProjectResponse(ProjectBase):
@@ -135,13 +132,13 @@ class ProjectResponse(ProjectBase):
     combined_text: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-    # ProjectResponse 继承 ProjectBase，自动拥有新字段
 
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
-class ProjectUpdate(BaseModel): # ProjectUpdate 一般直接继承 BaseModel
+
+class ProjectUpdate(BaseModel):
     """项目更新时的数据模型，所有字段均为可选"""
     title: Optional[str] = None
     description: Optional[str] = None
@@ -166,7 +163,6 @@ class ProjectApplicationBase(BaseModel):
 
 
 class ProjectApplicationCreate(ProjectApplicationBase):
-    # project_id 和 student_id 会通过路径或认证上下文获取，不需在 body 中
     pass
 
 
@@ -178,8 +174,6 @@ class ProjectApplicationResponse(ProjectApplicationBase):
     applied_at: datetime
     processed_at: Optional[datetime] = None
     processed_by_id: Optional[int] = None
-
-    # 为了方便前端显示，可以嵌套申请者和审批者的基本信息
     applicant_name: Optional[str] = Field(None, description="申请者姓名")
     applicant_email: Optional[EmailStr] = Field(None, description="申请者邮箱")
     processor_name: Optional[str] = Field(None, description="审批者姓名")
@@ -204,8 +198,6 @@ class ProjectMemberResponse(ProjectMemberBase):
     project_id: int
     student_id: int
     joined_at: datetime
-
-    # 嵌套成员的用户信息，方便前端显示成员列表
     member_name: Optional[str] = Field(None, description="成员姓名")
     member_email: Optional[EmailStr] = Field(None, description="成员邮箱")
 
@@ -219,12 +211,36 @@ class NoteBase(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     note_type: Optional[str] = "general"
-    course_id: Optional[int] = None
+    course_id: Optional[int] = Field(None, description="关联的课程ID")
     tags: Optional[str] = None
+    chapter: Optional[str] = Field(None, description="课程章节信息，例如：第一章 - AI概述")
+    media_url: Optional[str] = Field(None, description="笔记中嵌入的图片、视频或文件的OSS URL")
+    media_type: Optional[Literal["image", "video", "file"]] = Field(None, description="媒体类型：'image', 'video', 'file'")
+    original_filename: Optional[str] = Field(None, description="原始上传文件名")
+    media_size_bytes: Optional[int] = Field(None, description="媒体文件大小（字节）")
+    folder_id: Optional[int] = Field(None, description="关联的用户自定义文件夹ID。如果为None，则表示笔记未放入特定文件夹。")
+
+    @model_validator(mode='after')
+    def validate_media_and_content(self) -> 'NoteBase':
+        if not self.content and not self.media_url:
+            raise ValueError("笔记内容 (content) 和媒体文件 (media_url) 至少需要提供一个。")
+        if self.media_type and not self.media_url:
+            raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
+        if self.media_url and not self.media_type:
+            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+        is_course_note = (self.course_id is not None) or (self.chapter is not None and self.chapter.strip() != "")
+        is_folder_note = (self.folder_id is not None)
+        if is_course_note and is_folder_note:
+            raise ValueError("笔记不能同时关联到课程/章节和自定义文件夹。请选择一种组织方式。")
+        if (self.chapter is not None and self.chapter.strip() != "") and (self.course_id is None):
+            raise ValueError("为了关联章节信息，课程ID (course_id) 不能为空。")
+        if self.folder_id == 0:
+            self.folder_id = None
+        return self
 
 
 class NoteCreate(NoteBase):
-    owner_id: int
+    pass
 
 
 class NoteResponse(NoteBase):
@@ -234,9 +250,19 @@ class NoteResponse(NoteBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
+    def folder_name(self) -> Optional[str]:
+        # ORM 对象上通过 `_folder_name_for_response` 赋值，@property 来读取它
+        return getattr(self, '_folder_name_for_response', None)
+
+    @property
+    def course_title(self) -> Optional[str]:
+        return getattr(self, '_course_title_for_response', None)
+
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
 
 
 # --- DailyRecord Schemas ---
@@ -248,7 +274,6 @@ class DailyRecordBase(BaseModel):
 
 
 class DailyRecordCreate(DailyRecordBase):
-    """创建随手记录时的数据模型"""
     pass
 
 
@@ -277,7 +302,6 @@ class FolderBase(BaseModel):
 
 
 class FolderCreate(FolderBase):
-    """创建文件夹时的数据模型"""
     pass
 
 
@@ -299,10 +323,11 @@ class CollectedContentBase(BaseModel):
     """具体收藏内容基础信息模型，用于创建或更新时接收数据"""
     title: str
     type: Literal[
-        "document", "video", "note", "link", "file", "forum_topic", "course", "project", "knowledge_article",
-        "daily_record"]
-    url: Optional[str] = None
-    content: Optional[str] = None
+        "document", "video", "note", "link", "file", "image",
+        "forum_topic", "course", "project", "knowledge_article",
+        "daily_record"] = Field(..., description="内容类型：document, video, note, link, file, image, forum_topic, course, project, knowledge_article, daily_record")
+    url: Optional[str] = Field(None, description="外部链接或OSS URL")
+    content: Optional[str] = Field(None, description="文本内容或简要描述")
     tags: Optional[str] = None
     folder_id: Optional[int] = None
     priority: Optional[int] = None
@@ -311,8 +336,23 @@ class CollectedContentBase(BaseModel):
     thumbnail: Optional[str] = None
     author: Optional[str] = None
     duration: Optional[str] = None
-    file_size: Optional[str] = None
+    file_size: Optional[int] = Field(None, description="文件大小（字节）")
     status: Optional[Literal["active", "archived", "deleted"]] = None
+
+    @model_validator(mode='after')
+    def validate_content_or_url(self) -> 'CollectedContentBase':
+        if self.type == "link":
+            if not self.url:
+                raise ValueError("类型为 'link' 时，'url' 字段为必填。")
+        elif self.type in ["file", "image", "video"]:
+            if not self.url:
+                raise ValueError(f"类型为 '{self.type}' 时，'url' (文件/媒体URL) 为必填。")
+        elif self.type not in ["file", "image", "video", "link"]:
+            if not self.content and not self.url and not (
+                getattr(self, 'shared_item_type', None) and getattr(self, 'shared_item_id', None)
+            ):
+                raise ValueError(f"类型为 '{self.type}' 时，'content' 和 'url' (如果适用) 至少需要提供一个。")
+        return self
 
 
 class CollectedContentSharedItemAddRequest(BaseModel):
@@ -335,14 +375,10 @@ class CollectedContentSharedItemAddRequest(BaseModel):
     folder_id: Optional[int] = Field(None, description="要收藏到的文件夹ID")
     notes: Optional[str] = Field(None, description="收藏时的个人备注")
     is_starred: Optional[bool] = Field(None, description="是否立即为该收藏添加星标")
-
-    # 允许用户在快速收藏时给一个自定义标题，但如果后端能提取，优先提取
-    # 这个字段在 CollectedContentBase 里面，这里不强制要求
     title: Optional[str] = Field(None, description="收藏项的自定义标题。如果为空，后端将从共享项中提取。")
 
 
 class CollectedContentCreate(CollectedContentBase):
-    """创建具体收藏内容时的数据模型"""
     pass
 
 
@@ -355,22 +391,26 @@ class CollectedContentResponse(CollectedContentBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+    @property
+    def folder_name(self) -> Optional[str]:
+        return getattr(self, '_folder_name_for_response', None)
+
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
 
 
 # --- ChatRoom Schemas ---
 class ChatRoomBase(BaseModel):
     """聊天室基础信息模型，用于创建或更新时接收数据"""
-    name: str = Field(..., max_length=100) # 明确名称为必填且最大长度
+    name: str = Field(..., max_length=100)
     type: Literal["project_group", "course_group", "private", "general"] = Field("general", description="聊天室类型")
     project_id: Optional[int] = Field(None, description="如果为项目群组，关联的项目ID")
     course_id: Optional[int] = Field(None, description="如果为课程群组，关联的课程ID")
-    color: Optional[str] = Field(None, max_length=20) # 颜色字符串，例如 "#FFFFFF"
+    color: Optional[str] = Field(None, max_length=20)
 
 
-# 聊天室成员基础信息 (用于请求和响应)
 class ChatRoomMemberBase(BaseModel):
     room_id: int
     member_id: int
@@ -378,10 +418,11 @@ class ChatRoomMemberBase(BaseModel):
     status: Literal["active", "banned", "left"] = Field("active", description="成员状态 (active: 活跃, banned: 被踢出, left: 已离开)")
     last_read_at: Optional[datetime] = None
 
+
 class ChatRoomMemberCreate(ChatRoomMemberBase):
     pass
 
-# 聊天室成员响应信息 (包含 ID 和时间戳)
+
 class ChatRoomMemberResponse(ChatRoomMemberBase):
     id: int
     member_id: int
@@ -389,28 +430,23 @@ class ChatRoomMemberResponse(ChatRoomMemberBase):
     member_name: Optional[str] = Field(None, description="成员的姓名")
 
     class Config:
-        from_attributes = True  # Pydantic V2
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}  # 保持一致
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 
-# 用于更新成员角色的请求体
 class ChatRoomMemberRoleUpdate(BaseModel):
     role: Literal["king", "admin", "member"] = Field(..., description="要设置的新角色：'admin' 或 'member'")
 
 
-# 入群申请请求体
 class ChatRoomJoinRequestCreate(BaseModel):
     room_id: int = Field(..., description="目标聊天室ID")
     reason: Optional[str] = Field(None, description="入群申请理由")
 
 
-# 入群申请处理请求体 (用于管理员/群主批准或拒绝)
 class ChatRoomJoinRequestProcess(BaseModel):
-    status: Literal["approved", "rejected"] = Field(..., description="处理结果状态：'approved' 或 'rejected'")  # 只能是这两个字符串
-    # 备注：processed_by_id 和 processed_at 将由后端自动填充
+    status: Literal["approved", "rejected"] = Field(..., description="处理结果状态：'approved' 或 'rejected'")
 
 
-# 入群申请响应信息 (包含所有详情)
 class ChatRoomJoinRequestResponse(BaseModel):
     id: int
     room_id: int
@@ -431,11 +467,9 @@ class UserAdminStatusUpdate(BaseModel):
 
 
 class ChatRoomCreate(ChatRoomBase):
-    """创建聊天室时的数据模型"""
     pass
 
 
-# 聊天室更新请求体，所有字段均为可选
 class ChatRoomUpdate(ChatRoomBase):
     name: Optional[str] = None
     type: Optional[str] = None
@@ -445,7 +479,6 @@ class ChatRoomUpdate(ChatRoomBase):
 
 
 class ChatRoomResponse(ChatRoomBase):
-    """返回聊天室信息时的模型"""
     id: int
     creator_id: int
     members_count: Optional[int] = None
@@ -462,19 +495,28 @@ class ChatRoomResponse(ChatRoomBase):
 
 # --- ChatMessage Schemas ---
 class ChatMessageBase(BaseModel):
-    """聊天消息基础信息模型，用于创建时接收数据"""
-    content_text: str
-    message_type: Literal["text", "image", "file", "system_notification"] = "text"
-    media_url: Optional[str] = None
+    content_text: Optional[str] = None
+    message_type: Literal["text", "image", "file", "video", "system_notification"] = "text"
+    media_url: Optional[str] = Field(None, description="媒体文件OSS URL或外部链接")
+
+    @model_validator(mode='after')
+    def check_content_or_media(self) -> 'ChatMessageBase':
+        if self.message_type == "text":
+            if not self.content_text:
+                raise ValueError("当 message_type 为 'text' 时，content_text (消息内容) 不能为空。")
+            if self.media_url:
+                raise ValueError("当 message_type 为 'text' 时，media_url 不应被提供。")
+        elif self.message_type in ["image", "file", "video"]:
+            if not self.media_url:
+                raise ValueError(f"当 message_type 为 '{self.message_type}' 时，media_url (媒体文件URL) 不能为空。")
+        return self
 
 
 class ChatMessageCreate(ChatMessageBase):
-    """创建聊天消息时的数据模型"""
     pass
 
 
 class ChatMessageResponse(ChatMessageBase):
-    """返回聊天消息信息时的模型"""
     id: int
     room_id: int
     sender_id: int
@@ -488,22 +530,37 @@ class ChatMessageResponse(ChatMessageBase):
 
 # --- ForumTopic Schemas ---
 class ForumTopicBase(BaseModel):
-    """论坛话题基础信息模型，用于创建或更新时接收数据"""
     title: str
     content: str
     shared_item_type: Optional[Literal[
-        "note", "daily_record", "course", "project", "knowledge_article", "knowledge_base", "collected_content"]] = None
-    shared_item_id: Optional[int] = None
+        "note", "daily_record", "course", "project", "knowledge_article", "knowledge_base", "collected_content"]] = Field(
+        None, description="如果分享平台内部内容，记录其类型")
+    shared_item_id: Optional[int] = Field(None, description="如果分享平台内部内容，记录其ID")
     tags: Optional[str] = None
+    media_url: Optional[str] = Field(None, description="图片、视频或文件的OSS URL")
+    media_type: Optional[Literal["image", "video", "file"]] = Field(None, description="媒体类型：'image', 'video', 'file'")
+    original_filename: Optional[str] = Field(None, description="原始上传文件名")
+    media_size_bytes: Optional[int] = Field(None, description="媒体文件大小（字节）")
+
+    @model_validator(mode='after')
+    def validate_media_and_shared_item(self) -> 'ForumTopicBase':
+        if self.media_type and not self.media_url:
+            raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
+        if self.media_url and not self.media_type:
+            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+        if (self.shared_item_type and self.shared_item_id is not None) and self.media_url:
+            raise ValueError("不能同时指定共享平台内容 (shared_item_type/id) 和直接上传媒体文件 (media_url)。请选择一种方式。")
+        if (self.shared_item_type and self.shared_item_id is None) or \
+                (self.shared_item_id is not None and not self.shared_item_type):
+            raise ValueError("shared_item_type 和 shared_item_id 必须同时提供，或同时为空。")
+        return self
 
 
 class ForumTopicCreate(ForumTopicBase):
-    """创建论坛话题时的数据模型"""
     pass
 
 
 class ForumTopicResponse(ForumTopicBase):
-    """返回论坛话题信息时的模型"""
     id: int
     owner_id: int
     owner_name: Optional[str] = None
@@ -523,39 +580,49 @@ class ForumTopicResponse(ForumTopicBase):
 
 # --- ForumComment Schemas ---
 class ForumCommentBase(BaseModel):
-    """论坛评论基础信息模型，用于创建或更新时接收数据"""
     content: str
     parent_comment_id: Optional[int] = None
+    media_url: Optional[str] = Field(None, description="图片、视频或文件的OSS URL")
+    media_type: Optional[Literal["image", "video", "file"]] = Field(None, description="媒体类型：'image', 'video', 'file'")
+    original_filename: Optional[str] = Field(None, description="原始上传文件名")
+    media_size_bytes: Optional[int] = Field(None, description="媒体文件大小（字节）")
+
+    @model_validator(mode='after')
+    def validate_media_in_comment(self) -> 'ForumCommentBase':
+        if self.media_type and not self.media_url:
+            raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
+        if self.media_url and not self.media_type:
+            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+        return self
 
 
 class ForumCommentCreate(ForumCommentBase):
-    """创建论坛评论时的数据模型"""
     pass
 
 
 class ForumCommentResponse(ForumCommentBase):
-    """返回论坛评论信息时的模型"""
     id: int
     topic_id: int
     owner_id: int
-    _owner_name: Optional[str] = None
+    # 移除直接声明的 _owner_name 字段
     likes_count: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_liked_by_current_user: Optional[bool] = False
 
-    @property
+    @property # 使用 @property 来暴露 'owner_name'
     def owner_name(self) -> str:
-        return self._owner_name if self._owner_name else "未知用户"
+        # 安全地从 ORM 对象上访问动态设置的私有属性
+        return getattr(self, '_owner_name', "未知用户")
 
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True # 添加 populate_by_name 以确保 property 名称被正确序列化
 
 
 # --- ForumLike Schemas ---
 class ForumLikeResponse(BaseModel):
-    """点赞操作的响应模型"""
     id: int
     owner_id: int
     topic_id: Optional[int] = None
@@ -569,7 +636,6 @@ class ForumLikeResponse(BaseModel):
 
 # --- UserFollow Schemas ---
 class UserFollowResponse(BaseModel):
-    """用户关注操作的响应模型"""
     id: int
     follower_id: int
     followed_id: int
@@ -623,17 +689,16 @@ class McpStatusResponse(BaseModel):
 # --- McpToolDefinition Schemas ---
 class McpToolDefinition(BaseModel):
     """表示一个可供智库LLM调用的MCP工具定义"""
-    tool_id: str  # 工具的唯一ID，可以用于LLM的function_call
-    name: str  # 工具名称，用于显示给用户
-    description: str  # 工具描述，告诉LLM工具的用途
-    mcp_config_id: int  # 关联的MCP配置ID
-    mcp_config_name: str  # 关联的MCP配置名称
-    input_schema: Dict[str, Any]  # 符合OpenAPI Spec的输入JSON Schema
-    output_schema: Dict[str, Any]  # 符合OpenAPI Spec的输出JSON Schema
+    tool_id: str
+    name: str
+    description: str
+    mcp_config_id: int
+    mcp_config_name: str
+    input_schema: Dict[str, Any]
+    output_schema: Dict[str, Any]
 
     class Config:
         from_attributes = True
-
 
 
 # --- UsersSearchEngineConfig Schemas ---
@@ -651,6 +716,7 @@ class UserSearchEngineConfigCreate(UserSearchEngineConfigBase):
     engine_type: Literal["bing", "tavily", "baidu", "google_cse", "custom"]
     pass
 
+
 class UserSearchEngineConfigResponse(UserSearchEngineConfigBase):
     id: int
     owner_id: int
@@ -665,65 +731,58 @@ class UserSearchEngineConfigResponse(UserSearchEngineConfigBase):
 class UserTTSConfigBase(BaseModel):
     name: str = Field(..., description="TTS配置名称，如：'我的OpenAI语音'")
     tts_type: Literal[
-        "openai", # OpenAI的TTS服务类型
-        "gemini", # Google Gemini的TTS服务类型
-        "aliyun", # 阿里云的TTS服务类型
-        "siliconflow" # 硅基流动的TTS服务类型，假设存在
+        "openai", "gemini", "aliyun", "siliconflow"
     ] = Field(..., description="语音提供商类型，如：'openai', 'gemini', 'aliyun', 'siliconflow'")
-    api_key: Optional[str] = Field(None, description="API密钥（未加密）") # 输入时接收的明文密钥
+    api_key: Optional[str] = Field(None, description="API密钥（未加密）")
     base_url: Optional[str] = Field(None, description="API基础URL，如有自定义需求")
     model_id: Optional[str] = Field(None, description="语音模型ID，如：'tts-1', 'gemini-pro'")
     voice_name: Optional[str] = Field(None, description="语音名称或ID，如：'alloy', 'f_cn_zh_anqi_a_f'")
     is_active: Optional[bool] = Field(False, description="是否当前激活的TTS配置，每个用户只能有一个激活配置")
 
-    # 解决 Pydantic 'model_' 命名空间冲突警告
-    model_config = { # Pydantic V2 的配置方式是 model_config
-        'protected_namespaces': () # 解除对 'model_' 命名空间的保护
+    model_config = {
+        'protected_namespaces': ()
     }
 
 
 class UserTTSConfigCreate(UserTTSConfigBase):
-    # 创建时 name 和 tts_type 必须提供，api_key 必须提供
     name: str = Field(..., description="TTS配置名称")
     tts_type: Literal[
         "openai", "gemini", "aliyun", "siliconflow"
     ] = Field(..., description="语音提供商类型")
     api_key: str = Field(..., description="API密钥（未加密）")
 
-    #  解决 Pydantic 'model_' 命名空间冲突警告
     model_config = {
         'protected_namespaces': ()
     }
 
 
 class UserTTSConfigUpdate(UserTTSConfigBase):
-    # 更新时所有字段均为可选
     name: Optional[str] = None
     tts_type: Optional[Literal["openai", "gemini", "aliyun", "siliconflow"]] = None
-    api_key: Optional[str] = None # 更新时如果提供，则更新密钥
+    api_key: Optional[str] = None
     base_url: Optional[str] = None
     model_id: Optional[str] = None
     voice_name: Optional[str] = None
-    is_active: Optional[bool] = None # 允许更新激活状态
+    is_active: Optional[bool] = None
 
-    #  解决 Pydantic 'model_' 命名空间冲突警告
     model_config = {
         'protected_namespaces': ()
     }
 
+
 class UserTTSConfigResponse(UserTTSConfigBase):
     id: int
     owner_id: int
-    api_key_encrypted: Optional[str] = Field(None, description="加密后的API密钥") # 响应时返回的是加密后的密钥
+    api_key_encrypted: Optional[str] = Field(None, description="加密后的API密钥")
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    # 合并 Pydantic 配置，移除 class Config:
     model_config = {
-        'protected_namespaces': (), # 解除对 'model_' 命名空间的保护
-        'from_attributes': True,   # 从 ORM 模型创建实例
-        'json_encoders': {datetime: lambda dt: dt.isoformat() if dt is not None else None} # 将 json_encoders 移到此处
+        'protected_namespaces': (),
+        'from_attributes': True,
+        'json_encoders': {datetime: lambda dt: dt.isoformat() if dt is not None else None}
     }
+
 
 # --- TTSTextRequest Schemas ---
 class TTSTextRequest(BaseModel):
@@ -793,17 +852,118 @@ class KnowledgeBaseResponse(KnowledgeBaseBase):
         }
 
 
-# --- KnowledgeArticle Schemas ---
+# --- KnowledgeBaseFolder Schemas (已更新软链接字段，并修正命名) ---
+class KnowledgeBaseFolderBase(BaseModel):
+    name: str = Field(..., description="文件夹名称")
+    description: Optional[str] = Field(None, description="文件夹描述")
+    parent_id: Optional[int] = Field(None, description="父文件夹ID。传入0表示顶级文件夹（即parent_id为NULL）")
+    order: Optional[int] = Field(None, description="排序")
+    linked_folder_type: Optional[Literal["note_folder", "collected_content_folder"]] = Field(None, description="链接到的外部文件夹类型：'note_folder'（课程笔记文件夹）或'collected_content_folder'（收藏文件夹）")
+    linked_folder_id: Optional[int] = Field(None, description="链接到的外部文件夹ID")
+
+    @model_validator(mode='after')
+    def convert_zero_to_none(self) -> 'KnowledgeBaseFolderBase':
+        if self.parent_id == 0:
+            self.parent_id = None
+        return self
+
+    @model_validator(mode='after')
+    def validate_linked_folder(self) -> 'KnowledgeBaseFolderBase':
+        if self.linked_folder_type and self.linked_folder_id is None:
+            raise ValueError("linked_folder_type 存在时，linked_folder_id 不能为空。")
+        if self.linked_folder_id is not None and not self.linked_folder_type:
+            raise ValueError("linked_folder_id 存在时，linked_folder_type 不能为空，且必须为 'note_folder' 或 'collected_content_folder'。")
+        if self.linked_folder_type and self.linked_folder_id is not None:
+            if self.parent_id is not None:
+                raise ValueError("软链接文件夹只能是顶级文件夹，不能指定父文件夹。")
+        if not self.linked_folder_type and not self.name: # A regular folder (not a linked folder) must have a name
+            raise ValueError("非软链接文件夹必须设置名称。")
+        return self
+
+
+class KnowledgeBaseFolderCreate(KnowledgeBaseFolderBase):
+    pass
+
+
+class KnowledgeBaseFolderResponse(KnowledgeBaseFolderBase):
+    id: int
+    kb_id: int
+    owner_id: int
+    item_count: Optional[int] = Field(None, description="文件夹下直属文章和文档的数量")
+
+    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
+    def parent_folder_name(self) -> Optional[str]:
+        return getattr(self, '_parent_folder_name_for_response', None)
+
+    @property
+    def knowledge_base_name(self) -> Optional[str]:
+        return getattr(self, '_kb_name_for_response', None)
+
+    @property
+    def linked_object_names(self) -> Optional[List[str]]:
+        return getattr(self, '_linked_object_names_for_response', None)
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
+
+
+# --- KnowledgeBaseFolderContentResponse (用于软链接文件夹内容) ---
+class KnowledgeBaseFolderContentResponse(BaseModel): # 注意这里是 BaseModel，因为它不完全继承 KnowledgeBaseFolderBase 的所有字段，而是包含其所需字段并添加新的
+    # 显式声明所有字段，并确保其 @property 的正确性
+    id: int
+    kb_id: int
+    owner_id: int
+    name: str # 文件夹名称是必填的
+
+    # 以下是可选字段，它们可能存在于数据库中
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    order: Optional[int] = None
+    linked_folder_type: Optional[Literal["note_folder", "collected_content_folder"]] = None
+    linked_folder_id: Optional[int] = None
+
+    # 动态填充的字段 (通过 ORM 对象的私有属性设置，通过 @property 暴露)
+    item_count: Optional[int] = Field(None, description="文件夹下直属文章和文档的数量")
+
+    # 注意：这些 @property 定义要与 main.py 中 ORM 对象赋值的属性名保持一致 (带下划线)
+    @property
+    def parent_folder_name(self) -> Optional[str]:
+        return getattr(self, '_parent_folder_name_for_response', None)
+
+    @property
+    def knowledge_base_name(self) -> Optional[str]:
+        return getattr(self, '_kb_name_for_response', None)
+
+    @property
+    def linked_object_names(self) -> Optional[List[str]]:
+        return getattr(self, '_linked_object_names_for_response', None)
+
+    contents: Optional[List[Any]] = Field(None, description="软链接文件夹内实际包含的内容列表（例如笔记或收藏）")
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
+
+
+# --- KnowledgeArticle Schemas (重新添加) ---
 class KnowledgeArticleBase(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     version: Optional[str] = "1.0"
     tags: Optional[str] = None
+    kb_folder_id: Optional[int] = Field(None, description="所属知识库文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
 
+    @model_validator(mode='after')
+    def convert_zero_to_none(self) -> 'KnowledgeArticleBase':
+        if self.kb_folder_id == 0:
+            self.kb_folder_id = None
+        return self
 
 class KnowledgeArticleCreate(KnowledgeArticleBase):
-    kb_id: int
-
+    kb_id: int # KB ID is essential for creation context
 
 class KnowledgeArticleResponse(KnowledgeArticleBase):
     id: int
@@ -813,12 +973,17 @@ class KnowledgeArticleResponse(KnowledgeArticleBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
+    def kb_folder_name(self) -> Optional[str]:
+        return getattr(self, '_kb_folder_name_for_response', None)
+
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
 
 
-# --- KnowledgeDocument (for uploaded files) Schemas ---
+# --- KnowledgeDocument (for uploaded files) Schemas (保留包含 kb_folder_id 的版本) ---
 class KnowledgeDocumentBase(BaseModel):
     file_name: str
     file_path: Optional[str] = None
@@ -826,11 +991,25 @@ class KnowledgeDocumentBase(BaseModel):
     status: Optional[str] = "processing"
     processing_message: Optional[str] = None
     total_chunks: Optional[int] = 0
+    kb_folder_id: Optional[int] = Field(None, description="所属知识库文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
+
+    @model_validator(mode='after')
+    def convert_zero_to_none_kb_doc(self) -> 'KnowledgeDocumentBase':
+        if self.kb_folder_id == 0:
+            self.kb_folder_id = None
+        return self
 
 
 class KnowledgeDocumentCreate(BaseModel):
     kb_id: int
     file_name: str
+    kb_folder_id: Optional[int] = Field(None, description="所属知识库文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
+
+    @model_validator(mode='after')
+    def convert_zero_to_none_kb_doc_create(self) -> 'KnowledgeDocumentCreate':
+        if self.kb_folder_id == 0:
+            self.kb_folder_id = None
+        return self
 
 
 class KnowledgeDocumentResponse(KnowledgeDocumentBase):
@@ -840,9 +1019,14 @@ class KnowledgeDocumentResponse(KnowledgeDocumentBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
+    def kb_folder_name(self) -> Optional[str]:
+        return getattr(self, '_kb_folder_name_for_response', None)
+
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
 
 
 # --- KnowledgeDocumentChunk (for RAG) Schemas ---
@@ -874,7 +1058,7 @@ class CourseBase(BaseModel):
 class CourseCreate(CourseBase):
     pass
 
-class CourseResponse(CourseBase): # CourseResponse 继承 CourseBase，所以新增字段会自动包含
+class CourseResponse(CourseBase):
     id: int
     combined_text: Optional[str] = None
     created_at: datetime
@@ -917,31 +1101,23 @@ class UserCourseResponse(UserCourseBase):
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 
-# --- CourseMaterial Schemas ---
 class CourseMaterialBase(BaseModel):
     title: str = Field(..., description="课程材料标题")
-    type: Literal["file", "link", "text"] = Field(...,
-                                                  description="材料类型：'file' (上传文件), 'link' (外部链接), 'text' (少量文本内容)")
+    type: Literal["file", "link", "text", "video", "image"] = Field(..., description="材料类型：'file', 'link', 'text', 'video', 'image'")
 
-    # 根据类型提供相应的数据
-    url: Optional[str] = Field(None, description="当类型为'link'时，提供外部链接URL")
-    content: Optional[str] = Field(None, description="当类型为'text'时，提供少量文本内容，或作为文件/链接的补充描述")
+    url: Optional[str] = Field(None, description="当类型为'link'或媒体文件时，提供外部链接URL或OSS URL")
+    content: Optional[str] = Field(None, description="当类型为'text'时，提供少量文本内容，或作为文件/链接/媒体的补充描述")
 
-    # 仅在需要更新文件时（PUT操作中替换文件）使用，POST上传文件时不需要客户端提供这些
     original_filename: Optional[str] = Field(None, description="原始上传文件名")
-    file_type: Optional[str] = Field(None, description="文件MIME类型")  # 例如：'application/pdf', 'video/mp4'
+    file_type: Optional[str] = Field(None, description="文件MIME类型")
     size_bytes: Optional[int] = Field(None, description="文件大小（字节）")
 
-    # 验证逻辑：根据 `type` 字段，强制要求 `url` 或 `content`
     @field_validator('url', 'content', 'original_filename', 'file_type', 'size_bytes', mode='before')
     def validate_material_fields(cls, v, info):
-        # 仅在创建时（即没有实例）进行严格检查
-        if not info.data.get('type'):  # 如果type字段都没有，则跳过更深层次的验证
+        if not info.data.get('type'):
             return v
-
         material_type = info.data['type']
         field_name = info.field_name
-
         if material_type == "link":
             if field_name == "url" and not v:
                 raise ValueError("类型为 'link' 时，'url' 字段为必填。")
@@ -952,21 +1128,20 @@ class CourseMaterialBase(BaseModel):
                 raise ValueError("类型为 'text' 时，'content' 字段为必填。")
             if field_name in ['url', 'original_filename', 'file_type', 'size_bytes'] and v is not None:
                 raise ValueError(f"类型为 'text' 时，'{field_name}' 字段不应提供。")
-        # 对于 "file" 类型，这些字段会在后端处理，客户端通常不必提供
-
+        elif material_type in ["file", "image", "video"]:
+            if field_name == "url" and not v:
+                raise ValueError(f"类型为 '{material_type}' 时，'url' 字段为必填。")
         return v
 
 
 class CourseMaterialCreate(CourseMaterialBase):
-    # 创建时 title 和 type 必须提供
     title: str
-    type: Literal["file", "link", "text"]
+    type: Literal["file", "link", "text", "video", "image"]
 
 
 class CourseMaterialUpdate(CourseMaterialBase):
-    # 更新时所有字段均为可选
     title: Optional[str] = None
-    type: Optional[Literal["file", "link", "text"]] = None
+    type: Optional[Literal["file", "link", "text", "video", "image"]] = None
 
 
 class CourseMaterialResponse(CourseMaterialBase):
@@ -1009,9 +1184,8 @@ class MatchedProject(BaseModel):
     project_id: int
     title: str
     description: str
-    similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
-    relevance_score: float   # 最终重排后的相关性得分
-    # 匹配理由字段
+    similarity_stage1: float
+    relevance_score: float
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
 
 
@@ -1022,13 +1196,12 @@ class MatchedCourse(BaseModel):
     instructor: Optional[str] = None
     category: Optional[str] = None
     cover_image_url: Optional[str] = None
-    similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
-    relevance_score: float   # 最终重排后的相关性得分
+    similarity_stage1: float
+    relevance_score: float
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与课程匹配理由及建议")
 
 
 class CountResponse(BaseModel):
-    """通用计数响应模型"""
     count: int = Field(..., description="统计数量")
     description: Optional[str] = Field(None, description="统计的描述信息")
 
@@ -1038,25 +1211,22 @@ class MatchedStudent(BaseModel):
     name: str
     major: str
     skills: Optional[List[SkillWithProficiency]] = Field(None, description="学生的技能列表及熟练度详情")
-    similarity_stage1: float # 通常指第一阶段筛选得分或综合得分
-    relevance_score: float   # 最终重排后的相关性得分
-    # 匹配理由字段
+    similarity_stage1: float
+    relevance_score: float
     match_rationale: Optional[str] = Field(None, description="AI生成的用户与项目匹配理由及建议")
 
 
-# --- 用户登录模型 ---
+# --- User Login Model ---
 class UserLogin(BaseModel):
-    """用户登录时的数据模型，只包含邮箱和密码"""
     email: EmailStr
     password: str
 
 
-# --- JWT 令牌响应模型 ---
+# --- JWT Token Response Model ---
 class Token(BaseModel):
     access_token: str
-    token_type: str = "bearer"  # JWT 令牌类型，通常是 "bearer"
-    # 可以添加过期时间等其他信息
-    expires_in_minutes: int = 0  # 令牌过期时间，单位分钟 (可选)
+    token_type: str = "bearer"
+    expires_in_minutes: int = 0
 
 
 # --- UserLLMConfigUpdate ---
@@ -1075,37 +1245,50 @@ class UserLLMConfigUpdate(BaseModel):
     llm_model_id: Optional[str] = None
 
 
+# --- AI Conversation Message Schemas ---
+class AIConversationMessageBase(BaseModel):
+    role: Literal["user", "assistant", "tool_call", "tool_output"] = Field(..., description="消息角色: user, assistant, tool_call, tool_output")
+    content: str = Field(..., description="消息内容（文本）")
+    tool_calls_json: Optional[Dict[str, Any]] = Field(None, description="如果角色是'tool_call'，存储原始工具调用的JSON数据")
+    tool_output_json: Optional[Dict[str, Any]] = Field(None, description="如果角色是'tool_output'，存储原始工具输出的JSON数据")
+    llm_type_used: Optional[str] = Field(None, description="本次消息使用的LLM类型")
+    llm_model_used: Optional[str] = Field(None, description="本次消息使用的LLM模型ID")
+
+
+class AIConversationMessageCreate(AIConversationMessageBase):
+    pass
+
+
+class AIConversationMessageResponse(AIConversationMessageBase):
+    id: int
+    conversation_id: int
+    sent_at: datetime
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
 # --- AI Q&A Schemas ---
 class AIQARequest(BaseModel):
     query: str
-    kb_ids: Optional[List[int]] = None  # 知识库ID列表，用于RAG
-    note_ids: Optional[List[int]] = None  # 笔记ID列表，用于RAG
-
-    # 新增字段，控制是否允许AI使用工具 (如网络搜索, MCP工具)
+    kb_ids: Optional[List[int]] = None
+    note_ids: Optional[List[int]] = None
     use_tools: Optional[bool] = False
-    # 新增字段，指定优先使用的工具类型，或允许AI自动选择
     preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
-
     llm_model_id: Optional[str] = None
     conversation_id: Optional[int] = Field(None, description="要继续的对话Session ID。如果为空，则开始新的对话。")
 
 
 class AIQAResponse(BaseModel):
-    answer: str  # 统一返回最终答案
-
-    # AIQA相关通用信息
-    answer_mode: str  # "General_mode", "RAG_mode", "Tool_Use_mode"
+    answer: str
+    answer_mode: str
     llm_type_used: Optional[str] = None
     llm_model_used: Optional[str] = None
-
-    # 新增会话ID，用于客户端后续保持会话
     conversation_id: int = Field(..., description="当前问答所关联的对话Session ID。")
-    # 当前轮次产生的所有消息，方便前端显示和区分角色
-    # 例如：用户消息 -> LLM工具调用消息 -> 工具输出消息 -> LLM回复消息
     turn_messages: List["AIConversationMessageResponse"] = Field(..., description="当前轮次（包括用户问题和AI回复）产生的完整消息序列。")
-
-    source_articles: Optional[List[Dict[str, Any]]] = None  # RAG模式下的来源文章
-    search_results: Optional[List[Dict[str, Any]]] = None  # 网络搜索结果摘要，如果使用了网络搜索
+    source_articles: Optional[List[Dict[str, Any]]] = None
+    search_results: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
@@ -1124,43 +1307,11 @@ class AIConversationResponse(AIConversationBase):
     user_id: int
     created_at: datetime
     last_updated: datetime
-
-    # 可以在这里包含最近的消息概要，或总消息数，如果需要
     total_messages_count: Optional[int] = Field(None, description="对话中的总消息数量")
 
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-
-
-# --- AI Conversation Message Schemas ---
-class AIConversationMessageBase(BaseModel):
-    role: Literal["user", "assistant", "tool_call", "tool_output"] = Field(...,
-                                                                           description="消息角色: user, assistant, tool_call, tool_output")
-    content: str = Field(..., description="消息内容（文本）")
-
-    tool_calls_json: Optional[Dict[str, Any]] = Field(None,
-                                                      description="如果角色是'tool_call'，存储原始工具调用的JSON数据")
-    tool_output_json: Optional[Dict[str, Any]] = Field(None,
-                                                       description="如果角色是'tool_output'，存储原始工具输出的JSON数据")
-
-    llm_type_used: Optional[str] = Field(None, description="本次消息使用的LLM类型")
-    llm_model_used: Optional[str] = Field(None, description="本次消息使用的LLM模型ID")
-
-
-class AIConversationMessageCreate(AIConversationMessageBase):
-    pass
-
-
-class AIConversationMessageResponse(AIConversationMessageBase):
-    id: int
-    conversation_id: int
-    sent_at: datetime
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-
 
 # --- Semantic Search Schemas ---
 class SemanticSearchRequest(BaseModel):
@@ -1211,14 +1362,12 @@ class DashboardCourseCard(BaseModel):
 class AchievementBase(BaseModel):
     name: str = Field(..., description="成就名称")
     description: str = Field(..., description="成就描述")
-    # Literal 限制条件类型，例如：PROJECT_COMPLETED_COUNT, COURSE_COMPLETED_COUNT 等
     criteria_type: Literal[
         "PROJECT_COMPLETED_COUNT", "COURSE_COMPLETED_COUNT", "FORUM_LIKES_RECEIVED",
         "DAILY_LOGIN_STREAK", "FORUM_POSTS_COUNT", "CHAT_MESSAGES_SENT_COUNT",
-        "LOGIN_COUNT" # 明确增加登录次数作为条件
+        "LOGIN_COUNT"
     ] = Field(..., description="达成成就的条件类型")
-    criteria_value: float = Field(..., description="达成成就所需的数值门槛") # 使用Float以支持小数，如平均分
-
+    criteria_value: float = Field(..., description="达成成就所需的数值门槛")
     badge_url: Optional[str] = Field(None, description="勋章图片或图标URL")
     reward_points: int = Field(0, description="达成此成就额外奖励的积分")
     is_active: bool = Field(True, description="该成是否启用")
@@ -1229,12 +1378,10 @@ class AchievementBase(BaseModel):
 
 
 class AchievementCreate(AchievementBase):
-    # 创建成就时，所有基础字段都是必需的 (除非它们有默认值)
     pass
 
 
 class AchievementUpdate(AchievementBase):
-    # 更新成就时，所有字段都是可选的
     name: Optional[str] = None
     description: Optional[str] = None
     criteria_type: Optional[Literal[
@@ -1261,20 +1408,17 @@ class UserAchievementResponse(BaseModel):
     achievement_id: int
     earned_at: datetime
     is_notified: bool
-
-    # 包含成就的实际名称和描述，方便前端展示，避免再次查询
     achievement_name: Optional[str] = Field(None, description="成就名称")
     achievement_description: Optional[str] = Field(None, description="成就描述")
     badge_url: Optional[str] = Field(None, description="勋章图片URL")
     reward_points: Optional[int] = Field(None, description="获得此成就奖励的积分")
-
 
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 
-# --- PointsRewardRequest Schema (用于手动发放/扣除积分) ---
+# --- PointsRewardRequest Schema ---
 class PointsRewardRequest(BaseModel):
     user_id: int = Field(..., description="目标用户ID")
     amount: int = Field(..., description="积分变动数量，正数代表增加，负数代表减少")
@@ -1297,4 +1441,3 @@ class PointTransactionResponse(BaseModel):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-

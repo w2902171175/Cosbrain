@@ -8,7 +8,7 @@ import models
 
 load_dotenv()
 # PostgreSQL 数据库连接字符串
-DATABASE_URL = "postgresql+psycopg2://wcr:%40wcr123456@pgm-7xv2wyg2zes246l3co.pg.rds.aliyuncs.com:5432/Cosbrain"
+DATABASE_URL = "postgresql+psycopg2://wcr:%40wcr123456@pgm-7xv2wyg2zes246l3co.pg.rds.aliyuncs.com:5432/guangda"
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL 环境变量未设置。")
