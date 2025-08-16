@@ -1,6 +1,6 @@
 # project/main.py
 from fastapi.responses import PlainTextResponse, Response
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, Response
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, Response, Form
 from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
@@ -20,11 +20,11 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage, ProjectApplication, ProjectMember
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage, ProjectApplication, ProjectMember, KnowledgeBaseFolder,AIConversationTemporaryFile
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse, CollectedContentSharedItemAddRequest,ProjectApplicationResponse, ProjectApplicationProcess, ProjectMemberResponse
-# 导入重构后的 ai_core 模块
-import ai_core
+
+import ai_core,oss_utils
 
 # --- FastAPI 应用实例 ---
 app = FastAPI(
@@ -33,8 +33,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# 挂载静态文件服务，用于提供上传的课程材料
-app.mount("/course_materials", StaticFiles(directory=ai_core.UPLOAD_DIRECTORY), name="course_materials")
 
 # 令牌认证方案
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
@@ -484,10 +482,17 @@ def _get_text_part(value: Any) -> str: # 将 Optional[str] 变为 Any，以处�
 async def _create_collected_content_item_internal(
         db: Session,
         current_user_id: int,
-        content_data: schemas.CollectedContentBase  # 接收 CollectedContentBase，包含所有可能的收藏字段
+        content_data: schemas.CollectedContentBase,  # 接收 CollectedContentBase
+        # New: Add explicit file bytes and object_name if coming from a direct upload
+        uploaded_file_bytes: Optional[bytes] = None,
+        uploaded_file_object_name: Optional[str] = None,
+        uploaded_file_content_type: Optional[str] = None,
+        uploaded_file_original_filename: Optional[str] = None,
+        uploaded_file_size: Optional[int] = None,
 ) -> CollectedContent:
     """
     内部辅助函数：处理收藏内容的创建逻辑，包括从共享项提取信息和生成嵌入。
+    支持直接文件/媒体上传到OSS。
     """
     # 1. 验证目标文件夹是否存在且属于当前用户 (如果提供了folder_id)
     if content_data.folder_id:
@@ -499,10 +504,9 @@ async def _create_collected_content_item_internal(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail="目标文件夹未找到或无权访问。")
 
-    # 2. 处理共享内部资源逻辑
     # 这些变量将存储最终用于创建CollectedContent实例的值
-    final_title = content_data.title  # 优先使用用户提供的或从调用者处传入的title
-    final_type = content_data.type  # 优先使用用户提供的或从调用者处传入的type
+    final_title = content_data.title
+    final_type = content_data.type
     final_url = content_data.url
     final_content = content_data.content
     final_author = content_data.author
@@ -512,8 +516,29 @@ async def _create_collected_content_item_internal(
     final_file_size = content_data.file_size
     final_status = content_data.status
 
-    # 如果有 shared_item_type，说明是收藏内部资源
-    if content_data.shared_item_type and content_data.shared_item_id is not None:
+    # 优先处理直接上传的文件/媒体
+    if uploaded_file_bytes and uploaded_file_object_name and uploaded_file_content_type:
+        final_url = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{uploaded_file_object_name}"
+        final_file_size = uploaded_file_size
+        # 自动推断文件类型
+        if uploaded_file_content_type.startswith("image/"):
+            final_type = "image"
+        elif uploaded_file_content_type.startswith("video/"):
+            final_type = "video"
+        else:
+            final_type = "file"  # 其他文件类型
+
+        # 如果没有提供title，使用文件名作为标题
+        if not final_title and uploaded_file_original_filename:
+            final_title = uploaded_file_original_filename
+
+        # 如果没有提供content，使用文件描述作为内容
+        if not final_content and uploaded_file_original_filename:
+            final_content = f"Uploaded {final_type}: {uploaded_file_original_filename}"
+
+
+    # 如果有 shared_item_type，说明是收藏内部资源 (但直接上传的文件更优先)
+    elif content_data.shared_item_type and content_data.shared_item_id is not None:
         model_map = {
             "project": Project,
             "course": Course,
@@ -536,7 +561,7 @@ async def _create_collected_content_item_internal(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail=f"共享项 (类型: {content_data.shared_item_type}, ID: {content_data.shared_item_id}) 未找到。")
 
-        # 从源数据对象提取信息来填充收藏内容，仅当对应字段在 content_data 中为 None 时才进行填充
+        # 从源数据对象提取信息来填充收藏内容，仅当对应字段在 content_data 中为 None (且未被直接上传文件填充) 时才进行填充
         if final_title is None:
             final_title = getattr(source_item, 'title', None) or getattr(source_item, 'name',
                                                                          None) or f"{content_data.shared_item_type} #{content_data.shared_item_id}"
@@ -544,10 +569,18 @@ async def _create_collected_content_item_internal(
         if final_content is None:
             final_content = getattr(source_item, 'description', None) or getattr(source_item, 'content', None)
 
-        if final_url is None:
-            final_url = getattr(source_item, 'url', None)
-            if final_url is None and content_data.shared_item_type == "chat_message":
-                final_url = getattr(source_item, 'media_url', None)
+        # 从 source_item 提取 URL
+        if final_url is None:  # 只有当用户没有明确提供 URL 且没有直接上传文件时才从共享项中提取
+            if hasattr(source_item, 'url') and source_item.url:
+                final_url = source_item.url
+            # For ChatMessage, check media_url
+            elif hasattr(source_item,
+                         'media_url') and source_item.media_url and content_data.shared_item_type == "chat_message":
+                final_url = source_item.media_url
+            # For KnowledgeDocument, file_path is the OSS URL
+            elif hasattr(source_item, 'file_path') and source_item.file_path and content_data.shared_item_type in [
+                "knowledge_document", "course_material"]:
+                final_url = source_item.file_path  # file_path is now the OSS URL
 
         if final_author is None:
             if hasattr(source_item, 'owner') and source_item.owner and hasattr(source_item.owner, 'name'):
@@ -564,52 +597,65 @@ async def _create_collected_content_item_internal(
             final_tags = getattr(source_item, 'tags', None)
 
         # 自动确定收藏类型，仅当 final_type 为 None 时才进行自动推断
-        if final_type is None:
+        if final_type is None:  # 只有在 content_data.type 为 None (且没有直接上传文件) 时才推断
             if content_data.shared_item_type == "chat_message" and final_url:
-                # 使用正则表达式判断是否为图片URL
-                if_image_url_pattern = r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))"
-                if re.match(if_image_url_pattern, final_url, re.IGNORECASE):
+                if "image/" in (getattr(source_item, 'message_type', '') or getattr(source_item, 'media_url',
+                                                                                    '') or '').lower() or re.match(
+                        r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))", final_url, re.IGNORECASE):
                     final_type = "image"
-                elif final_url.lower().endswith(('.pdf', '.doc', '.docx', '.mp4', '.avi', '.mov')):
-                    final_type = "file"
-                else:
-                    final_type = "url"
-            elif content_data.shared_item_type in ["knowledge_document"] or (
-                    content_data.shared_item_type == "course_material" and hasattr(source_item, 'file_type')):
-                if getattr(source_item, 'file_type', '').startswith('image/'):
-                    final_type = "image"
-                elif getattr(source_item, 'file_type', '') and not getattr(source_item, 'file_type', '').startswith(
-                        'text/plain'):
-                    final_type = "file"
-                else:  # Fallback for documents content or text material
+                elif "video/" in (getattr(source_item, 'message_type', '') or getattr(source_item, 'media_url',
+                                                                                      '') or '').lower() or re.match(
+                        r"(https?://.*\.(?:mp4|avi|mov|mkv))", final_url, re.IGNORECASE):
+                    final_type = "video"
+                elif final_url.lower().endswith(('.pdf', '.doc', '.docx', '.txt')):  # 常见文档格式
+                    final_type = "document"  # Use 'document' for general files
+                elif final_url:  # Everything else with a URL is a link
+                    final_type = "link"
+                else:  # Fallback for text-only chat messages
                     final_type = "text"
+            elif content_data.shared_item_type in ["knowledge_document", "course_material"]:
+                if (hasattr(source_item, 'file_type') and source_item.file_type and source_item.file_type.startswith(
+                        'image/')) or \
+                        (hasattr(source_item, 'type') and source_item.type == 'image'):
+                    final_type = "image"
+                elif (hasattr(source_item, 'file_type') and source_item.file_type and source_item.file_type.startswith(
+                        'video/')) or \
+                        (hasattr(source_item, 'type') and source_item.type == 'video'):
+                    final_type = "video"
+                elif (hasattr(source_item,
+                              'file_type') and source_item.file_type and not source_item.file_type.startswith(
+                        'text/plain')) or \
+                        (hasattr(source_item, 'type') and source_item.type == 'file'):
+                    final_type = "file"  # Fallback to generic_file or document
+                elif (hasattr(source_item, 'type') and source_item.type == 'link'):
+                    final_type = "link"
+                else:  # Fallback for documents content or text material
+                    final_type = "document"  # Use 'document' for general documents/text assets
             elif content_data.shared_item_type in ["project", "course", "forum_topic", "note", "daily_record",
                                                    "knowledge_article"]:
                 final_type = content_data.shared_item_type  # 例如：type="project", type="course"
             else:
                 final_type = "text"  # 兜底，如果没有明确类型，默认文本
 
-        # 兼容旧系统或确保用户可以直接覆盖这些字段
-        # thumbnail, duration, file_size, status 优先使用 user_data 中传入的值
-        # 如果 user_data 中没有，再尝试从 source_item 中提取
-        if final_thumbnail is None: final_thumbnail = getattr(source_item, 'thumbnail', None) or getattr(source_item,
-                                                                                                         'cover_image_url',
-                                                                                                         None)
-        if final_duration is None: final_duration = getattr(source_item, 'duration', None)
-        if final_file_size is None: final_file_size = getattr(source_item, 'file_size', None)
-        if final_status is None: final_status = getattr(source_item, 'status', None)  # 例如 project status, course status
+        # 对于文件大小和持续时间，优先使用传入的content_data，否则从source_item获取
+        if final_file_size is None and hasattr(source_item, 'size_bytes'):
+            final_file_size = getattr(source_item, 'size_bytes')
+        if final_duration is None and hasattr(source_item, 'duration'):
+            final_duration = getattr(source_item, 'duration')
+        if final_thumbnail is None:
+            final_thumbnail = getattr(source_item, 'thumbnail', None) or getattr(source_item, 'cover_image_url', None)
 
-    else:  # 如果不是共享内部资源，则使用用户提交的 title, type, url, content
+    else:  # 如果不是共享内部资源，也不是直接上传文件，则使用用户提交的 title, type, url, content
         if final_type is None: final_type = "text"  # 如果没有提供共享项，且未指定类型，默认为文本
 
     # 如果此时 final_title 依然为空，进行最后兜底
     if not final_title:
         if final_type == "text" and final_content:
             final_title = final_content[:30] + "..." if len(final_content) > 30 else final_content
-        elif final_type == "url" and final_url:
+        elif final_type == "link" and final_url:  # Changed from "url" to "link"
             final_title = final_url
-        elif final_type in ["file", "image"] and content_data.title:  # 如果是文件/图片且用户提供了原始标题
-            final_title = content_data.title
+        elif final_type in ["file", "image", "video"] and (uploaded_file_original_filename or content_data.title):
+            final_title = uploaded_file_original_filename or content_data.title
         elif content_data.shared_item_type and content_data.shared_item_id:
             final_title = f"{content_data.shared_item_type.capitalize()} #{content_data.shared_item_id}"  # 兜底标题格式
         else:
@@ -670,21 +716,20 @@ async def _create_collected_content_item_internal(
     db_item = CollectedContent(
         owner_id=current_user_id,
         folder_id=content_data.folder_id,
-        title=final_title,  # 使用最终确定的标题
-        type=final_type,  # 使用最终确定的类型
-        url=final_url,  # 使用最终确定的URL
-        content=final_content,  # 使用最终确定的内容
-        tags=final_tags,  # 使用最终确定的标签
-        priority=content_data.priority,  # 优先级从传入数据获取
-        notes=content_data.notes,  # 备注从传入数据获取
-        is_starred=content_data.is_starred,  # 星标从传入数据获取
-        thumbnail=final_thumbnail,  # 缩略图使用最终确定的
-        author=final_author,  # 作者使用最终确定的
+        title=final_title,
+        type=final_type,
+        url=final_url,
+        content=final_content,
+        tags=final_tags,
+        priority=content_data.priority,
+        notes=content_data.notes,
+        is_starred=content_data.is_starred,
+        thumbnail=final_thumbnail,
+        author=final_author,
         duration=final_duration,
         file_size=final_file_size,
-        status=final_status,  # 使用最终确定的状态
+        status=final_status,
 
-        # 共享项信息 (直接从 input_data 获取，因为它们是用户明确提供的)
         shared_item_type=content_data.shared_item_type,
         shared_item_id=content_data.shared_item_id,
 
@@ -696,15 +741,24 @@ async def _create_collected_content_item_internal(
     try:
         db.commit()
         db.refresh(db_item)
-        return db_item  # 返回新创建的 CollectedContent 实例
+        return db_item
     except IntegrityError as e:
         db.rollback()
         print(f"ERROR_DB: 创建收藏内容发生完整性约束错误: {e}")
-        if "_owner_shared_item_uc" in str(e):  # 捕获我们新增的唯一约束错误
+        # Rollback logic for uploaded file if DB commit fails
+        if uploaded_file_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(uploaded_file_object_name))
+            print(
+                f"DEBUG_COLLECTED_CONTENT: DB commit failed, attempting to delete OSS file: {uploaded_file_object_name}")
+        if "_owner_shared_item_uc" in str(e):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="此内容已被您收藏。")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建收藏内容失败，可能存在数据冲突。")
     except Exception as e:
         db.rollback()
+        # Rollback logic for uploaded file if any other error
+        if uploaded_file_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(uploaded_file_object_name))
+            print(f"DEBUG_COLLECTED_CONTENT: Unknown error, attempting to delete OSS file: {uploaded_file_object_name}")
         print(f"ERROR_DB: 创建收藏内容发生未知错误: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建收藏内容失败: {e}")
 
@@ -1271,15 +1325,17 @@ async def process_document_in_background(
         document_id: int,
         owner_id: int,
         kb_id: int,
-        filepath: str,
+        oss_object_name: str,
         file_type: str,
         db_session: Session  # 传入会话
 ):
     """
     在后台处理上传的文档：提取文本、分块、生成嵌入并存储。
+    文件从OSS下载后处理，而不是从本地文件系统读取。
     """
     print(f"DEBUG_DOC_PROCESS: 开始后台处理文档 ID: {document_id}")
     loop = asyncio.get_running_loop()
+    db_document = None # 初始化 db_document, 防止在try块中它未被赋值而finally块需要用
     try:
         # 获取文档对象 (需要在新的会话中获取，因为这是独立的任务)
         db_document = db_session.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
@@ -1288,15 +1344,30 @@ async def process_document_in_background(
             return
 
         db_document.status = "processing"
+        db_document.processing_message = "正在从云存储下载文件..."
+        db_session.add(db_document)
+        db_session.commit()
+
+        # 从OSS下载文件内容
+        downloaded_bytes = await oss_utils.download_file_from_oss(oss_object_name)
+        if not downloaded_bytes: # 如果下载失败或文件内容为空
+             db_document.status = "failed"
+             db_document.processing_message = "从云存储下载文件失败或文件内容为空。"
+             db_session.add(db_document)
+             db_session.commit()
+             print(f"ERROR_DOC_PROCESS: 文档 {document_id} 从OSS下载失败或内容为空。")
+             return
+
         db_document.processing_message = "正在提取文本..."
         db_session.add(db_document)
         db_session.commit()
 
         # 1. 提取文本
+        # 传递文件内容的字节流给 ai_core.extract_text_from_document
         extracted_text = await loop.run_in_executor(
             None,  # 使用默认的线程池执行器
             ai_core.extract_text_from_document,  # 要执行的同步函数
-            filepath,  # 传递给函数的第一个参数
+            downloaded_bytes, # 传递字节流
             file_type  # 传递给函数的第二个参数
         )
 
@@ -1342,7 +1413,6 @@ async def process_document_in_background(
         else:
             print(f"DEBUG_EMBEDDING_KEY_DOC: 文档拥有者未配置硅基流动 API 类型或密钥，文档嵌入将使用零向量或默认行为。")
 
-        # **<<<<< 关键修改：在这里添加 await >>>>>**
         all_embeddings = await ai_core.get_embeddings_from_api(
             chunks,
             api_key=owner_llm_api_key,
@@ -1352,8 +1422,6 @@ async def process_document_in_background(
         )
 
         if not all_embeddings or len(all_embeddings) != len(chunks):
-            # ai_core.get_embeddings_from_api 在无法生成时会返回与 chunks 等长的零向量列表
-            # 这里检查的是极端情况或API返回了不完整/不合法的响应
             db_document.status = "failed"
             db_document.processing_message = "嵌入生成失败或数量不匹配。请检查您的LLM配置。"
             db_session.add(db_document)
@@ -1385,15 +1453,130 @@ async def process_document_in_background(
     except Exception as e:
         print(f"ERROR_DOC_PROCESS: 后台处理文档 {document_id} 发生未预期错误: {type(e).__name__}: {e}")
         # 尝试更新文档状态为失败
-        try:
-            db_document.status = "failed"
-            db_document.processing_message = f"处理失败: {e}"
-            db_session.add(db_document)
-            db_session.commit()
-        except Exception as update_e:
-            print(f"CRITICAL_ERROR: 无法更新文档 {document_id} 的失败状态: {update_e}")
+        if db_document: # 仅当 db_document 已经被正确赋值后才尝试更新其状态
+            try:
+                db_document.status = "failed"
+                db_document.processing_message = f"处理失败: {e}"
+                db_session.add(db_document)
+                db_session.commit()
+            except Exception as update_e:
+                print(f"CRITICAL_ERROR: 无法更新文档 {document_id} 的失败状态: {update_e}")
     finally:
         db_session.close()  # 确保会话关闭
+
+
+async def process_ai_temp_file_in_background(
+        temp_file_id: int,
+        user_id: int, # 需要用户ID来获取其LLM配置
+        oss_object_name: str,
+        file_type: str,
+        db_session: Session # 传入会话
+):
+    """
+    在后台处理AI对话的临时上传文件：从OSS下载、提取文本、生成嵌入并更新记录。
+    """
+    print(f"DEBUG_AI_TEMP_FILE_PROCESS: 开始后台处理AI临时文件 ID: {temp_file_id} (OSS: {oss_object_name})")
+    loop = asyncio.get_running_loop()
+    db_temp_file_record = None # 初始化，防止在try块中它未被赋值而finally块需要用
+    try:
+        # 获取临时文件记录 (需要在新的会话中获取，因为这是独立的任务)
+        db_temp_file_record = db_session.query(AIConversationTemporaryFile).filter(AIConversationTemporaryFile.id == temp_file_id).first()
+        if not db_temp_file_record:
+            print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 在后台处理中未找到。")
+            return
+
+        db_temp_file_record.status = "processing"
+        db_temp_file_record.processing_message = "正在从云存储下载文件..."
+        db_session.add(db_temp_file_record)
+        db_session.commit() # 立即提交状态更新，让前端能看到
+
+        # 从OSS下载文件内容
+        downloaded_bytes = await oss_utils.download_file_from_oss(oss_object_name)
+        if not downloaded_bytes:
+             db_temp_file_record.status = "failed"
+             db_temp_file_record.processing_message = "从云存储下载文件失败或文件内容为空。"
+             db_session.add(db_temp_file_record)
+             db_session.commit()
+             print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 从OSS下载失败或内容为空。")
+             return
+
+        db_temp_file_record.processing_message = "正在提取文本..."
+        db_session.add(db_temp_file_record)
+        db_session.commit()
+
+        # 1. 提取文本 (注意：ai_core.extract_text_from_document 是同步的，需要在线程池中运行)
+        extracted_text = await loop.run_in_executor(
+            None,  # 使用默认的线程池执行器
+            ai_core.extract_text_from_document,  # 要执行的同步函数
+            downloaded_bytes,
+            file_type
+        )
+
+        if not extracted_text:
+            db_temp_file_record.status = "failed"
+            db_temp_file_record.processing_message = "文本提取失败或文件内容为空。"
+            db_session.add(db_temp_file_record)
+            db_session.commit()
+            print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 文本提取失败。")
+            return
+
+        # 2. 生成嵌入 (需要获取用户的LLM配置)
+        user_obj = db_session.query(Student).filter(Student.id == user_id).first()
+        owner_llm_api_key = None
+        owner_llm_type = None
+        owner_llm_base_url = None
+        owner_llm_model_id = None
+
+        if user_obj and user_obj.llm_api_type == "siliconflow" and user_obj.llm_api_key_encrypted:
+            try:
+                owner_llm_api_key = ai_core.decrypt_key(user_obj.llm_api_key_encrypted)
+                owner_llm_type = user_obj.llm_api_type
+                owner_llm_base_url = user_obj.llm_api_base_url
+                owner_llm_model_id = user_obj.llm_model_id
+                print(f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 使用用户 {user_id} 配置的硅基流动 API 密钥为临时文件生成嵌入。")
+            except Exception as e:
+                print(f"ERROR_AI_TEMP_FILE_EMBEDDING_KEY: 解密用户 {user_id} 硅基流动 API 密钥失败: {e}。临时文件嵌入将使用零向量或默认行为。")
+                # 即使解密失败，也跳过，使用默认的零向量
+        else:
+            print(f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 用户 {user_id} 未配置硅基流动 API 类型或密钥，临时文件嵌入将使用零向量或默认行为。")
+
+
+        embeddings_list = await ai_core.get_embeddings_from_api(
+            [extracted_text], # 传入提取的文本
+            api_key=owner_llm_api_key,
+            llm_type=owner_llm_type,
+            llm_base_url=owner_llm_base_url,
+            llm_model_id=owner_llm_model_id
+        )
+
+        final_embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        if embeddings_list and len(embeddings_list) > 0:
+            final_embedding = embeddings_list[0]
+        else:
+            print(f"WARNING_AI_TEMP_FILE_EMBEDDING: 临时文件 {temp_file_id} 嵌入生成失败或返回空，使用零向量。")
+
+        # 3. 更新数据库记录
+        db_temp_file_record.extracted_text = extracted_text
+        db_temp_file_record.embedding = final_embedding
+        db_temp_file_record.status = "completed"
+        db_temp_file_record.processing_message = "文件处理完成，文本已提取，嵌入已生成。"
+        db_session.add(db_temp_file_record)
+        db_session.commit()
+        print(f"DEBUG_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 处理完成。")
+
+    except Exception as e:
+        print(f"ERROR_AI_TEMP_FILE_PROCESS: 后台处理AI临时文件 {temp_file_id} 发生未预期错误: {type(e).__name__}: {e}")
+        # 尝试更新文档状态为失败
+        if db_temp_file_record:
+            try:
+                db_temp_file_record.status = "failed"
+                db_temp_file_record.processing_message = f"处理失败: {e}"
+                db_session.add(db_temp_file_record)
+                db_session.commit()
+            except Exception as update_e:
+                print(f"CRITICAL_ERROR: 无法更新AI临时文件 {temp_file_id} 的失败状态: {update_e}")
+    finally:
+        db_session.close() # 确保会话关闭
 
 
 # --- 用户认证与管理接口 ---
@@ -3061,89 +3244,273 @@ async def get_dashboard_courses(
 # --- 笔记管理接口 ---
 @app.post("/notes/", response_model=schemas.NoteResponse, summary="创建新笔记")
 async def create_note(
-        note_data: schemas.NoteBase,
+        note_data: schemas.NoteBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
+        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为笔记的附件"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 用户 {current_user_id} 尝试创建笔记: {note_data.title}")
+    """
+    为当前用户创建一条新笔记。
+    支持直接上传文件作为附件，并支持关联课程章节信息或用户自定义文件夹。
+    后端会根据记录内容生成 combined_text 和 embedding。
+    """
+    print(
+        f"DEBUG: 用户 {current_user_id} 尝试创建笔记。标题: {note_data.title}，有文件：{bool(file)}，文件夹ID：{note_data.folder_id}，课程ID：{note_data.course_id}")
 
-    # 组合文本用于嵌入
-    combined_text = (note_data.title or "") + ". " + (note_data.content or "") + ". " + (note_data.tags or "")
-    if not combined_text.strip():  # 如果组合文本为空，直接跳过嵌入
-        combined_text = ""
+    # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
+    oss_object_name_for_rollback = None
 
-    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+    try:
+        # 0. 验证关联关系的存在和权限：课程/章节 或 文件夹
+        if note_data.course_id:
+            db_course = db.query(Course).filter(Course.id == note_data.course_id).first()
+            if not db_course:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的课程不存在。")
 
-    # 获取当前用户的LLM配置用于嵌入生成
-    note_owner = db.query(Student).filter(Student.id == current_user_id).first()
-    owner_llm_api_key = None
-    owner_llm_type = None
-    owner_llm_base_url = None
-    owner_llm_model_id = None
+        if note_data.folder_id is not None:  # 如果指定了文件夹ID (0 已经被 schema 转换为 None)
+            target_folder = db.query(Folder).filter(
+                Folder.id == note_data.folder_id,
+                Folder.owner_id == current_user_id
+            ).first()
+            if not target_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="目标文件夹未找到或无权访问。")
 
-    if note_owner.llm_api_type == "siliconflow" and note_owner.llm_api_key_encrypted:
-        try:
-            owner_llm_api_key = ai_core.decrypt_key(note_owner.llm_api_key_encrypted)
-            owner_llm_type = note_owner.llm_api_type
-            owner_llm_base_url = note_owner.llm_api_base_url
-            owner_llm_model_id = note_owner.llm_model_id
-            print(f"DEBUG_EMBEDDING_KEY: 使用笔记创建者配置的硅基流动 API 密钥为笔记生成嵌入。")
-        except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密笔记创建者硅基流动 API 密钥失败: {e}。笔记嵌入将使用零向量。")
-            owner_llm_api_key = None  # 解密失败，不要使用
-    else:
-        print(f"DEBUG_EMBEDDING_KEY: 笔记创建者未配置硅基流动 API 类型或密钥，笔记嵌入将使用零向量或默认行为。")
+        # 1. 处理文件上传（如果提供了文件）
+        final_media_url = note_data.media_url
+        final_media_type = note_data.media_type
+        final_original_filename = note_data.original_filename
+        final_media_size_bytes = note_data.media_size_bytes
 
-    if combined_text:
-        try:
-            new_embedding = await ai_core.get_embeddings_from_api(
-                [combined_text],
-                api_key=owner_llm_api_key,
-                llm_type=owner_llm_type,
-                llm_base_url=owner_llm_base_url,
-                llm_model_id=owner_llm_model_id
-            )
-            if new_embedding:
-                embedding = new_embedding[0]
-            else:
-                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
-            print(f"DEBUG: 笔记嵌入向量已生成。")
-        except Exception as e:
-            print(f"ERROR: 生成笔记嵌入向量失败: {e}. 嵌入向量设为零。")
-            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
-    else:
-        print(f"WARNING_EMBEDDING: 笔记 combined_text 为空，嵌入向量设为零。")
+        if file:
+            if final_media_type not in ["file", "image", "video"]:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="当上传文件时，media_type 必须为 'file', 'image' 或 'video'。")
 
-    db_note = Note(
-        owner_id=current_user_id,
-        title=note_data.title,
-        content=note_data.content,
-        note_type=note_data.note_type,
-        course_id=note_data.course_id,
-        tags=note_data.tags,
-        combined_text=combined_text,
-        embedding=embedding
-    )
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            content_type = file.content_type
+            file_size = file.size
 
-    db.add(db_note)
-    db.commit()
-    db.refresh(db_note)
-    print(f"DEBUG: 笔记 (ID: {db_note.id}) 创建成功。")
-    return db_note
+            # 根据文件类型确定OSS存储路径前缀
+            oss_path_prefix = "note_files"  # 默认文件
+            if content_type.startswith('image/'):
+                oss_path_prefix = "note_images"
+            elif content_type.startswith('video/'):
+                oss_path_prefix = "note_videos"
+
+            current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+            oss_object_name_for_rollback = current_oss_object_name  # 记录用于回滚
+
+            try:
+                final_media_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes,
+                    object_name=current_oss_object_name,
+                    content_type=content_type
+                )
+                final_original_filename = file.filename
+                final_media_size_bytes = file_size
+                # 确保 media_type 与实际上传的文件类型一致
+                if content_type.startswith('image/'):
+                    final_media_type = "image"
+                elif content_type.startswith('video/'):
+                    final_media_type = "video"
+                else:
+                    final_media_type = "file"
+
+                print(f"DEBUG: 文件 '{file.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_media_url}")
+
+            except HTTPException as e:  # oss_utils.upload_file_to_oss 会抛出 HTTPException
+                print(f"ERROR: 上传文件到OSS失败: {e.detail}")
+                raise e  # 直接重新抛出，让FastAPI处理
+            except Exception as e:
+                print(f"ERROR: 上传文件到OSS时发生未知错误: {e}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"文件上传到云存储失败: {e}")
+        else:  # 没有上传文件，但可能提供了 media_url (例如用户粘贴的外部链接)
+            # 验证 media_url 和 media_type 的一致性 (由 schema 校验，这里不重复，但假设通过)
+            pass
+
+        # 2. 组合文本用于嵌入
+        # 根据是课程笔记还是文件夹笔记，调整combined_text内容
+        context_identifier = ""
+        if note_data.course_id:
+            course_title = db_course.title if db_course else f"课程 {note_data.course_id}"
+            context_identifier = f"课程: {course_title}. 章节: {note_data.chapter or '未指定'}."
+        elif note_data.folder_id is not None:
+            folder_name = target_folder.name if target_folder else f"文件夹 {note_data.folder_id}"
+            context_identifier = f"文件夹: {folder_name}."
+
+        combined_text = ". ".join(filter(None, [
+            _get_text_part(note_data.title),
+            _get_text_part(note_data.content),
+            _get_text_part(note_data.tags),
+            _get_text_part(context_identifier),  # 包含课程/文件夹上下文
+            _get_text_part(final_media_url),  # 包含媒体URL
+            _get_text_part(final_media_type),  # 包含媒体类型
+            _get_text_part(final_original_filename),  # 包含原始文件名
+        ])).strip()
+        if not combined_text:
+            combined_text = ""
+
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+        # 获取当前用户的LLM配置用于嵌入生成
+        note_owner = db.query(Student).filter(Student.id == current_user_id).first()
+        owner_llm_api_key = None
+        owner_llm_type = None
+        owner_llm_base_url = None
+        owner_llm_model_id = None
+
+        if note_owner and note_owner.llm_api_type == "siliconflow" and note_owner.llm_api_key_encrypted:
+            try:
+                owner_llm_api_key = ai_core.decrypt_key(note_owner.llm_api_key_encrypted)
+                owner_llm_type = note_owner.llm_api_type
+                owner_llm_base_url = note_owner.llm_api_base_url
+                owner_llm_model_id = note_owner.llm_model_id
+                print(f"DEBUG_EMBEDDING_KEY: 使用笔记创建者配置的硅基流动 API 密钥为笔记生成嵌入。")
+            except Exception as e:
+                print(f"ERROR_EMBEDDING_KEY: 解密笔记创建者硅基流动 API 密钥失败: {e}。笔记嵌入将使用零向量。")
+                owner_llm_api_key = None
+        else:
+            print(f"DEBUG_EMBEDDING_KEY: 笔记创建者未配置硅基流动 API 类型或密钥，笔记嵌入将使用零向量或默认行为。")
+
+        if combined_text:
+            try:
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [combined_text],
+                    api_key=owner_llm_api_key,
+                    llm_type=owner_llm_type,
+                    llm_base_url=owner_llm_base_url,
+                    llm_model_id=owner_llm_model_id
+                )
+                if new_embedding:
+                    embedding = new_embedding[0]
+                else:
+                    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
+                print(f"DEBUG: 笔记嵌入向量已生成。")
+            except Exception as e:
+                print(f"ERROR: 生成笔记嵌入向量失败: {e}. 嵌入向量设为零。")
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
+            print(f"WARNING_EMBEDDING: 笔记 combined_text 为空，嵌入向量设为零。")
+
+        # 3. 创建数据库记录
+        db_note = Note(
+            owner_id=current_user_id,
+            title=note_data.title,
+            content=note_data.content,
+            note_type=note_data.note_type,
+            course_id=note_data.course_id,  # 存储课程ID
+            tags=note_data.tags,
+            chapter=note_data.chapter,  # 存储章节信息
+            media_url=final_media_url,  # 存储最终的媒体URL
+            media_type=final_media_type,  # 存储最终的媒体类型
+            original_filename=final_original_filename,  # 存储原始文件名
+            media_size_bytes=final_media_size_bytes,  # 存储文件大小
+            folder_id=note_data.folder_id,  # <<< 存储文件夹ID
+            combined_text=combined_text,
+            embedding=embedding
+        )
+
+        db.add(db_note)
+        db.commit()
+        db.refresh(db_note)
+        print(f"DEBUG: 笔记 (ID: {db_note.id}) 创建成功。")
+        return db_note
+
+    except HTTPException as e:  # 捕获FastAPI异常，包括OSS上传时抛出的
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: HTTP exception, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        raise e
+    except Exception as e:
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: Unknown error, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        print(f"ERROR_CREATE_NOTE_GLOBAL: 创建笔记失败，事务已回滚: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建笔记失败: {e}")
 
 
 @app.get("/notes/", response_model=List[schemas.NoteResponse], summary="获取当前用户所有笔记")
 async def get_all_notes(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        note_type: Optional[str] = None
+        note_type: Optional[str] = None,
+        course_id: Optional[int] = Query(None, description="按课程ID过滤笔记"),  # 新增课程ID过滤
+        chapter: Optional[str] = Query(None, description="按章节名称过滤笔记"),  # 新增章节过滤
+        folder_id: Optional[int] = Query(None,
+                                         description="按自定义文件夹ID过滤笔记。传入0表示顶级文件夹（即folder_id为NULL）"),
+        # 新增文件夹ID过滤
+        tags: Optional[str] = Query(None, description="按标签过滤，支持模糊匹配"),  # 标签过滤 (从原有的tag改为tags)
+        # Note: 原来的 tag 参数名改为 tags，与 Note 模型字段名保持一致，更清晰。
+        limit: int = Query(100, description="返回的最大笔记数量"),  # 新增 limit/offset
+        offset: int = Query(0, description="查询的偏移量")  # 新增 limit/offset
+
 ):
+    """
+    获取当前用户的所有笔记。
+    可以按笔记类型 (note_type)，关联的课程ID (course_id)，章节 (chapter)，自定义文件夹ID (folder_id)，或标签 (tags) 进行过滤。
+    """
     print(f"DEBUG: 获取用户 {current_user_id} 的所有笔记。")
+    print(
+        f"DEBUG_NOTE_QUERY: note_type={note_type}, course_id={course_id}, chapter={chapter}, folder_id={folder_id}, tags={tags}")
+
     query = db.query(Note).filter(Note.owner_id == current_user_id)
+
+    # 过滤条件优先级或互斥性检查：
+    # 根据 NoteBase 的验证逻辑，笔记不能同时属于课程/章节和自定义文件夹。
+    # 因此，查询时也应保持这种互斥性。
+
+    if folder_id is not None:  # 如果指定了 folder_id (包括 0，表示顶级文件夹)
+        if course_id is not None or (chapter is not None and chapter.strip() != ""):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="无法同时按课程/章节和自定义文件夹ID过滤笔记。请选择一种方式。")
+        if folder_id == 0:  # 0 表示顶级文件夹，即 folder_id 为 NULL
+            query = query.filter(Note.folder_id.is_(None))
+        else:
+            query = query.filter(Note.folder_id == folder_id)
+    elif course_id is not None:  # 如果没有指定 folder_id，但指定了 course_id
+        query = query.filter(Note.course_id == course_id)
+        if chapter is not None and chapter.strip() != "":
+            query = query.filter(Note.chapter == chapter)
+    elif chapter is not None and chapter.strip() != "":  # 如果只指定了 chapter 但没有 course_id
+        # 按照 schemas.py 的验证，没有 course_id 的 chapter 是非法的，但这里可以做一个柔性处理或额外提示
+        # 不过为了严格性，如果仅有 chapter 没有 course_id 则不进行过滤或报错
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="若要按章节过滤，必须同时提供课程ID (course_id)。")
+    else:  # 默认情况：不按课程/章节也不按文件夹过滤，获取所有非课程非文件夹的笔记，或者所有笔记
+        # 如果没有指定任何组织方式的过滤，可以默认显示所有非课程非文件夹的笔记，或者所有笔记。
+        # 这里选择默认不加folder_id和course_id的过滤，即显示所有无关联的笔记，或者根据其他过滤器显示。
+        # 如果需要显示所有笔记，则此处不加任何 folder_id 或 chapter/course_id 相关的 filter
+        pass
+
     if note_type:
         query = query.filter(Note.note_type == note_type)
 
-    notes = query.order_by(Note.created_at.desc()).all()
+    if tags:  # 修改了原来 tag 变量名
+        # 使用 LIKE 进行模糊匹配，因为标签是逗号分隔字符串
+        query = query.filter(Note.tags.ilike(f"%{tags}%"))
+
+    # 应用排序和分页
+    notes = query.order_by(Note.created_at.desc()).offset(offset).limit(limit).all()
+
+    # Optional: Fill folder name and course name for response based on IDs for better display
+    for note in notes:
+        # 如果 note 有 folder_id，加载文件夹名称
+        if note.folder_id:
+            # 假定 Folder model 有 name 属性
+            folder_obj = db.query(Folder).filter(Folder.id == note.folder_id).first()
+            if folder_obj:
+                note.folder_name_for_response = folder_obj.name  # Assign to a temporary or @property in schema
+        # 如果 note 有 course_id，加载课程名称
+        if note.course_id:
+            course_obj = db.query(Course).filter(Course.id == note.course_id).first()
+            if course_obj:
+                note.course_title_for_response = course_obj.title  # Assign to a temporary or @property in schema
+
     print(f"DEBUG: 获取到 {len(notes)} 条笔记。")
     return notes
 
@@ -3158,76 +3525,289 @@ async def get_note_by_id(
     note = db.query(Note).filter(Note.id == note_id, Note.owner_id == current_user_id).first()
     if not note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found or not authorized")
+
+    # 填充文件夹名称和课程标题用于响应
+    # 如果笔记有 folder_id，加载文件夹名称
+    if note.folder_id:
+        folder_obj = db.query(Folder).filter(Folder.id == note.folder_id).first()
+        if folder_obj:
+            note.folder_name_for_response = folder_obj.name
+
+    # 如果笔记有 course_id，加载课程名称
+    if note.course_id:
+        course_obj = db.query(Course).filter(Course.id == note.course_id).first()
+        if course_obj:
+            note.course_title_for_response = course_obj.title
+
     return note
 
 
 @app.put("/notes/{note_id}", response_model=schemas.NoteResponse, summary="更新指定笔记")
 async def update_note(
         note_id: int,
-        note_data: schemas.NoteBase,
+        note_data: schemas.NoteBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
+        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为笔记的附件"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 更新笔记 ID: {note_id}。")
+    """
+    更新指定ID的笔记内容。用户只能更新自己的记录。
+    支持替换附件文件和更新所属课程/章节或自定义文件夹。更新后会重新生成 combined_text 和 embedding。
+    """
+    print(f"DEBUG: 更新笔记 ID: {note_id}。有文件: {bool(file)}")
     db_note = db.query(Note).filter(Note.id == note_id, Note.owner_id == current_user_id).first()
     if not db_note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found or not authorized")
 
-    update_data = note_data.dict(exclude_unset=True)  # 只更新传入的字段
-    for key, value in update_data.items():
-        setattr(db_note, key, value)
+    update_dict = note_data.dict(exclude_unset=True)
 
-    # 重新生成 combined_text
-    db_note.combined_text = (db_note.title or "") + ". " + (db_note.content or "") + ". " + (db_note.tags or "")
-    if not db_note.combined_text.strip():
-        db_note.combined_text = ""
+    old_media_oss_object_name = None  # 用于删除旧文件的OSS对象名称
+    new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
-    # 获取当前用户的LLM配置用于嵌入更新
-    note_owner = db.query(Student).filter(Student.id == current_user_id).first()
-    owner_llm_api_key = None
-    owner_llm_type = None
-    owner_llm_base_url = None
-    owner_llm_model_id = None
+    # 从现有的 db_note.media_url 中提取旧的 OSS object name
+    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    if db_note.media_url and db_note.media_url.startswith(oss_base_url_parsed):
+        old_media_oss_object_name = db_note.media_url.replace(oss_base_url_parsed, '', 1)
 
-    if note_owner.llm_api_type == "siliconflow" and note_owner.llm_api_key_encrypted:
-        try:
-            owner_llm_api_key = ai_core.decrypt_key(note_owner.llm_api_key_encrypted)
-            owner_llm_type = note_owner.llm_api_type
-            owner_llm_base_url = note_owner.llm_api_base_url
-            owner_llm_model_id = note_owner.llm_model_id
-            print(f"DEBUG_EMBEDDING_KEY: 使用笔记创建者配置的硅基流动 API 密钥更新笔记嵌入。")
-        except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密笔记创建者硅基流动 API 密钥失败: {e}。笔记嵌入将使用零向量。")
-            owner_llm_api_key = None  # 解密失败，不要使用
-    else:
-        print(f"DEBUG_EMBEDDING_KEY: 笔记创建者未配置硅基流动 API 类型或密钥，笔记嵌入将使用零向量或默认行为。")
+    try:
+        # 0. 验证关联关系的存在和权限：课程/章节 或 文件夹（如果这些字段被修改）
+        # 检查 course_id 和 chapter 的变化
+        new_course_id = update_dict.get("course_id", db_note.course_id)
+        new_chapter = update_dict.get("chapter", db_note.chapter)
 
-    if db_note.combined_text:
-        try:
-            new_embedding = await ai_core.get_embeddings_from_api(
-                [db_note.combined_text],
-                api_key=owner_llm_api_key,
-                llm_type=owner_llm_type,
-                llm_base_url=owner_llm_base_url,
-                llm_model_id=owner_llm_model_id
+        if new_course_id is not None:
+            db_course = db.query(Course).filter(Course.id == new_course_id).first()
+            if not db_course:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的课程不存在。")
+
+        # 检查 folder_id 的变化
+        new_folder_id = update_dict.get("folder_id", db_note.folder_id)
+        if new_folder_id is not None:  # 如果指定了文件夹ID (0 已经被 schema 转换为 None)
+            target_folder = db.query(Folder).filter(
+                Folder.id == new_folder_id,
+                Folder.owner_id == current_user_id
+            ).first()
+            if not target_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="目标文件夹未找到或无权访问。")
+
+        # Re-apply mutual exclusivity validation for course/chapter vs folder
+        is_course_note_candidate = (new_course_id is not None) or (
+                    new_chapter is not None and new_chapter.strip() != "")
+        is_folder_note_candidate = (new_folder_id is not None)
+
+        if is_course_note_candidate and is_folder_note_candidate:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="笔记不能同时关联到课程/章节和自定义文件夹。请选择一种组织方式。")
+
+        # If it's a course note, course_id must accompany chapter
+        if (new_chapter is not None and new_chapter.strip() != "") and (new_course_id is None):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="为了关联章节信息，课程ID (course_id) 不能为空。")
+
+        # Check if media_url or media_type are explicitly being cleared or updated to non-media type
+        media_url_being_cleared = "media_url" in update_dict and update_dict["media_url"] is None
+        media_type_being_set = "media_type" in update_dict
+        new_media_type_from_data = update_dict.get("media_type")
+
+        should_delete_old_media_file = False
+        if old_media_oss_object_name:
+            if media_url_being_cleared:  # media_url is set to None
+                should_delete_old_media_file = True
+            elif media_type_being_set and new_media_type_from_data is None:  # media_type is set to None
+                should_delete_old_media_file = True
+            elif media_type_being_set and (
+                    new_media_type_from_data not in ["image", "video", "file"]):  # media_type changes to non-media
+                should_delete_old_media_file = True
+
+        if should_delete_old_media_file:
+            try:
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                print(
+                    f"DEBUG: Deleted old OSS file {old_media_oss_object_name} due to media content clearance/type change.")
+            except Exception as e:
+                print(
+                    f"ERROR: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during media content clearance: {e}")
+
+            # 清空数据库中的相关媒体字段
+            db_note.media_url = None
+            db_note.media_type = None
+            db_note.original_filename = None
+            db_note.media_size_bytes = None
+
+        # 1. 处理文件上传（如果提供了新文件）
+        if file:
+            target_media_type = update_dict.get("media_type")  # Get proposed media_type from client
+            if target_media_type not in ["file", "image", "video"]:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="当上传文件时，media_type 必须为 'file', 'image' 或 'video'。")
+
+            # If new file replaces existing media, delete old OSS file
+            if old_media_oss_object_name and not should_delete_old_media_file:  # Avoid double deletion
+                try:
+                    asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                    print(f"DEBUG: Deleted old OSS file: {old_media_oss_object_name} for replacement.")
+                except Exception as e:
+                    print(
+                        f"ERROR: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during replacement: {e}")
+
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            content_type = file.content_type
+            file_size = file.size
+
+            oss_path_prefix = "note_files"
+            if content_type.startswith('image/'):
+                oss_path_prefix = "note_images"
+            elif content_type.startswith('video/'):
+                oss_path_prefix = "note_videos"
+
+            new_uploaded_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+
+            # Upload to OSS
+            db_note.media_url = await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=new_uploaded_oss_object_name,
+                content_type=content_type
             )
-            if new_embedding:
-                db_note.embedding = new_embedding[0]
-            else:
-                db_note.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
-            print(f"DEBUG: 笔记 {db_note.id} 嵌入向量已更新。")
-        except Exception as e:
-            print(f"ERROR: 更新笔记 {db_note.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
-            db_note.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
-    else:
-        print(f"WARNING_EMBEDDING: 笔记 combined_text 为空，嵌入向量设为零。")
-        db_note.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+            db_note.original_filename = file.filename
+            db_note.media_size_bytes = file_size
+            db_note.media_type = target_media_type  # Use the media_type from request body
 
-    db.add(db_note)
-    db.commit()
-    db.refresh(db_note)
-    print(f"DEBUG: 笔记 {db_note.id} 更新成功。")
-    return db_note
+            print(f"DEBUG: New file '{file.filename}' uploaded to OSS: {db_note.media_url}")
+
+            # If `content` was not provided in update, and it was previously text, clear it for media-only note
+            if "content" not in update_dict and db_note.content:
+                db_note.content = None
+
+        elif "media_url" in update_dict and update_dict[
+            "media_url"] is not None and not file:  # User provided a new URL but no file
+            # If new media_url is provided without a file, it's assumed to be an external URL
+            db_note.media_url = update_dict["media_url"]
+            db_note.media_type = update_dict.get("media_type")  # Should be provided via schema validator
+            db_note.original_filename = None
+            db_note.media_size_bytes = None
+            # content is optional in this case (already handled by schema)
+
+        # 2. 应用其他 update_dict 中的字段
+        # 清理掉已通过文件上传或手动处理的 media 字段，防止再次覆盖
+        fields_to_skip_manual_update = ["media_url", "media_type", "original_filename", "media_size_bytes", "file"]
+        for key, value in update_dict.items():
+            if key in fields_to_skip_manual_update:
+                continue
+            if hasattr(db_note, key):
+                if key == "content":  # Must not be empty if there's no media
+                    if value is None or (isinstance(value, str) and not value.strip()):
+                        if db_note.media_url is None:  # If no media, content must be there
+                            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="笔记内容不能为空。")
+                        else:  # If there's media, content can be cleared
+                            setattr(db_note, key, value)
+                    else:  # Content value is not None/empty
+                        setattr(db_note, key, value)
+                elif key == "title":  # Title is mandatory, cannot be None or empty
+                    if value is None or (isinstance(value, str) and not value.strip()):
+                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="笔记标题不能为空。")
+                    setattr(db_note, key, value)
+                elif key == "folder_id":  # Handle folder_id separately if it's 0 to mean None
+                    if value == 0:
+                        db_note.folder_id = None
+                    else:
+                        db_note.folder_id = value
+                else:  # For other fields, just apply
+                    setattr(db_note, key, value)
+
+        # 3. 重新生成 combined_text
+        context_identifier = ""
+        # 优先使用更新后的值来判断
+        current_course_id = db_note.course_id
+        current_chapter = db_note.chapter
+        current_folder_id = db_note.folder_id
+
+        if current_course_id:
+            db_course_for_text = db.query(Course).filter(Course.id == current_course_id).first()
+            course_title = db_course_for_text.title if db_course_for_text else f"课程 {current_course_id}"
+            context_identifier = f"课程: {course_title}. 章节: {current_chapter or '未指定'}."
+        elif current_folder_id is not None:
+            db_folder_for_text = db.query(Folder).filter(Folder.id == current_folder_id).first()
+            folder_name = db_folder_for_text.name if db_folder_for_text else f"文件夹 {current_folder_id}"
+            context_identifier = f"文件夹: {folder_name}."
+
+        db_note.combined_text = ". ".join(filter(None, [
+            _get_text_part(db_note.title),
+            _get_text_part(db_note.content),
+            _get_text_part(db_note.tags),
+            _get_text_part(context_identifier),  # 包含课程/文件夹上下文
+            _get_text_part(db_note.media_url),  # 包含新的媒体URL
+            _get_text_part(db_note.media_type),  # 包含新的媒体类型
+            _get_text_part(db_note.original_filename),  # 包含原始文件名
+        ])).strip()
+        if not db_note.combined_text:
+            db_note.combined_text = ""
+
+        # 4. 获取当前用户的LLM配置用于嵌入更新
+        note_owner = db.query(Student).filter(Student.id == current_user_id).first()
+        owner_llm_api_key = None
+        owner_llm_type = None
+        owner_llm_base_url = None
+        owner_llm_model_id = None
+
+        if note_owner and note_owner.llm_api_type == "siliconflow" and note_owner.llm_api_key_encrypted:
+            try:
+                owner_llm_api_key = ai_core.decrypt_key(note_owner.llm_api_key_encrypted)
+                owner_llm_type = note_owner.llm_api_type
+                owner_llm_base_url = note_owner.llm_api_base_url
+                owner_llm_model_id = note_owner.llm_model_id
+                print(f"DEBUG_EMBEDDING_KEY: 使用笔记创建者配置的硅基流动 API 密钥更新笔记嵌入。")
+            except Exception as e:
+                print(f"ERROR_EMBEDDING_KEY: 解密笔记创建者硅基流动 API 密钥失败: {e}。笔记嵌入将使用零向量。")
+                owner_llm_api_key = None
+        else:
+            print(f"DEBUG_EMBEDDING_KEY: 笔记创建者未配置硅基流动 API 类型或密钥，笔记嵌入将使用零向量或默认行为。")
+
+        embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+        if db_note.combined_text:
+            try:
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [db_note.combined_text],
+                    api_key=owner_llm_api_key,
+                    llm_type=owner_llm_type,
+                    llm_base_url=owner_llm_base_url,
+                    llm_model_id=owner_llm_model_id
+                )
+                if new_embedding:
+                    embedding_recalculated = new_embedding[0]
+                print(f"DEBUG: 笔记 {db_note.id} 嵌入向量已更新。")
+            except Exception as e:
+                print(f"ERROR: 更新笔记 {db_note.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+                embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
+            print(f"WARNING: 笔记 combined_text 为空，嵌入向量设为零。")
+            embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+
+        db_note.embedding = embedding_recalculated  # 赋值给DB对象
+
+        db.add(db_note)
+        db.commit()
+        db.refresh(db_note)
+        print(f"DEBUG: 笔记 {db_note.id} 更新成功。")
+        return db_note
+
+    except HTTPException as e:  # 捕获FastAPI异常，包括OSS上传时抛出的
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(f"DEBUG: HTTP exception, attempting to delete OSS file: {new_uploaded_oss_object_name}")
+        raise e
+    except Exception as e:
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(f"DEBUG: Unknown error, attempting to delete OSS file: {new_uploaded_oss_object_name}")
+        print(f"ERROR_UPDATE_NOTE_GLOBAL: 更新笔记失败，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"更新笔记失败: {e}",
+        )
 
 
 @app.delete("/notes/{note_id}", summary="删除指定笔记")
@@ -3236,14 +3816,34 @@ async def delete_note(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
+    """
+    删除指定ID的笔记。用户只能删除自己的记录。
+    如果笔记关联了文件或媒体（通过URL指向OSS），将同时删除OSS上的文件。
+    """
     print(f"DEBUG: 删除笔记 ID: {note_id}。")
     db_note = db.query(Note).filter(Note.id == note_id, Note.owner_id == current_user_id).first()
     if not db_note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found or not authorized")
 
+    # <<< 新增：如果笔记关联了文件或媒体，并且是OSS URL，则尝试从OSS删除文件 >>>
+    if db_note.media_type in ["image", "video", "file"] and db_note.media_url:
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        # 从OSS URL中解析出 object_name
+        object_name = db_note.media_url.replace(oss_base_url_parsed, '', 1) if db_note.media_url.startswith(oss_base_url_parsed) else None
+
+        if object_name:
+            try:
+                await oss_utils.delete_file_from_oss(object_name)
+                print(f"DEBUG_NOTE: 删除了笔记 {note_id} 关联的OSS文件: {object_name}")
+            except Exception as e:
+                print(f"ERROR_NOTE: 删除笔记 {note_id} 关联的OSS文件 {object_name} 失败: {e}")
+                # 即使OSS文件删除失败，也应该允许数据库记录被删除
+        else:
+            print(f"WARNING_NOTE: 笔记 {note_id} 的 media_url ({db_note.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
+
     db.delete(db_note)
     db.commit()
-    print(f"DEBUG: 笔记 {note_id} 删除成功。")
+    print(f"DEBUG: 笔记 {note_id} 及其关联文件删除成功。")
     return {"message": "Note deleted successfully"}
 
 
@@ -3356,44 +3956,732 @@ async def delete_knowledge_base(
     return {"message": "Knowledge base and its articles/documents deleted successfully"}
 
 
-# --- 知识文章管理接口 ---
+# --- 知识库文件夹管理接口 ---
+@app.post("/knowledge-bases/{kb_id}/folders/", response_model=schemas.KnowledgeBaseFolderResponse,
+          summary="在指定知识库中创建新文件夹")
+async def create_knowledge_base_folder(
+        kb_id: int,
+        folder_data: schemas.KnowledgeBaseFolderCreate,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    在指定知识库中为当前用户创建一个新文件夹。
+    可通过 parent_id 指定父文件夹，实现嵌套。
+    也可作为软链接文件夹，链接课程笔记文件夹或收藏文件夹。
+    如果链接的外部文件夹包含非URL视频，则拒绝链接。
+    """
+    print(
+        f"DEBUG: 用户 {current_user_id} 尝试在知识库 {kb_id} 中创建文件夹: {folder_data.name} (父ID: {folder_data.parent_id})，链接类型: {folder_data.linked_folder_type}")
+
+    # 1. 验证知识库是否存在且属于当前用户
+    knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
+                                                    KnowledgeBase.owner_id == current_user_id).first()
+    if not knowledge_base:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库未找到或无权访问。")
+
+    # 2. 处理软链接文件夹的逻辑
+    if folder_data.linked_folder_type and folder_data.linked_folder_id is not None:
+        # Validate that this is a top-level folder (enforced by schema already, but reinforce)
+        if folder_data.parent_id is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="软链接文件夹只能是顶级文件夹，不能拥有父文件夹。")
+
+        # Check source folder and its contents for forbidden media (video files)
+        external_folder = None
+        if folder_data.linked_folder_type == "note_folder":
+            external_folder = db.query(Folder).filter(
+                Folder.id == folder_data.linked_folder_id,
+                Folder.owner_id == current_user_id
+            ).first()
+            if not external_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="引用的课程笔记文件夹未找到或无权访问。")
+
+            # Check contents of the Note folder for video files (those hosted on OSS/local, not external streaming URLs like YouTube)
+            notes_in_folder = db.query(Note).filter(
+                Note.owner_id == current_user_id,
+                Note.folder_id == folder_data.linked_folder_id
+            ).all()
+            for note in notes_in_folder:
+                if note.media_type == "video":
+                    # If it's a video type, check if its URL is an OSS URL (implies uploaded file)
+                    if oss_utils.is_oss_url(note.media_url):
+                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                            detail="链接的课程笔记文件夹中包含视频文件（非外部链接），不支持链接。")
+
+        elif folder_data.linked_folder_type == "collected_content_folder":
+            external_folder = db.query(Folder).filter(
+                Folder.id == folder_data.linked_folder_id,
+                Folder.owner_id == current_user_id
+            ).first()
+            if not external_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="引用的收藏文件夹未找到或无权访问。")
+
+            # Check contents of the CollectedContent folder for video files
+            collected_contents_in_folder = db.query(CollectedContent).filter(
+                CollectedContent.owner_id == current_user_id,
+                CollectedContent.folder_id == folder_data.linked_folder_id
+            ).all()
+
+            for content_item in collected_contents_in_folder:
+                if content_item.type == "video":
+                    if oss_utils.is_oss_url(content_item.url):
+                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                            detail="链接的收藏文件夹中包含视频文件（非外部链接），不支持链接。")
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"不支持的链接文件夹类型: {folder_data.linked_folder_type}。")
+
+        # Set the name of the linked folder in KB to be the same as the external folder
+        # unless a specific name is provided in folder_data.name
+        if not folder_data.name and external_folder:
+            folder_data.name = external_folder.name  # Use original folder name if not provided
+        elif not folder_data.name:  # Fallback if no name and no external folder name
+            folder_data.name = f"linked_{folder_data.linked_folder_type}_{folder_data.linked_folder_id}"
+
+    else:  # 3. 验证父文件夹是否存在且属于同一知识库和同一用户 (如果提供了parent_id) - 仅当不是软链接时
+        if folder_data.parent_id is not None:
+            parent_folder = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == folder_data.parent_id,
+                KnowledgeBaseFolder.kb_id == kb_id,  # 必须属于同一知识库
+                KnowledgeBaseFolder.owner_id == current_user_id
+            ).first()
+            if not parent_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="父文件夹未找到、不属于该知识库或无权访问。")
+
+        # A regular folder must have a name
+        if not folder_data.name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件夹名称不能为空。")
+
+    # 4. 创建文件夹实例
+    db_kb_folder = KnowledgeBaseFolder(
+        kb_id=kb_id,
+        owner_id=current_user_id,
+        name=folder_data.name,
+        description=folder_data.description,
+        parent_id=folder_data.parent_id,
+        order=folder_data.order,
+        linked_folder_type=folder_data.linked_folder_type,  # <<< 将软链接字段传入
+        linked_folder_id=folder_data.linked_folder_id  # <<< 将软链接字段传入
+    )
+
+    db.add(db_kb_folder)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        # 捕获数据库完整性错误，例如文件夹名称冲突或软链接重复
+        if "_kb_folder_name_uc" in str(e) or "_kb_folder_root_name_uc" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="在当前父文件夹下（或根目录）已存在同名文件夹。")
+        elif "_kb_folder_linked_uc" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"该外部文件夹 ({folder_data.linked_folder_type} ID:{folder_data.linked_folder_id}) 已被链接到此知识库。")
+        print(f"ERROR_DB: 创建知识库文件夹发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建知识库文件夹失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建知识库文件夹发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建知识库文件夹失败: {e}")
+
+    db.refresh(db_kb_folder)
+
+    # 填充响应模型中的动态字段
+    kb_name_obj = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    db_kb_folder.kb_name_for_response = kb_name_obj.name if kb_name_obj else "未知知识库"
+    if db_kb_folder.parent_id:
+        parent_folder_obj = db.query(KnowledgeBaseFolder).filter(
+            KnowledgeBaseFolder.id == db_kb_folder.parent_id).first()
+        db_kb_folder.parent_folder_name_for_response = parent_folder_obj.name if parent_folder_obj else f"ID为{db_kb_folder.parent_id}的父文件夹"
+
+    print(f"DEBUG: 知识库 {kb_id} 中的文件夹 '{db_kb_folder.name}' (ID: {db_kb_folder.id}) 创建成功。")
+    return db_kb_folder
+
+
+@app.get("/knowledge-bases/{kb_id}/folders/", response_model=List[schemas.KnowledgeBaseFolderResponse],
+         summary="获取指定知识库下所有文件夹和软链接内容")
+async def get_knowledge_base_folders(
+        kb_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        parent_id: Optional[int] = Query(None, description="按父文件夹ID过滤。传入0表示顶级文件夹（即parent_id为NULL）")
+):
+    """
+    获取指定知识库下当前用户创建的所有文件夹。
+    可通过 parent_id 过滤，获取特定父文件夹下的子文件夹。
+    对于软链接文件夹，会包含其链接的外部文件夹的名称，以及其包含的有效内容数量。
+    """
+    print(f"DEBUG: 获取用户 {current_user_id} 在知识库 {kb_id} 中的文件夹列表。父ID: {parent_id}")
+
+    # 1. 验证知识库是否存在且属于当前用户
+    knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
+                                                    KnowledgeBase.owner_id == current_user_id).first()
+    if not knowledge_base:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库未找到或无权访问。")
+
+    query = db.query(KnowledgeBaseFolder).filter(
+        KnowledgeBaseFolder.kb_id == kb_id,
+        KnowledgeBaseFolder.owner_id == current_user_id
+    )
+
+    if parent_id is not None:
+        if parent_id == 0:  # 0 表示顶级文件夹，即 parent_id 为 NULL
+            query = query.filter(KnowledgeBaseFolder.parent_id.is_(None))
+        else:  # 查询特定父文件夹下的子文件夹，并验证父文件夹存在且属于该知识库
+            existing_parent_folder = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == parent_id,
+                KnowledgeBaseFolder.kb_id == kb_id,
+                KnowledgeBaseFolder.owner_id == current_user_id
+            ).first()
+            if not existing_parent_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父文件夹未找到或无权访问。")
+            query = query.filter(KnowledgeBaseFolder.parent_id == parent_id)
+    else:  # 默认获取所有顶级文件夹
+        query = query.filter(KnowledgeBaseFolder.parent_id.is_(None))
+
+    folders = query.order_by(KnowledgeBaseFolder.order, KnowledgeBaseFolder.name).all()
+
+    # 填充响应模型中的动态字段：kb_name 和 parent_folder_name 以及 item_count 和 linked_object_names
+    kb_name_map = {knowledge_base.id: knowledge_base.name}  # 只有一个 knowledge_base object
+    parent_folder_names_map = {
+        f.parent_id: db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id == f.parent_id).first().name for f in
+        folders if f.parent_id}
+
+    for folder in folders:
+        folder.kb_name_for_response = kb_name_map.get(folder.kb_id)
+        if folder.parent_id and folder.parent_id in parent_folder_names_map:
+            folder.parent_folder_name_for_response = parent_folder_names_map[folder.parent_id]
+
+        # 处理软链接文件夹的 item_count 和 linked_object_names
+        if folder.linked_folder_type and folder.linked_folder_id is not None:
+            if folder.linked_folder_type == "note_folder":
+                linked_notes = db.query(Note).filter(
+                    Note.owner_id == current_user_id,
+                    Note.folder_id == folder.linked_folder_id
+                ).all()
+                folder.item_count = len(linked_notes)
+                folder.linked_object_names_for_response = [n.title or n.content[:30] if n.content else n.media_url for
+                                                            n in linked_notes]  # 填充笔记标题或内容片段
+            elif folder.linked_folder_type == "collected_content_folder":
+                linked_contents = db.query(CollectedContent).filter(
+                    CollectedContent.owner_id == current_user_id,
+                    CollectedContent.folder_id == folder.linked_folder_id
+                ).all()
+                folder.item_count = len(linked_contents)
+                folder.linked_object_names_for_response = [c.title or c.content or c.url for c in
+                                                            linked_contents]  # 填充收藏内容标题、文本或URL
+            else:  # Should not happen if schema validation is correct
+                folder.item_count = 0
+                folder.linked_object_names_for_response = []
+        else:
+            # 计算非软链接文件夹的 item_count: 直属文章数量 + 直属文档数量 + 直属子文件夹数量
+            folder.item_count = db.query(KnowledgeArticle).filter(
+                KnowledgeArticle.kb_id == kb_id,
+                KnowledgeArticle.author_id == current_user_id,
+                KnowledgeArticle.kb_folder_id == folder.id
+            ).count() + \
+                                db.query(KnowledgeDocument).filter(
+                                    KnowledgeDocument.kb_id == kb_id,
+                                    KnowledgeDocument.owner_id == current_user_id,
+                                    KnowledgeDocument.kb_folder_id == folder.id
+                                ).count() + \
+                                db.query(KnowledgeBaseFolder).filter(
+                                    KnowledgeBaseFolder.kb_id == kb_id,
+                                    KnowledgeBaseFolder.owner_id == current_user_id,
+                                    KnowledgeBaseFolder.parent_id == folder.id
+                                ).count()
+            # 非软链接文件夹不返回 linked_object_names
+            folder.linked_object_names_for_response = None
+
+    print(f"DEBUG: 获取到 {len(folders)} 个知识库文件夹。")
+    return folders
+
+
+@app.get("/knowledge-bases/{kb_id}/folders/{kb_folder_id}", response_model=schemas.KnowledgeBaseFolderContentResponse,
+         summary="获取指定知识库文件夹详情及其内容")  # <<< 修改 response_model
+async def get_knowledge_base_folder_by_id(
+        kb_id: int,
+        kb_folder_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        include_contents: bool = Query(False, description="是否包含软链接文件夹的实际内容（仅适用于软链接文件夹）")
+        # 新增参数
+):
+    """
+    获取指定ID的知识库文件夹详情。用户只能获取自己知识库下的文件夹。
+    如果文件夹是软链接，且指定 include_contents=True，则会返回其链接的实际内容列表。
+    """
+    print(f"DEBUG: 获取知识库 {kb_id} 中文件夹 ID: {kb_folder_id} 的详情。")
+    folder = db.query(KnowledgeBaseFolder).filter(
+        KnowledgeBaseFolder.id == kb_folder_id,
+        KnowledgeBaseFolder.kb_id == kb_id,  # 确保属于指定知识库
+        KnowledgeBaseFolder.owner_id == current_user_id
+    ).first()
+    if not folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="知识库文件夹未找到、不属于该知识库或无权访问。")
+
+    # 填充响应模型中的动态字段：kb_name 和 parent_folder_name 以及 item_count
+    kb_name_obj = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    folder.kb_name_for_response = kb_name_obj.name if kb_name_obj else "未知知识库"
+    if folder.parent_id:
+        parent_folder_obj = db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id == folder.parent_id).first()
+        folder.parent_folder_name_for_response = parent_folder_obj.name if parent_folder_obj else f"ID为{folder.parent_id}的父文件夹"
+
+    # 处理软链接文件夹的 item_count 和 linked_object_names 和 contents
+    actual_contents = []  # 用于存储软链接文件夹的实际内容
+    if folder.linked_folder_type and folder.linked_folder_id is not None:
+        if folder.linked_folder_type == "note_folder":
+            linked_notes = db.query(Note).filter(
+                Note.owner_id == current_user_id,
+                Note.folder_id == folder.linked_folder_id
+            ).all()
+            folder.item_count = len(linked_notes)
+            folder.linked_object_names_for_response = [n.title or n.content[:30] if n.content else n.media_url for n in
+                                                        linked_notes]
+
+            if include_contents:  # 如果请求包含实际内容
+                for note in linked_notes:
+                    # 动态填充 NoteResponse 的 folder_name 和 course_title 便于展示
+                    if note.folder_id:
+                        linked_note_folder_obj = db.query(Folder).filter(Folder.id == note.folder_id).first()
+                        if linked_note_folder_obj:
+                            note.folder_name_for_response = linked_note_folder_obj.name
+                    if note.course_id:
+                        linked_note_course_obj = db.query(Course).filter(Course.id == note.course_id).first()
+                        if linked_note_course_obj:
+                            note.course_title_for_response = linked_note_course_obj.title
+                    actual_contents.append(schemas.NoteResponse.model_validate(note, from_attributes=True))
+
+        elif folder.linked_folder_type == "collected_content_folder":
+            linked_contents_from_collection = db.query(CollectedContent).filter(
+                CollectedContent.owner_id == current_user_id,
+                CollectedContent.folder_id == folder.linked_folder_id
+            ).all()
+            folder.item_count = len(linked_contents_from_collection)
+            folder.linked_object_names_for_response = [c.title or c.content or c.url for c in
+                                                        linked_contents_from_collection]
+
+            if include_contents:  # 如果请求包含实际内容
+                for content_item in linked_contents_from_collection:
+                    # 动态填充 CollectedContentResponse 的 folder_name
+                    if content_item.folder_id:
+                        linked_cc_folder_obj = db.query(Folder).filter(Folder.id == content_item.folder_id).first()
+                        if linked_cc_folder_obj:
+                            content_item.folder_name_for_response = linked_cc_folder_obj.name
+                    actual_contents.append(
+                        schemas.CollectedContentResponse.model_validate(content_item, from_attributes=True))
+        else:  # Should not happen if schema validation is correct
+            folder.item_count = 0
+            folder.linked_object_names_for_response = []
+    else:
+        # 计算非软链接文件夹的 item_count: 直属文章数量 + 直属文档数量 + 直属子文件夹数量
+        folder.item_count = db.query(KnowledgeArticle).filter(
+            KnowledgeArticle.kb_id == kb_id,
+            KnowledgeArticle.author_id == current_user_id,
+            KnowledgeArticle.kb_folder_id == folder.id
+        ).count() + \
+                            db.query(KnowledgeDocument).filter(
+                                KnowledgeDocument.kb_id == kb_id,
+                                KnowledgeDocument.owner_id == current_user_id,
+                                KnowledgeDocument.kb_folder_id == folder.id
+                            ).count() + \
+                            db.query(KnowledgeBaseFolder).filter(
+                                KnowledgeBaseFolder.kb_id == kb_id,
+                                KnowledgeBaseFolder.owner_id == current_user_id,
+                                KnowledgeBaseFolder.parent_id == folder.id
+                            ).count()
+        # 非软链接文件夹不返回 linked_object_names 和 contents
+        folder.linked_object_names_for_response = None
+
+        # 对于非软链接文件夹，如果 include_contents 为 True，可以返回其直属文章和文档列表
+        if include_contents:
+            direct_articles = db.query(KnowledgeArticle).filter(
+                KnowledgeArticle.kb_id == kb_id,
+                KnowledgeArticle.author_id == current_user_id,
+                KnowledgeArticle.kb_folder_id == folder.id
+            ).all()
+            direct_documents = db.query(KnowledgeDocument).filter(
+                KnowledgeDocument.kb_id == kb_id,
+                KnowledgeDocument.owner_id == current_user_id,
+                KnowledgeDocument.kb_folder_id == folder.id
+            ).all()
+            for art in direct_articles:
+                art.kb_folder_name_for_response = folder.name
+                actual_contents.append(schemas.KnowledgeArticleResponse.model_validate(art, from_attributes=True))
+            for doc in direct_documents:
+                doc.kb_folder_name_for_response = folder.name
+                actual_contents.append(schemas.KnowledgeDocumentResponse.model_validate(doc, from_attributes=True))
+
+    # Finally, assign the collected contents to the 'contents' field
+    # Create the KnowledgeBaseFolderContentResponse instance by first validating the folder object against KnowledgeBaseFolderBase (which covers common properties)
+    # Then manually add the 'contents' field.
+    response_folder = schemas.KnowledgeBaseFolderContentResponse.model_validate(folder, from_attributes=True)
+    response_folder.contents = actual_contents
+
+    return response_folder
+
+
+# project/main.py
+
+# ... (前面的导入和类定义保持不变，确保 oss_utils 已导入) ...
+
+@app.put("/knowledge-bases/{kb_id}/folders/{kb_folder_id}", response_model=schemas.KnowledgeBaseFolderResponse,
+         summary="更新指定知识库文件夹")
+async def update_knowledge_base_folder(
+        kb_id: int,
+        kb_folder_id: int,
+        folder_data: schemas.KnowledgeBaseFolderBase,  # now includes linked_folder_type, linked_folder_id
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    更新指定ID的知识库文件夹信息。用户只能更新自己知识库下的文件夹。
+    支持修改名称、描述、父文件夹和排序。
+    如果文件夹是软链接，其链接类型和ID也可更新（但有限制）。
+    """
+    print(f"DEBUG: 更新知识库 {kb_id} 中文件夹 ID: {kb_folder_id} 的信息。")
+    db_kb_folder = db.query(KnowledgeBaseFolder).filter(
+        KnowledgeBaseFolder.id == kb_folder_id,
+        KnowledgeBaseFolder.kb_id == kb_id,  # 确保属于指定知识库
+        KnowledgeBaseFolder.owner_id == current_user_id
+    ).first()
+    if not db_kb_folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="知识库文件夹未找到、不属于该知识库或无权访问。")
+
+    update_dict = folder_data.dict(exclude_unset=True)
+
+    # 1. 处理软链接相关字段的更新逻辑
+    old_linked_folder_type = db_kb_folder.linked_folder_type
+    old_linked_folder_id = db_kb_folder.linked_folder_id
+
+    new_linked_folder_type = update_dict.get("linked_folder_type", old_linked_folder_type)
+    new_linked_folder_id = update_dict.get("linked_folder_id", old_linked_folder_id)
+
+    # 检查是否尝试修改为软链接状态，或修改软链接目标
+    is_becoming_linked = (new_linked_folder_type and new_linked_folder_id is not None) and (
+                not old_linked_folder_type or old_linked_folder_id is None or new_linked_folder_type != old_linked_folder_type or new_linked_folder_id != old_linked_folder_id)
+    is_changing_from_linked_to_regular = (
+                old_linked_folder_type and (new_linked_folder_type is None or new_linked_folder_id is None))
+
+    # 规则：软链接文件夹和普通文件夹不能互相转换 (避免复杂的数据迁移和业务逻辑)
+    if (is_becoming_linked and (
+            db_kb_folder.articles.count() > 0 or db_kb_folder.documents.count() > 0 or db_kb_folder.children.count() > 0)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="包含内容的普通文件夹不能转换为软链接文件夹。请清空内容或删除后重新创建链接。")
+
+    if is_changing_from_linked_to_regular and db_kb_folder.linked_folder_type:  # 如果当前就是软链接，且尝试取消链接
+        # 软链接文件夹不能转换为普通文件夹（因为其本身不包含实际内容）
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="软链接文件夹不能转换为普通文件夹。如需取消链接，请删除此链接文件夹。")
+
+    # 如果是软链接，并且链接目标正在被修改 (或首次设置)
+    if is_becoming_linked:
+        # 软链接文件夹不能有父文件夹
+        if db_kb_folder.parent_id is not None or ("parent_id" in update_dict and update_dict[
+            "parent_id"] is not None):  ## Allow setting to NULL if it had a parent, but then it must become a top-level link
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="软链接文件夹只能是顶级文件夹，不能拥有父文件夹。")
+
+        # 验证新的软链接目标文件夹是否存在且没有视频文件
+        external_folder = None
+        if new_linked_folder_type == "note_folder":
+            external_folder = db.query(Folder).filter(
+                Folder.id == new_linked_folder_id,
+                Folder.owner_id == current_user_id
+            ).first()
+            if not external_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="引用的课程笔记文件夹未找到或无权访问。")
+
+            notes_in_folder = db.query(Note).filter(
+                Note.owner_id == current_user_id,
+                Note.folder_id == new_linked_folder_id
+            ).all()
+            for note in notes_in_folder:
+                if note.media_type == "video" and oss_utils.is_oss_url(note.media_url):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail="链接的课程笔记文件夹中包含视频文件（非外部链接），不支持链接。")
+
+        elif new_linked_folder_type == "collected_content_folder":
+            external_folder = db.query(Folder).filter(
+                Folder.id == new_linked_folder_id,
+                Folder.owner_id == current_user_id
+            ).first()
+            if not external_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="引用的收藏文件夹未找到或无权访问。")
+
+            collected_contents_in_folder = db.query(CollectedContent).filter(
+                CollectedContent.owner_id == current_user_id,
+                CollectedContent.folder_id == new_linked_folder_id
+            ).all()
+            for content_item in collected_contents_in_folder:
+                if content_item.type == "video" and oss_utils.is_oss_url(content_item.url):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail="链接的收藏文件夹中包含视频文件（非外部链接），不支持链接。")
+
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"不支持的链接文件夹类型: {new_linked_folder_type}。")
+
+        # 更新软链接字段
+        db_kb_folder.linked_folder_type = new_linked_folder_type
+        db_kb_folder.linked_folder_id = new_linked_folder_id
+        # 清空普通文件夹相关的字段
+        db_kb_folder.parent_id = None  # 软链接文件夹必须是顶级的
+        # 如果名称没有提供，默认使用外部文件夹的名称
+        if not update_dict.get("name") and external_folder:
+            db_kb_folder.name = external_folder.name
+
+        # 移除已处理字段
+        update_dict.pop("linked_folder_type", None)
+        update_dict.pop("linked_folder_id", None)
+        update_dict.pop("parent_id", None)  # Remove it if it was provided
+
+    # 2. 处理普通文件夹的父文件夹和名称更新
+    elif not old_linked_folder_type:  # 只有当它本身不是软链接时才处理这些逻辑
+        # 2.1 验证新的父文件夹 (如果parent_id被修改)
+        if "parent_id" in update_dict:  # 已经由 schema 转换为 None/int
+            new_parent_id = update_dict["parent_id"]
+            # 不能将自己设为父文件夹
+            if new_parent_id == kb_folder_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件夹不能是自身的父级。")
+
+            if new_parent_id is not None:  # 如果指定了新的父文件夹
+                # 检查新的父文件夹是否存在，属于同一知识库，且属于当前用户
+                new_parent_folder = db.query(KnowledgeBaseFolder).filter(
+                    KnowledgeBaseFolder.id == new_parent_id,
+                    KnowledgeBaseFolder.kb_id == kb_id,
+                    KnowledgeBaseFolder.owner_id == current_user_id
+                ).first()
+                if not new_parent_folder:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                        detail="新的父文件夹未找到、不属于该知识库或无权访问。")
+
+                # 检查是否会形成循环 (简单检查，深度循环需要递归检测)
+                temp_check_folder = new_parent_folder
+                while temp_check_folder:
+                    if temp_check_folder.id == kb_folder_id:
+                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                            detail="检测到循环依赖，无法将此文件夹设为父文件夹。")
+                    temp_check_folder = temp_check_folder.parent  # 假设关系已经被正确加载到ORM对象
+
+            db_kb_folder.parent_id = new_parent_id  # Update parent_id
+            update_dict.pop("parent_id", None)  # Remove it from dict since handled
+
+        # 2.2 检查名称冲突 (如果名称在更新中改变了)
+        if "name" in update_dict and update_dict["name"] != db_kb_folder.name:
+            existing_name_folder_query = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.kb_id == kb_id,
+                KnowledgeBaseFolder.owner_id == current_user_id,
+                KnowledgeBaseFolder.name == update_dict["name"],
+                KnowledgeBaseFolder.id != kb_folder_id  # 排除自身
+            )
+            # 根据父文件夹情况检查名称唯一性
+            if db_kb_folder.parent_id is None:  # 当前文件夹是顶级文件夹
+                existing_name_folder_query = existing_name_folder_query.filter(KnowledgeBaseFolder.parent_id.is_(None))
+            else:  # 当前文件夹有父文件夹
+                existing_name_folder_query = existing_name_folder_query.filter(
+                    KnowledgeBaseFolder.parent_id == db_kb_folder.parent_id)
+
+            if existing_name_folder_query.first():
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="在当前父文件夹下已存在同名文件夹。")
+
+            db_kb_folder.name = update_dict["name"]  # Update name
+            update_dict.pop("name", None)  # Remove it from dict since handled
+
+        # 如果是普通文件夹，但尝试提供软链接字段，则拒绝
+        if "linked_folder_type" in update_dict or "linked_folder_id" in update_dict:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="普通文件夹不能指定软链接信息。")
+
+    # 3. 应用其他字段更新 (description, order)
+    # 确保不覆盖已显式处理的字段
+    for key, value in update_dict.items():
+        if key in ["linked_folder_type", "linked_folder_id", "name", "parent_id"]:  # These were handled manually
+            continue
+        if hasattr(db_kb_folder, key) and value is not None:
+            setattr(db_kb_folder, key, value)
+        elif hasattr(db_kb_folder, key) and value is None:  # Allow clearing description
+            if key == "description":
+                setattr(db_kb_folder, key, value)
+
+    db.add(db_kb_folder)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新知识库文件夹发生完整性约束错误: {e}")
+        # 这里捕获唯一性约束的通用 IntegrityError
+        if "_kb_folder_name_uc" in str(e) or "_kb_folder_root_name_uc" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="更新知识库文件夹失败，在当前父文件夹下（或根目录）已存在同名文件夹。")
+        elif "_kb_folder_linked_uc" in str(e):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"该外部文件夹 ({db_kb_folder.linked_folder_type} ID:{db_kb_folder.linked_folder_id}) 已被链接到此知识库。")
+        else:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新知识库文件夹失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新知识库文件夹发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新知识库文件夹失败: {e}")
+
+    db.refresh(db_kb_folder)
+
+    # 填充响应模型中的动态字段
+    kb_name_obj = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    db_kb_folder.kb_name_for_response = kb_name_obj.name if kb_name_obj else "未知知识库"
+    if db_kb_folder.parent_id:
+        parent_folder_obj = db.query(KnowledgeBaseFolder).filter(
+            KnowledgeBaseFolder.id == db_kb_folder.parent_id).first()
+        db_kb_folder.parent_folder_name_for_response = parent_folder_obj.name if parent_folder_obj else f"ID为{db_kb_folder.parent_id}的父文件夹"
+
+    # 重新计算 item_count 和 linked_object_names
+    if db_kb_folder.linked_folder_type and db_kb_folder.linked_folder_id is not None:
+        if db_kb_folder.linked_folder_type == "note_folder":
+            linked_notes = db.query(Note).filter(
+                Note.owner_id == current_user_id,
+                Note.folder_id == db_kb_folder.linked_folder_id
+            ).all()
+            db_kb_folder.item_count = len(linked_notes)
+            db_kb_folder.linked_object_names_for_response = [n.title or n.content[:30] if n.content else n.media_url
+                                                              for n in linked_notes]
+        elif db_kb_folder.linked_folder_type == "collected_content_folder":
+            linked_contents = db.query(CollectedContent).filter(
+                CollectedContent.owner_id == current_user_id,
+                CollectedContent.folder_id == db_kb_folder.linked_folder_id
+            ).all()
+            db_kb_folder.item_count = len(linked_contents)
+            db_kb_folder.linked_object_names_for_response = [c.title or c.content or c.url for c in linked_contents]
+    else:
+        db_kb_folder.item_count = db.query(KnowledgeArticle).filter(
+            KnowledgeArticle.kb_id == kb_id, KnowledgeArticle.author_id == current_user_id,
+            KnowledgeArticle.kb_folder_id == db_kb_folder.id
+        ).count() + \
+                                  db.query(KnowledgeDocument).filter(
+                                      KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.owner_id == current_user_id,
+                                      KnowledgeDocument.kb_folder_id == db_kb_folder.id
+                                  ).count() + \
+                                  db.query(KnowledgeBaseFolder).filter(
+                                      KnowledgeBaseFolder.kb_id == kb_id,
+                                      KnowledgeBaseFolder.owner_id == current_user_id,
+                                      KnowledgeBaseFolder.parent_id == kb_folder_id
+                                  ).count()
+        db_kb_folder.linked_object_names_for_response = None
+
+    print(f"DEBUG: 知识库文件夹 {kb_folder_id} 更新成功。")
+    return db_kb_folder
+
+
+@app.delete("/knowledge-bases/{kb_id}/folders/{kb_folder_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除指定知识库文件夹")
+async def delete_knowledge_base_folder(
+        kb_id: int,
+        kb_folder_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    删除指定ID的知识库文件夹。
+    如果是非软链接的普通文件夹，将级联删除其下所有直属文章、文档和子文件夹。
+    如果是软链接文件夹，将只删除链接本身（KnowledgeBaseFolder记录），不影响被链接的原始笔记文件夹或收藏文件夹中的内容。
+    用户只能删除自己知识库下的文件夹。
+    """
+    print(f"DEBUG: 删除知识库 {kb_id} 中的文件夹 ID: {kb_folder_id}。")
+    db_kb_folder = db.query(KnowledgeBaseFolder).filter(
+        KnowledgeBaseFolder.id == kb_folder_id,
+        KnowledgeBaseFolder.kb_id == kb_id,
+        KnowledgeBaseFolder.owner_id == current_user_id
+    ).first()
+    if not db_kb_folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="知识库文件夹未找到、不属于该知识库或无权访问。")
+
+    # 判断是否是软链接文件夹
+    if db_kb_folder.linked_folder_type and db_kb_folder.linked_folder_id is not None:
+        # 如果是软链接文件夹，只删除 KnowledgeBaseFolder 记录自身
+        # 不触发级联删除，因为它不“拥有”实际内容
+        # SQLAlchemy 会自动处理不带 cascade 的关系
+        db.delete(db_kb_folder)
+        db.commit()
+        print(f"DEBUG: 知识库软链接文件夹 {kb_folder_id} (链接到 {db_kb_folder.linked_folder_type} ID: {db_kb_folder.linked_folder_id}) 已成功删除（仅删除链接）。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    else:
+        # 如果是普通文件夹，则删除文件夹及其所有内容（文章、文档、子文件夹）
+        # `models.py` 中 KnowledgeBaseFolder 对 `articles`, `documents`, `children` 的 `cascade="all, delete-orphan"` 会处理级联删除。
+        # KnowledgeDocument 和 KnowledgeArticle 的删除逻辑中包含了对应的OSS文件删除。
+        db.delete(db_kb_folder)
+        db.commit()
+        print(f"DEBUG: 知识库普通文件夹 {kb_folder_id} 及其内容已成功删除。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+
+# --- 知识文章 (手动创建内容) 管理接口 ---
 @app.post("/knowledge-bases/{kb_id}/articles/", response_model=schemas.KnowledgeArticleResponse,
           summary="在指定知识库中创建新文章")
 async def create_knowledge_article(
         kb_id: int,
-        article_data: schemas.KnowledgeArticleBase,
+        article_data: schemas.KnowledgeArticleBase,  # now contains kb_folder_id
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 用户 {current_user_id} 尝试在知识库 {kb_id} 中创建文章: {article_data.title}")
-    # 验证知识库是否存在且属于当前用户
+    """
+    在指定知识库中创建一篇新知识文章。
+    文章内容会生成嵌入并存储。
+    """
+    print(
+        f"DEBUG: 用户 {current_user_id} 尝试在知识库 {kb_id} 中创建文章: {article_data.title} (文件夹ID: {article_data.kb_folder_id})")
+
+    # 1. 验证知识库是否存在且属于当前用户
     knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
                                                     KnowledgeBase.owner_id == current_user_id).first()
     if not knowledge_base:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库未找到或无权访问")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库未找到或无权访问。")
 
-    # 组合文本用于嵌入
-    combined_text = (article_data.title or "") + ". " + (article_data.content or "") + ". " + (article_data.tags or "")
-    if not combined_text.strip():
-        combined_text = ""
+    # 2. 验证文件夹是否存在且属于同一知识库和同一用户 (如果提供了kb_folder_id)
+    target_kb_folder = None
+    if article_data.kb_folder_id is not None:  # Note: 0 已经被 schema 转换为 None
+        target_kb_folder = db.query(KnowledgeBaseFolder).filter(
+            KnowledgeBaseFolder.id == article_data.kb_folder_id,
+            KnowledgeBaseFolder.kb_id == kb_id,  # 必须属于同一知识库
+            KnowledgeBaseFolder.owner_id == current_user_id
+        ).first()
+        if not target_kb_folder:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="目标文件夹未找到、不属于该知识库或无权访问。")
+
+    # 3. 组合文本用于嵌入
+    folder_context = ""
+    if target_kb_folder:
+        folder_context = f"属于文件夹: {target_kb_folder.name}."
+
+    combined_text = ". ".join(filter(None, [
+        _get_text_part(article_data.title),
+        _get_text_part(article_data.content),
+        _get_text_part(article_data.tags),
+        _get_text_part(folder_context),  # 新增：包含文件夹上下文
+    ])).strip()
 
     embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
 
-    article_author = db.query(Student).filter(Student.id == current_user_id).first()
+    # 获取文章作者的LLM配置进行嵌入生成
+    author_user = db.query(Student).filter(Student.id == current_user_id).first()
     author_llm_api_key = None
     author_llm_type = None
     author_llm_base_url = None
     author_llm_model_id = None
 
-    if article_author.llm_api_type == "siliconflow" and article_author.llm_api_key_encrypted:
+    if author_user and author_user.llm_api_type == "siliconflow" and author_user.llm_api_key_encrypted:
         try:
-            author_llm_api_key = ai_core.decrypt_key(article_author.llm_api_key_encrypted)
-            author_llm_type = article_author.llm_api_type
-            author_llm_base_url = article_author.llm_api_base_url
-            author_llm_model_id = article_author.llm_model_id
+            author_llm_api_key = ai_core.decrypt_key(author_user.llm_api_key_encrypted)
+            author_llm_type = author_user.llm_api_type
+            author_llm_base_url = author_user.llm_api_base_url
+            author_llm_model_id = author_user.llm_model_id
             print(f"DEBUG_EMBEDDING_KEY: 使用文章作者配置的硅基流动 API 密钥为文章生成嵌入。")
         except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密文章作者硅基流动 API 密钥失败: {e}。文章嵌入将使用零向量。")
+            print(f"ERROR_EMBEDDING_KEY: 解密文章作者硅基流动 API 密钥失败: {e}。文章嵌入将使用零向量或默认行为。")
             author_llm_api_key = None
     else:
         print(f"DEBUG_EMBEDDING_KEY: 文章作者未配置硅基流动 API 类型或密钥，文章嵌入将使用零向量或默认行为。")
@@ -3409,15 +4697,14 @@ async def create_knowledge_article(
             )
             if new_embedding:
                 embedding = new_embedding[0]
-            else:
-                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
             print(f"DEBUG: 文章嵌入向量已生成。")
         except Exception as e:
             print(f"ERROR: 生成文章嵌入向量失败: {e}. 嵌入向量设为零。")
             embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
     else:
-        print(f"WARNING_EMBEDDING: 文章 combined_text 为空，嵌入向量设为零。")
+        print(f"WARNING: 文章 combined_text 为空，嵌入向量设为零。")
 
+    # 4. 创建数据库记录
     db_article = KnowledgeArticle(
         kb_id=kb_id,
         author_id=current_user_id,
@@ -3425,13 +4712,34 @@ async def create_knowledge_article(
         content=article_data.content,
         version=article_data.version,
         tags=article_data.tags,
+        kb_folder_id=article_data.kb_folder_id,  # <<< 新增：存储文件夹ID
         combined_text=combined_text,
         embedding=embedding
     )
 
     db.add(db_article)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建知识文章发生完整性约束错误: {e}")
+        # 这里可以根据具体的唯一性约束错误进行更细致的区分
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建知识文章失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 创建知识文章发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建知识文章失败: {e}")
+
     db.refresh(db_article)
+
+    # 填充响应模型中的动态字段
+    if db_article.kb_folder_id:
+        if target_kb_folder:  # Use already fetched folder if available
+            db_article.kb_folder_name_for_response = target_kb_folder.name
+        else:  # Fallback in case target_kb_folder was not fetched (e.g., in a different flow)
+            folder_obj = db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id == db_article.kb_folder_id).first()
+            db_article.kb_folder_name_for_response = folder_obj.name if folder_obj else f"ID为{db_article.kb_folder_id}的文件夹"
+
     print(f"DEBUG: 知识文章 (ID: {db_article.id}) 创建成功。")
     return db_article
 
@@ -3441,17 +4749,70 @@ async def create_knowledge_article(
 async def get_articles_in_knowledge_base(
         kb_id: int,
         current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        kb_folder_id: Optional[int] = Query(None,
+                                            description="按知识库文件夹ID过滤。传入0表示顶级文件夹（即kb_folder_id为NULL）"),
+        # <<< 新增这行
+        query_str: Optional[str] = Query(None, description="按关键词搜索文章标题或内容"),  # 新增搜索功能
+        tag_filter: Optional[str] = Query(None, description="按标签过滤，支持模糊匹配"),  # 新增标签过滤
+        page: int = Query(1, ge=1, description="页码，从1开始"),  # 新增分页
+        page_size: int = Query(20, ge=1, le=100, description="每页文章数量")  # 新增分页
 ):
-    print(f"DEBUG: 获取知识库 {kb_id} 的文章列表，用户 {current_user_id}。")
-    # 验证知识库是否存在且属于当前用户
+    print(f"DEBUG: 获取知识库 {kb_id} 的文章列表，用户 {current_user_id}。文件夹ID: {kb_folder_id}")
+
+    # 1. 验证知识库是否存在且属于当前用户
     knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
                                                     KnowledgeBase.owner_id == current_user_id).first()
     if not knowledge_base:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库未找到或无权访问。")
 
-    articles = db.query(KnowledgeArticle).filter(KnowledgeArticle.kb_id == kb_id,
-                                                 KnowledgeArticle.author_id == current_user_id).all()
+    query = db.query(KnowledgeArticle).filter(KnowledgeArticle.kb_id == kb_id,
+                                              KnowledgeArticle.author_id == current_user_id)
+
+    # 2. 应用文件夹过滤
+    if kb_folder_id is not None:
+        if kb_folder_id == 0:  # 0 表示顶级文件夹，即 kb_folder_id 为 NULL
+            query = query.filter(KnowledgeArticle.kb_folder_id.is_(None))
+        else:  # 查询特定文件夹下的文章，并验证文件夹存在且属于该知识库
+            existing_kb_folder = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == kb_folder_id,
+                KnowledgeBaseFolder.kb_id == kb_id,
+                KnowledgeBaseFolder.owner_id == current_user_id
+            ).first()
+            if not existing_kb_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定知识库文件夹未找到或无权访问。")
+            query = query.filter(KnowledgeArticle.kb_folder_id == kb_folder_id)
+
+    # 3. 应用关键词搜索 (标题或内容)
+    if query_str:
+        query = query.filter(
+            or_(
+                KnowledgeArticle.title.ilike(f"%{query_str}%"),
+                KnowledgeArticle.content.ilike(f"%{query_str}%")
+            )
+        )
+
+    # 4. 应用标签过滤
+    if tag_filter:
+        query = query.filter(KnowledgeArticle.tags.ilike(f"%{tag_filter}%"))
+
+    # 5. 应用分页
+    offset = (page - 1) * page_size
+    articles = query.order_by(KnowledgeArticle.created_at.desc()).offset(offset).limit(page_size).all()
+
+    # 6. 填充响应模型中的动态字段：文件夹名称
+    # 提前加载所有相关知识库文件夹，避免 N+1 查询
+    kb_folder_ids_in_results = list(
+        set([article.kb_folder_id for article in articles if article.kb_folder_id is not None]))
+    kb_folder_map = {f.id: f.name for f in
+                     db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id.in_(kb_folder_ids_in_results)).all()}
+
+    for article in articles:
+        if article.kb_folder_id and article.kb_folder_id in kb_folder_map:
+            article.kb_folder_name_for_response = kb_folder_map[article.kb_folder_id]
+        elif article.kb_folder_id is None:
+            article.kb_folder_name_for_response = "未分类"  # 或其他表示根目录的字符串
+
     print(f"DEBUG: 知识库 {kb_id} 获取到 {len(articles)} 篇文章。")
     return articles
 
@@ -3468,77 +4829,155 @@ async def get_knowledge_article_by_id(
                                                 KnowledgeArticle.author_id == current_user_id).first()
     if not article:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文章未找到或无权访问")
+
+    # 填充文件夹名称用于响应
+    if article.kb_folder_id:
+        kb_folder_obj = db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id == article.kb_folder_id).first()
+        if kb_folder_obj:
+            article.kb_folder_name_for_response = kb_folder_obj.name
+        else:
+            article.kb_folder_name_for_response = "未知文件夹"  # 或处理错误情况
+    elif article.kb_folder_id is None:
+        article.kb_folder_name_for_response = "未分类"  # 或其他表示根目录的字符串
+
     return article
 
 
-@app.put("/articles/{article_id}", response_model=schemas.KnowledgeArticleResponse, summary="更新指定文章")
+@app.put("/knowledge-bases/{kb_id}/articles/{article_id}", response_model=schemas.KnowledgeArticleResponse,
+         summary="更新指定知识文章")
 async def update_knowledge_article(
+        kb_id: int,
         article_id: int,
-        article_data: schemas.KnowledgeArticleBase,
-        current_user_id: int = Depends(get_current_user_id),
+        article_data: schemas.KnowledgeArticleBase = Depends(),  # now contains kb_folder_id
+        current_user_id: int = Depends(get_current_user_id),  # 只有文章作者能更新
         db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 更新文章 ID: {article_id}。")
-    db_article = db.query(KnowledgeArticle).filter(KnowledgeArticle.id == article_id,
-                                                   KnowledgeArticle.author_id == current_user_id).first()
+    """
+    更新指定ID的知识文章内容。只有文章作者能更新。
+    支持更新所属知识库文件夹。更新后会重新生成 combined_text 和 embedding。
+    """
+    print(f"DEBUG: 更新知识文章 ID: {article_id}。用户: {current_user_id}。文件夹ID: {article_data.kb_folder_id}")
+    db_article = db.query(KnowledgeArticle).filter(
+        KnowledgeArticle.id == article_id,
+        KnowledgeArticle.kb_id == kb_id,
+        KnowledgeArticle.author_id == current_user_id
+    ).first()
     if not db_article:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文章未找到或无权访问")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识文章未找到或无权访问。")
 
-    update_data = article_data.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_article, key, value)
+    update_dict = article_data.dict(exclude_unset=True)
 
-    # 重新生成 combined_text
-    db_article.combined_text = (db_article.title or "") + ". " + (db_article.content or "") + ". " + (
-            db_article.tags or "")
-    if not db_article.combined_text.strip():
-        db_article.combined_text = ""
+    # 1. 验证知识库文件夹是否存在且属于同一知识库和同一用户 (如果 kb_folder_id 被修改)
+    target_kb_folder_for_update = None
+    if "kb_folder_id" in update_dict:  # 已经由 schema 转换为 None/int
+        new_kb_folder_id = update_dict["kb_folder_id"]
+        if new_kb_folder_id is not None:
+            target_kb_folder_for_update = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == new_kb_folder_id,
+                KnowledgeBaseFolder.kb_id == kb_id,
+                KnowledgeBaseFolder.owner_id == current_user_id
+            ).first()
+            if not target_kb_folder_for_update:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="目标知识库文件夹未找到、不属于该知识库或无权访问。")
+        db_article.kb_folder_id = new_kb_folder_id  # Update folder_id in ORM object
 
-    # 获取当前用户的LLM配置用于嵌入更新
-    article_author = db.query(Student).filter(Student.id == current_user_id).first()
+    # 2. 应用其他 update_dict 中的字段
+    for key, value in update_dict.items():
+        if key == "kb_folder_id":  # This was handled manually
+            continue
+        if hasattr(db_article, key) and value is not None:
+            setattr(db_article, key, value)
+        elif hasattr(db_article, key) and value is None:  # Allow clearing tags, content etc. if None is passed
+            if key in ["title", "content"]:  # title and content are generally never None/empty
+                if not value or (isinstance(value, str) and not value.strip()):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"文章'{key}'不能为空。")
+            setattr(db_article, key, value)
+
+    # 3. 重新生成 combined_text
+    # 优先使用已经获取的 target_kb_folder_for_update，如果没有，再根据 db_article.kb_folder_id 查询
+    folder_context_text = ""
+    if db_article.kb_folder_id:
+        if target_kb_folder_for_update:
+            folder_context_text = f"属于文件夹: {target_kb_folder_for_update.name}."
+        else:  # If folder_id changed to an existing ID but not via update_dict, query it.
+            current_kb_folder_from_db = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == db_article.kb_folder_id).first()
+            folder_context_text = f"属于文件夹: {current_kb_folder_from_db.name}." if current_kb_folder_from_db else ""
+
+    combined_text = ". ".join(filter(None, [
+        _get_text_part(db_article.title),
+        _get_text_part(db_article.content),
+        _get_text_part(db_article.tags),
+        _get_text_part(folder_context_text),  # 包含文件夹上下文
+    ])).strip()
+    if not combined_text:
+        combined_text = ""
+
+    # 获取文章作者的LLM配置用于嵌入更新 (作者已在权限依赖中确认)
+    author_user = db.query(Student).filter(Student.id == current_user_id).first()
     author_llm_api_key = None
     author_llm_type = None
     author_llm_base_url = None
     author_llm_model_id = None
 
-    if article_author.llm_api_type == "siliconflow" and article_author.llm_api_key_encrypted:
+    if author_user and author_user.llm_api_type == "siliconflow" and author_user.llm_api_key_encrypted:
         try:
-            author_llm_api_key = ai_core.decrypt_key(article_author.llm_api_key_encrypted)
-            author_llm_type = article_author.llm_api_type
-            author_llm_base_url = article_author.llm_api_base_url
-            author_llm_model_id = article_author.llm_model_id
+            author_llm_api_key = ai_core.decrypt_key(author_user.llm_api_key_encrypted)
+            author_llm_type = author_user.llm_api_type
+            author_llm_base_url = author_user.llm_api_base_url
+            author_llm_model_id = author_user.llm_model_id
             print(f"DEBUG_EMBEDDING_KEY: 使用文章作者配置的硅基流动 API 密钥更新文章嵌入。")
         except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密文章作者硅基流动 API 密钥失败: {e}。文章嵌入将使用零向量。")
+            print(f"ERROR_EMBEDDING_KEY: 解密文章作者硅基流动 API 密钥失败: {e}。文章嵌入将使用零向量或默认行为。")
             author_llm_api_key = None
     else:
         print(f"DEBUG_EMBEDDING_KEY: 文章作者未配置硅基流动 API 类型或密钥，文章嵌入将使用零向量或默认行为。")
 
-    if db_article.combined_text:
+    embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+    if combined_text:
         try:
             new_embedding = await ai_core.get_embeddings_from_api(
-                [db_article.combined_text],
+                [combined_text],
                 api_key=author_llm_api_key,
                 llm_type=author_llm_type,
                 llm_base_url=author_llm_base_url,
                 llm_model_id=author_llm_model_id
             )
             if new_embedding:
-                db_article.embedding = new_embedding[0]
-            else:
-                db_article.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+                embedding_recalculated = new_embedding[0]
             print(f"DEBUG: 文章 {db_article.id} 嵌入向量已更新。")
         except Exception as e:
             print(f"ERROR: 更新文章 {db_article.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
-            db_article.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+            embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
     else:
-        print(f"WARNING_EMBEDDING: 文章 combined_text 为空，嵌入向量设为零。")
-        db_article.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        print(f"WARNING: 文章 combined_text 为空，嵌入向量设为零。")
+        embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+
+    db_article.embedding = embedding_recalculated  # 赋值给DB对象
 
     db.add(db_article)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新知识文章发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新知识文章失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 更新知识文章发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新知识文章失败: {e}")
+
     db.refresh(db_article)
-    print(f"DEBUG: 文章 {db_article.id} 更新成功。")
+    # 填充响应模型中的动态字段
+    if db_article.kb_folder_id:
+        if target_kb_folder_for_update:  # Use already fetched folder if available
+            db_article.kb_folder_name_for_response = target_kb_folder_for_update.name
+        else:  # Fallback in case folder_id exists but was not just fetched as target_kb_folder_for_update
+            folder_obj = db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id == db_article.kb_folder_id).first()
+            db_article.kb_folder_name_for_response = folder_obj.name if folder_obj else f"ID为{db_article.kb_folder_id}的文件夹"
+
+    print(f"INFO: 知识文章 {db_article.id} 更新成功。")
     return db_article
 
 
@@ -3566,14 +5005,19 @@ async def delete_knowledge_article(
 async def upload_knowledge_document(
         kb_id: int,
         file: UploadFile = File(...),  # 接收上传的文件
+        kb_folder_id: Optional[int] = Query(None,
+                                            description="可选：指定知识库文件夹ID。传入0表示顶级文件夹（即kb_folder_id为NULL）"),
+        # New parameter for folder association
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    上传一个新文档（PDF, DOCX, TXT）到指定知识库。
+    上传一个新文档（TXT, MD, PDF, DOCX, 图片文件）到指定知识库。
+    不支持上传视频文件。
     文档内容将在后台异步处理，包括文本提取、分块和嵌入生成。
     """
-    print(f"DEBUG_UPLOAD: 用户 {current_user_id} 尝试上传文件 '{file.filename}' 到知识库 {kb_id}。")
+    print(
+        f"DEBUG_UPLOAD: 用户 {current_user_id} 尝试上传文件 '{file.filename}' 到知识库 {kb_id} (文件夹ID: {kb_folder_id})。")
 
     # 1. 验证知识库是否存在且属于当前用户
     knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
@@ -3581,36 +5025,87 @@ async def upload_knowledge_document(
     if not knowledge_base:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识库未找到或无权访问。")
 
-    # 2. 保存文件到本地 (使用 ai_core 中的常量)
+    # 2. 验证知识库文件夹是否存在且属于同一知识库和同一用户 (如果提供了kb_folder_id)
+    target_kb_folder = None
+    if kb_folder_id is not None:  # Note: 0 已经被 schema 转换为 None
+        target_kb_folder = db.query(KnowledgeBaseFolder).filter(
+            KnowledgeBaseFolder.id == kb_folder_id,
+            KnowledgeBaseFolder.kb_id == kb_id,  # 必须属于同一知识库
+            KnowledgeBaseFolder.owner_id == current_user_id
+        ).first()
+        if not target_kb_folder:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="目标知识库文件夹未找到、不属于该知识库或无权访问。")
+        # 验证目标文件夹是否是“软链接”文件夹
+        # Linked_folder_type 字段将在下一步添加到 KnowledgeBaseFolder 模型中，请确保它存在
+        if hasattr(target_kb_folder, 'linked_folder_type') and target_kb_folder.linked_folder_type:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能将文件上传到软链接文件夹。")
+
+    # 3. 验证文件类型：只允许特定文档和图片，拒绝视频
+    allowed_mime_types = [
+        "text/plain",  # .txt
+        "text/markdown",  # .md
+        "application/pdf",  # .pdf
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+        "text/html",  # .html (可选，如果也要处理网页)
+        "application/vnd.ms-excel",  # .xls (可选)
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx (可选)
+        "application/vnd.ms-powerpoint",  # .ppt (可选)
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx (可选)
+        "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"  # 常见图片类型
+    ]
+    if file.content_type not in allowed_mime_types:
+        if file.content_type.startswith('video/'):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持上传视频文件到知识库。")
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"不支持的文件类型: {file.content_type}。仅支持TXT, MD, PDF, DOCX, 图片文件及常见Office文档。")
+
+    # 4. 将文件上传到OSS
+    file_bytes = await file.read()  # 读取文件所有字节
     file_extension = os.path.splitext(file.filename)[1]  # 获取文件扩展名
-    unique_filename = f"{uuid.uuid4().hex}{file_extension}"
-    file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_filename)
+
+    # 根据文件类型确定OSS存储路径前缀
+    oss_path_prefix = "knowledge_documents"  # 默认文档
+    if file.content_type.startswith('image/'):
+        oss_path_prefix = "knowledge_images"
+    # 如果要支持更多类型，这里可以扩展
+    # elif file.content_type.startswith('application/vnd.openxmlformats-officedocument'):
+    #     oss_path_prefix = "knowledge_office_files"
+
+    object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"  # OSS上的文件路径和名称
 
     try:
-        with open(file_path, "wb") as f:
-            while contents := await file.read(1024 * 1024):  # 分块读取，防止大文件爆内存
-                f.write(contents)
-        print(f"DEBUG_UPLOAD: 文件 '{file.filename}' 保存到 {file_path}")
+        oss_url = await oss_utils.upload_file_to_oss(
+            file_bytes=file_bytes,
+            object_name=object_name,
+            content_type=file.content_type
+        )
+        print(f"DEBUG_UPLOAD: 文件 '{file.filename}' 上传到OSS成功，URL: {oss_url}")
+    except HTTPException as e:  # oss_utils.upload_file_to_oss 会抛出 HTTPException
+        print(f"ERROR_UPLOAD: 上传文件到OSS失败: {e.detail}")
+        raise e  # 直接重新抛出，让FastAPI处理
     except Exception as e:
-        print(f"ERROR_UPLOAD: 保存文件失败: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件保存失败: {e}")
+        print(f"ERROR_UPLOAD: 上传文件到OSS时发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传到云存储失败: {e}")
 
-    # 3. 在数据库中创建初始文档记录 (状态为 processing)
+    # 5. 在数据库中创建初始文档记录 (状态为 processing)
+    # file_path 现在存储的是 OSS 的 URL
     db_document = KnowledgeDocument(
         kb_id=kb_id,
         owner_id=current_user_id,
         file_name=file.filename,
-        file_path=file_path,
+        file_path=oss_url,  # 现在存储的是OSS URL
         file_type=file.content_type,
+        kb_folder_id=kb_folder_id,  # <<< 存储文件夹ID
         status="processing",
-        processing_message="文件已上传，等待处理..."
+        processing_message="文件已上传到云存储，等待处理..."
     )
     db.add(db_document)
     db.commit()
     db.refresh(db_document)
 
-    # 4. 异步启动后台处理任务 (传入 db.session 的当前状态)
-    # 这里需要创建一个新的Session，因为后台任务是在另一个协程中运行
+    # 6. 异步启动后台处理任务 (传入 db.session 的当前状态)
     from database import SessionLocal
     background_db_session = SessionLocal()  # 创建一个新的会话
     asyncio.create_task(
@@ -3618,11 +5113,22 @@ async def upload_knowledge_document(
             db_document.id,
             current_user_id,
             kb_id,
-            file_path,
+            object_name,  # 这里传递OSS对象名称
             file.content_type,
-            background_db_session  # 传递新会话
+            background_db_session
         )
     )
+
+    # Fill folder name for response
+    if db_document.kb_folder_id:
+        if target_kb_folder:
+            db_document.kb_folder_name_for_response = target_kb_folder.name
+        else:  # Fallback query
+            folder_obj = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == db_document.kb_folder_id).first()
+            db_document.kb_folder_name_for_response = folder_obj.name if folder_obj else "未分类"  # Or handle as error
+    else:
+        db_document.kb_folder_name_for_response = "未分类"  # For top-level documents
 
     print(f"DEBUG_UPLOAD: 文档 {db_document.id} 已接受上传，后台处理中。")
     return db_document
@@ -3634,13 +5140,19 @@ async def get_knowledge_base_documents(
         kb_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        status_filter: Optional[str] = None  # 根据状态过滤
+        kb_folder_id: Optional[int] = Query(None, description="按知识库文件夹ID过滤。传入0表示顶级文件夹（即kb_folder_id为NULL）"), # <<< 新增这行
+        status_filter: Optional[str] = Query(None, description="按处理状态过滤（processing, completed, failed）"),  # 根据状态过滤
+        query_str: Optional[str] = Query(None, description="按关键词搜索文件名"), # 新增搜索功能
+        page: int = Query(1, ge=1, description="页码，从1开始"), # 新增分页
+        page_size: int = Query(20, ge=1, le=100, description="每页文档数量") # 新增分页
 ):
     """
     获取指定知识库下所有知识文档（已上传文件）的列表。
+    可以按文件夹ID、处理状态和文件名关键词进行过滤。
     """
-    print(f"DEBUG: 获取知识库 {kb_id} 的文档列表，用户 {current_user_id}。")
-    # 验证知识库是否存在且属于当前用户
+    print(f"DEBUG: 获取知识库 {kb_id} 的文档列表，用户 {current_user_id}。文件夹ID: {kb_folder_id}")
+
+    # 1. 验证知识库是否存在且属于当前用户
     knowledge_base = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id,
                                                     KnowledgeBase.owner_id == current_user_id).first()
     if not knowledge_base:
@@ -3649,12 +5161,47 @@ async def get_knowledge_base_documents(
     query = db.query(KnowledgeDocument).filter(KnowledgeDocument.kb_id == kb_id,
                                                KnowledgeDocument.owner_id == current_user_id)
 
+    # 2. 应用文件夹过滤
+    if kb_folder_id is not None:
+        if kb_folder_id == 0: # 0 表示顶级文件夹，即 kb_folder_id 为 NULL
+            query = query.filter(KnowledgeDocument.kb_folder_id.is_(None))
+        else: # 查询特定文件夹下的文档，并验证文件夹存在且属于该知识库
+            existing_kb_folder = db.query(KnowledgeBaseFolder).filter(
+                KnowledgeBaseFolder.id == kb_folder_id,
+                KnowledgeBaseFolder.kb_id == kb_id,
+                KnowledgeBaseFolder.owner_id == current_user_id
+            ).first()
+            if not existing_kb_folder:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定知识库文件夹未找到或无权访问。")
+            query = query.filter(KnowledgeDocument.kb_folder_id == kb_folder_id)
+
+    # 3. 应用状态过滤
     if status_filter:
         query = query.filter(KnowledgeDocument.status == status_filter)
 
-    documents = query.order_by(KnowledgeDocument.created_at.desc()).all()
+    # 4. 应用关键词搜索 (文件名)
+    if query_str:
+        query = query.filter(KnowledgeDocument.file_name.ilike(f"%{query_str}%"))
+
+
+    # 5. 应用分页
+    offset = (page - 1) * page_size
+    documents = query.order_by(KnowledgeDocument.created_at.desc()).offset(offset).limit(page_size).all()
+
+    # 6. 填充响应模型中的动态字段：文件夹名称
+    # 提前加载所有相关知识库文件夹，避免 N+1 查询
+    kb_folder_ids_in_results = list(set([doc.kb_folder_id for doc in documents if doc.kb_folder_id is not None]))
+    kb_folder_map = {f.id: f.name for f in db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id.in_(kb_folder_ids_in_results)).all()}
+
+    for doc in documents:
+        if doc.kb_folder_id and doc.kb_folder_id in kb_folder_map:
+            doc.kb_folder_name_for_response = kb_folder_map[doc.kb_folder_id]
+        elif doc.kb_folder_id is None:
+            doc.kb_folder_name_for_response = "未分类" # 或其他表示根目录的字符串
+
     print(f"DEBUG: 知识库 {kb_id} 获取到 {len(documents)} 个文档。")
     return documents
+
 
 
 @app.get("/knowledge-bases/{kb_id}/documents/{document_id}", response_model=schemas.KnowledgeDocumentResponse,
@@ -3676,6 +5223,16 @@ async def get_knowledge_document_detail(
     ).first()
     if not document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档未找到或无权访问。")
+
+    if document.kb_folder_id:
+        kb_folder_obj = db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id == document.kb_folder_id).first()
+        if kb_folder_obj:
+            document.kb_folder_name_for_response = kb_folder_obj.name
+        else:
+            document.kb_folder_name_for_response = "未知文件夹" # 或处理错误情况
+    elif document.kb_folder_id is None:
+        document.kb_folder_name_for_response = "未分类" # 或其他表示根目录的字符串
+
     return document
 
 
@@ -3687,7 +5244,7 @@ async def delete_knowledge_document(
         db: Session = Depends(get_db)
 ):
     """
-    删除指定知识库下的指定知识文档及其所有文本块和本地文件。
+    删除指定知识库下的指定知识文档及其所有文本块和OSS文件。
     """
     print(f"DEBUG: 删除文档 ID: {document_id}。")
     db_document = db.query(KnowledgeDocument).filter(
@@ -3698,15 +5255,25 @@ async def delete_knowledge_document(
     if not db_document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档未找到或无权访问。")
 
-    # 删除本地文件
-    if os.path.exists(db_document.file_path):
-        os.remove(db_document.file_path)
-        print(f"DEBUG: 已删除本地文件: {db_document.file_path}")
+    # <<< 修改：从OSS删除文件 >>>
+    # 从OSS URL中解析出 object_name
+    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    object_name = db_document.file_path.replace(oss_base_url_parsed, '', 1) if db_document.file_path.startswith(oss_base_url_parsed) else db_document.file_path
+
+    if object_name:
+        try:
+            await oss_utils.delete_file_from_oss(object_name)
+            print(f"DEBUG: 已删除OSS文件: {object_name}")
+        except Exception as e:
+            print(f"ERROR: 删除OSS文件 {object_name} 失败: {e}")
+            # 这里不抛出异常，即使OSS文件删除失败，也应该允许数据库记录被删除
+    else:
+        print(f"WARNING: 文档 {document_id} 的 file_path 无效或非OSS URL: {db_document.file_path}，跳过OSS文件删除。")
 
     # 删除数据库记录（级联删除所有文本块）
     db.delete(db_document)
     db.commit()
-    print(f"DEBUG: 文档 {document_id} 及其文本块已从数据���删除。")
+    print(f"DEBUG: 文档 {document_id} 及其文本块已从数据库删除。")
     return {"message": "Knowledge document deleted successfully"}
 
 
@@ -3730,17 +5297,24 @@ async def get_document_raw_content(
     if not document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档未找到或无权访问。")
 
-    if document.status != "completed":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"文档状态为 '{document.status}'，文本处理尚未完成或失败。")
+    # if document.status != "completed": # 原始如果只从 chunk 拿就检查完成状态
+    #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+    #                         detail=f"文档状态为 '{document.status}'，文本处理尚未完成或失败。")
 
+    # 直接从数据库的 chunks 获取完整内容，而不是尝试重新解析文件
     # 拼接所有文本块的内容
+    # 这是一个更可靠的方式来获取处理后的文档文本
     chunks = db.query(KnowledgeDocumentChunk).filter(
         KnowledgeDocumentChunk.document_id == document_id
     ).order_by(KnowledgeDocumentChunk.chunk_index).all()
 
     if not chunks:
-        return {"content": "无文本块或文本为空。"}
+        # 如果没有文本块，但文档状态是 completed，说明可能内容为空
+        if document.status == "completed":
+             return {"content": "文档已处理完成，但内容为空。"}
+        else: # 否则还在处理中或失败
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"文档状态为 '{document.status}'，文本处理尚未完成或失败，暂无内容。")
 
     full_content = "\n".join([c.content for c in chunks])
     return {"content": full_content}
@@ -3784,19 +5358,34 @@ async def get_document_chunks(
 # --- AI问答与智能搜索接口 ---
 @app.post("/ai/qa", response_model=schemas.AIQAResponse, summary="AI智能问答 (通用、RAG或工具调用)")
 async def ai_qa(
-        qa_request: schemas.AIQARequest,
+        query: str = Form(..., description="用户的问题文本"),  # 将 query 改为 Form 参数
+        conversation_id: Optional[int] = Form(None, description="要继续的对话Session ID。如果为空，则开始新的对话。"),
+        # conversation_id 改为 Form 参数
+        kb_ids: Optional[List[int]] = Form(None, description="要检索的知识库ID列表，格式为JSON字符串",
+                                           json_payload=True),  # kb_ids 改为 Form 参数（并指示它是JSON payload）
+        note_ids: Optional[List[int]] = Form(None, description="要检索的笔记ID列表，格式为JSON字符串",
+                                             json_payload=True),  # note_ids 改为 Form 参数
+        use_tools: Optional[bool] = Form(False, description="是否启用AI智能工具调用"),  # use_tools 改为 Form 参数
+        preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = Form(None,
+                                                                                         description="AI在工具模式下偏好使用的工具类型列表，格式为JSON字符串",
+                                                                                         json_payload=True),
+        # preferred_tools 改为 Form 参数
+        llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),  # llm_model_id 改为 Form 参数
+        uploaded_file: Optional[UploadFile] = File(None, description="可选：上传文件（图片或文档）对AI进行提问"),
+        # 新增文件上传参数
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
     使用LLM进行问答，并支持对话历史记录。
-    - 如果 `qa_request.conversation_id` 为空，则开始新的对话。
-    - 否则，加载指定对话的历史记录作为LLM的上下文。
+    支持上传文件或图片作为临时上下文对AI进行提问。
+    - `query`：用户的问题文本。
+    - `conversation_id`：如果为空，则开始新的对话。否则，加载指定对话的历史记录作为LLM的上下文。
     - `use_tools` 为 `False`：通用问答。
     - `use_tools` 为 `True`：LLM将尝试智能选择并调用工具 (RAG、网络搜索、MCP工具)。
     """
     print(
-        f"DEBUG: 用户 {current_user_id} 提问: {qa_request.query}，使用工具模式: {qa_request.use_tools}，偏好工具: {qa_request.preferred_tools}")
+        f"DEBUG: 用户 {current_user_id} 提问: {query}，使用工具模式: {use_tools}，偏好工具: {preferred_tools}，文件: {uploaded_file.filename if uploaded_file else '无'}")
 
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
@@ -3806,9 +5395,9 @@ async def ai_qa(
     db_conversation: AIConversation
     past_messages_for_llm: List[Dict[str, Any]] = []
 
-    if qa_request.conversation_id:
+    if conversation_id:
         db_conversation = db.query(AIConversation).filter(
-            AIConversation.id == qa_request.conversation_id,
+            AIConversation.id == conversation_id,
             AIConversation.user_id == current_user_id
         ).first()
         if not db_conversation:
@@ -3839,10 +5428,75 @@ async def ai_qa(
         db.flush()  # 这里刷新一次以获取新对话的 ID
         print(f"DEBUG_AI_CONV: 创建了新的对话 session ID: {db_conversation.id}")
 
+    # <<< 新增文件上传处理逻辑起点 >>>
+    temp_file_ids_for_context: List[int] = []
+    if uploaded_file:
+        allowed_mime_types = [
+            "text/plain", "text/markdown", "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"
+        ]
+        if uploaded_file.content_type not in allowed_mime_types:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"不支持的文件类型: {uploaded_file.content_type}。仅支持文本、PDF、DOCX和图片文件。")
+
+        file_bytes = await uploaded_file.read()
+        file_extension = os.path.splitext(uploaded_file.filename)[1]
+
+        # OSS对象名称，确保唯一
+        oss_object_name = f"ai_chat_temp_files/{uuid.uuid4().hex}{file_extension}"
+
+        try:
+            # 文件上传到OSS
+            await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=oss_object_name,
+                content_type=uploaded_file.content_type
+            )
+            print(f"DEBUG_AI_QA: 文件 '{uploaded_file.filename}' 上传到OSS成功: {oss_object_name}")
+
+            # 创建 AIConversationTemporaryFile 记录
+            temp_file_record = AIConversationTemporaryFile(
+                conversation_id=db_conversation.id,
+                oss_object_name=oss_object_name,
+                original_filename=uploaded_file.filename,
+                file_type=uploaded_file.content_type,
+                status="pending",  # 初始状态为pending
+                processing_message="文件已上传，等待处理文本和生成嵌入..."
+            )
+            db.add(temp_file_record)
+            db.flush()  # 刷新以获取ID
+
+            temp_file_ids_for_context.append(temp_file_record.id)
+
+            # 在后台异步处理文件，提取文本并生成嵌入
+            from database import SessionLocal
+            background_db_session = SessionLocal()  # 为后台任务创建新的会话
+            asyncio.create_task(
+                process_ai_temp_file_in_background(
+                    temp_file_record.id,
+                    current_user_id,  # 传入用户ID以便获取其LLM配置
+                    oss_object_name,
+                    uploaded_file.content_type,
+                    background_db_session
+                )
+            )
+
+            # 将文件信息作为用户消息的一部分，提示AI已上传文件
+            file_link = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{oss_object_name}"
+            file_prompt = f"\n\n用户上传了一个名为 '{uploaded_file.filename}' 的{uploaded_file.content_type}文件 ({file_link})。您稍后可以利用其内容进行回答。"
+            query += file_prompt  # 将文件信息加入当前查询，提示LLM
+
+        except Exception as e:
+            db.rollback()  # 文件上传或记录创建失败，回滚
+            print(f"ERROR_AI_QA: 处理上传文件失败: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"处理上传文件失败: {e}")
+    # <<< 新增文件上传处理逻辑终点 >>>
+
     llm_type = user.llm_api_type
     llm_key_encrypted = user.llm_api_key_encrypted
     llm_base_url = user.llm_api_base_url
-    llm_model_id = qa_request.llm_model_id or user.llm_model_id  # 优先使用请求中的模型，其次用户默认配置
+    llm_model_id_final = llm_model_id or user.llm_model_id  # 优先使用请求中的模型，其次用户默认配置
 
     if not llm_type or not llm_key_encrypted:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -3857,17 +5511,19 @@ async def ai_qa(
     try:
         # 2. 调用 invoke_agent 获取当前轮次的所有消息和最终答案
         agent_raw_response = await ai_core.invoke_agent(
-            db=db, # 确保传递 db 会话
+            db=db,  # 确保传递 db 会话
             user_id=current_user_id,
-            query=qa_request.query,
+            query=query,  # 这里的 query 可能已经包含了文件上传信息
             llm_api_type=llm_type,
             llm_api_key=llm_key,
             llm_api_base_url=llm_base_url,
-            llm_model_id=llm_model_id,
-            kb_ids=qa_request.kb_ids,
-            note_ids=qa_request.note_ids,
-            preferred_tools=qa_request.preferred_tools,
-            past_messages=past_messages_for_llm
+            llm_model_id=llm_model_id_final,
+            kb_ids=kb_ids,
+            note_ids=note_ids,
+            preferred_tools=preferred_tools,
+            past_messages=past_messages_for_llm,
+            # <<< 新增：传递临时文件ID到 invoke_agent，以便 RAG 阶段考虑这些文件 >>>
+            temp_file_ids=temp_file_ids_for_context
         )
 
         response_to_client = schemas.AIQAResponse(
@@ -3876,11 +5532,11 @@ async def ai_qa(
             llm_type_used=agent_raw_response.get("llm_type_used"),
             llm_model_used=agent_raw_response.get("llm_model_used"),
             conversation_id=db_conversation.id,
-            turn_messages=[] # 先初始化为空，后面填充
+            turn_messages=[]  # 先初始化为空，后面填充
         )
 
         # 3. 持久化当前轮次的所有消息并立即刷新，以便获取 ID 和时间戳
-        messages_to_refresh_and_validate = [] # 用于暂存 db_message 对象
+        messages_to_refresh_and_validate = []  # 用于暂存 db_message 对象
         for msg_data in agent_raw_response.get("turn_messages_to_log", []):
             db_message = AIConversationMessage(
                 conversation_id=db_conversation.id,
@@ -3892,12 +5548,12 @@ async def ai_qa(
                 llm_model_used=msg_data.get("llm_model_used")
             )
             db.add(db_message)
-            messages_to_refresh_and_validate.append(db_message) # 添加到临时列表
+            messages_to_refresh_and_validate.append(db_message)  # 添加到临时列表
 
-        db.flush() # 将所有新消息写入数据库（但不提交）
+        db.flush()  # 将所有新消息写入数据库（但不提交）
 
         for db_msg in messages_to_refresh_and_validate:
-            db.refresh(db_msg) # 从数据库加载 id 和 sent_at
+            db.refresh(db_msg)  # 从数据库加载 id 和 sent_at
             response_to_client.turn_messages.append(
                 schemas.AIConversationMessageResponse.model_validate(db_msg, from_attributes=True)
             )
@@ -3906,7 +5562,7 @@ async def ai_qa(
         db_conversation.last_updated = func.now()
         db.add(db_conversation)
 
-        db.commit() # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
+        db.commit()  # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
 
         # 如果需要，这里可以进一步处理 source_articles 和 search_results
         response_to_client.source_articles = agent_raw_response.get("source_articles")
@@ -3919,7 +5575,7 @@ async def ai_qa(
         db.rollback()
         print(f"ERROR: AI问答请求失败: {e}")
         # 如果是新创建的对话，并且在问答过程中失败，可以考虑删除它
-        if not qa_request.conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
+        if not conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
             try:  # 尝试清理空对话（如果没消息）
                 if db.query(AIConversationMessage).filter(
                         AIConversationMessage.conversation_id == db_conversation.id).count() == 0:
@@ -3928,7 +5584,7 @@ async def ai_qa(
                     print(f"DEBUG_AI_CONV_CLEANUP: 问答失败，已删除空对话 {db_conversation.id}。")
             except Exception as cleanup_e:
                 print(f"ERROR_AI_CONV_CLEANUP: 问答失败后清理空对话 {db_conversation.id} 失败: {cleanup_e}")
-                db.rollback() # 再次回滚以防清理也出错
+                db.rollback()  # 再次回滚以防清理也出错
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI问答失败: {e}")
 
 
@@ -4608,130 +6264,162 @@ async def create_course_material(
     if not db_course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
 
-    # 2. 根据材料类型处理数据 (这部分逻辑保持不变)
-    material_params = {
-        "course_id": course_id,
-        "title": material_data.title,
-        "type": material_data.type,
-        "content": material_data.content  # 可选，无论哪种类型都可作为补充描述
-    }
-
-    file_path = None
-    if material_data.type == "file":
-        if not file:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'file' 时，必须上传文件。")
-        file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
-        file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_filename)
-        try:
-            with open(file_path, "wb") as f:
-                contents = await file.read()
-                f.write(contents)
-            material_params["file_path"] = file_path
-            material_params["original_filename"] = file.filename
-            material_params["file_type"] = file.content_type
-            material_params["size_bytes"] = file.size
-            print(f"DEBUG_COURSE_MATERIAL: 文件 '{file.filename}' 已保存到 {file_path}")
-        except Exception as e:
-            print(f"ERROR_COURSE_MATERIAL: 保存文件失败: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件保存失败: {e}")
-    elif material_data.type == "link":
-        if not material_data.url:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'link' 时，'url' 字段为必填。")
-        material_params["url"] = material_data.url
-        material_params["original_filename"] = None;
-        material_params["file_type"] = None;
-        material_params["size_bytes"] = None
-    elif material_data.type == "text":
-        if not material_data.content:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="类型为 'text' 时，'content' 字段为必填。")
-        material_params["url"] = None;
-        material_params["original_filename"] = None;
-        material_params["file_type"] = None;
-        material_params["size_bytes"] = None
-    else:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效的材料类型。")
-
-    # 3. 生成 combined_text 用于嵌入，并计算嵌入向量
-    combined_text_content = ". ".join(filter(None, [
-        _get_text_part(material_data.title),
-        _get_text_part(material_data.content),
-        _get_text_part(material_data.url),
-        _get_text_part(material_data.original_filename),
-        _get_text_part(material_data.file_type)
-    ])).strip()
-    if not combined_text_content.strip():
-        combined_text_content = ""
-
-    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
-
-    # 获取管理员的LLM配置用于嵌入生成
-    admin_llm_api_key = None
-    admin_llm_type = None
-    admin_llm_base_url = None
-    admin_llm_model_id = None
-
-    if current_admin_user.llm_api_type == "siliconflow" and current_admin_user.llm_api_key_encrypted:
-        try:
-            admin_llm_api_key = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
-            admin_llm_type = current_admin_user.llm_api_type
-            admin_llm_base_url = current_admin_user.llm_api_base_url
-            admin_llm_model_id = current_admin_user.llm_model_id
-            print(f"DEBUG_EMBEDDING_KEY: 使用管理员配置的硅基流动 API 密钥为课程材料生成嵌入。")
-        except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密管理员硅基流动 API 密钥失败: {e}。课程材料嵌入将使用零向量。")
-            admin_llm_api_key = None
-    else:
-        print(f"DEBUG_EMBEDDING_KEY: 管理员未配置硅基流动 API 类型或密钥，课程材料嵌入将使用零向量或默认行为。")
-
-    if combined_text_content:
-        try:
-            new_embedding = await ai_core.get_embeddings_from_api(
-                [combined_text_content],
-                api_key=admin_llm_api_key,
-                llm_type=admin_llm_type,
-                llm_base_url=admin_llm_base_url,
-                llm_model_id=admin_llm_model_id
-            )
-            if new_embedding:
-                embedding = new_embedding[0]
-            else:
-                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
-            print(f"DEBUG_COURSE_MATERIAL: 材料嵌入向量已生成。")
-        except Exception as e:
-            print(f"ERROR_COURSE_MATERIAL: 生成材料嵌入向量失败: {e}. 嵌入向量设为零。")
-            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
-    else:
-        print(f"WARNING_EMBEDDING: 课程材料 combined_text 为空，嵌入向量设为零。")
-
-    material_params["combined_text"] = combined_text_content
-    material_params["embedding"] = embedding
-
-    # 4. 创建数据库记录
-    db_material = CourseMaterial(**material_params)
-    db.add(db_material)
+    # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
+    oss_object_name_for_rollback = None
 
     try:
-        db.commit()
+        # 2. 根据材料类型处理数据
+        material_params = {
+            "course_id": course_id,
+            "title": material_data.title,
+            "type": material_data.type,
+            "content": material_data.content  # 可选，无论哪种类型都可作为补充描述
+        }
+
+        if material_data.type == "file":
+            if not file:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="类型为 'file' 时，必须上传文件。")
+
+            # 读取文件所有字节
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            # OSS上的文件路径和名称，例如 course_materials/UUID.pdf
+            current_oss_object_name = f"course_materials/{uuid.uuid4().hex}{file_extension}"
+            oss_object_name_for_rollback = current_oss_object_name  # 记录用于回滚
+
+            try:
+                material_params["file_path"] = await oss_utils.upload_file_to_oss(  # 存储OSS URL
+                    file_bytes=file_bytes,
+                    object_name=current_oss_object_name,
+                    content_type=file.content_type
+                )
+                material_params["original_filename"] = file.filename
+                material_params["file_type"] = file.content_type
+                material_params["size_bytes"] = file.size
+                print(
+                    f"DEBUG_COURSE_MATERIAL: 文件 '{file.filename}' 上传到OSS成功，URL: {material_params['file_path']}")
+            except HTTPException as e:  # oss_utils.upload_file_to_oss will re-raise HTTPException
+                print(f"ERROR_COURSE_MATERIAL: 上传文件到OSS失败: {e.detail}")
+                raise e  # 直接重新抛出
+            except Exception as e:
+                print(f"ERROR_COURSE_MATERIAL: 上传文件到OSS时发生未知错误: {e}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"文件上传到云存储失败: {e}")
+
+        elif material_data.type == "link":
+            if not material_data.url:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="类型为 'link' 时，'url' 字段为必填。")
+            material_params["url"] = material_data.url
+            material_params["original_filename"] = None;
+            material_params["file_type"] = None;
+            material_params["size_bytes"] = None
+            material_params["file_path"] = None  # 确保明确为None
+        elif material_data.type == "text":
+            if not material_data.content:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="类型为 'text' 时，'content' 字段为必填。")
+            material_params["url"] = None;
+            material_params["original_filename"] = None;
+            material_params["file_type"] = None;
+            material_params["size_bytes"] = None
+            material_params["file_path"] = None  # 确保明确为None
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效的材料类型。")
+
+        # 3. 生成 combined_text 用于嵌入，并计算嵌入向量
+        combined_text_content = ". ".join(filter(None, [
+            _get_text_part(material_data.title),
+            _get_text_part(material_data.content),
+            _get_text_part(material_data.url),
+            _get_text_part(material_data.original_filename),
+            _get_text_part(material_data.file_type),
+            _get_text_part(material_params.get("file_path"))  # 添加file_path (OSS URL)到combined_text
+        ])).strip()
+        if not combined_text_content:  # 如果组合文本为空，可能需要给个默认值
+            combined_text_content = ""  # 确保是空字符串而不是None
+
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
+
+        # 获取管理员的LLM配置用于嵌入生成
+        admin_llm_api_key = None
+        admin_llm_type = current_admin_user.llm_api_type
+        admin_llm_base_url = current_admin_user.llm_api_base_url
+        admin_llm_model_id = current_admin_user.llm_model_id
+
+        if current_admin_user.llm_api_key_encrypted:
+            try:
+                admin_llm_api_key = ai_core.decrypt_key(current_admin_user.llm_api_key_encrypted)
+                admin_llm_type = current_admin_user.llm_api_type
+                admin_llm_base_url = current_admin_user.llm_api_base_url
+                admin_llm_model_id = current_admin_user.llm_model_id
+                print(f"DEBUG_EMBEDDING_KEY: 使用管理员配置的硅基流动 API 密钥为课程材料生成嵌入。")
+            except Exception as e:
+                print(f"ERROR_EMBEDDING_KEY: 解密管理员硅基流动 API 密钥失败: {e}。课程材料嵌入将使用零向量。")
+                admin_llm_api_key = None
+        else:
+            print(f"DEBUG_EMBEDDING_KEY: 管理员未配置硅基流动 API 类型或密钥，课程材料嵌入将使用零向量或默认行为。")
+
+        if combined_text_content:
+            try:
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [combined_text_content],
+                    api_key=admin_llm_api_key,
+                    llm_type=admin_llm_type,
+                    llm_base_url=admin_llm_base_url,
+                    llm_model_id=admin_llm_model_id
+                )
+                if new_embedding:
+                    embedding = new_embedding[0]
+                else:
+                    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
+                print(f"DEBUG_COURSE_MATERIAL: 材料嵌入向量已生成。")
+            except Exception as e:
+                print(f"ERROR_COURSE_MATERIAL: 生成材料嵌入向量失败: {e}. 嵌入向量设为零。")
+                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
+            print(f"WARNING_EMBEDDING: 课程材料 combined_text 为空，嵌入向量设为零。")
+
+        material_params["combined_text"] = combined_text_content
+        material_params["embedding"] = embedding
+
+        # 4. 创建数据库记录
+        db_material = CourseMaterial(**material_params)
+        db.add(db_material)
+
+        db.commit()  # 提交DB写入
         db.refresh(db_material)
+        print(f"DEBUG_COURSE_MATERIAL: 课程材料 '{db_material.title}' (ID: {db_material.id}) 创建成功。")
+        return db_material
+
     except IntegrityError as e:
         db.rollback()
-        if file_path and os.path.exists(file_path): os.remove(file_path); print(
-            f"DEBUG_COURSE_MATERIAL: 回滚时删除了文件: {file_path}")
+        # 如果数据库提交失败，并且之前有文件上传到OSS，则尝试删除OSS文件
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(
+                f"DEBUG_COURSE_MATERIAL: DB commit failed, attempting to delete OSS file: {oss_object_name_for_rollback}")
+
         print(f"ERROR_DB: 创建课程材料发生完整性约束错误: {e}")
         if "_course_material_title_uc" in str(e): raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                                                       detail="同一课程下已存在同名材料。")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建课程材料失败，可能存在数据冲突。")
+    except HTTPException as e:  # Catch FastAPI's HTTPException and re-raise it
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(
+                f"DEBUG_COURSE_MATERIAL: HTTP exception, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        raise e
     except Exception as e:
         db.rollback()
-        if file_path and os.path.exists(file_path): os.remove(file_path); print(
-            f"DEBUG_COURSE_MATERIAL: 错误回滚时删除了文件: {file_path}")
+        # 如果发生其他错误，并且之前有文件上传到OSS，则尝试删除OSS文件
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(
+                f"DEBUG_COURSE_MATERIAL: Unknown error, attempting to delete OSS file: {oss_object_name_for_rollback}")
         print(f"ERROR_DB: 创建课程材料发生未知错误: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建课程材料失败: {e}")
-
-    print(f"DEBUG_COURSE_MATERIAL: 课程材料 '{db_material.title}' (ID: {db_material.id}) 创建成功。")
-    return db_material
 
 
 @app.get("/courses/{course_id}/materials/", response_model=List[schemas.CourseMaterialResponse],
@@ -4800,88 +6488,105 @@ async def update_course_material(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
 
     update_dict = material_data.dict(exclude_unset=True)  # 获取所有明确传入的字段及其值
-    old_file_path = db_material.file_path  # 记录旧文件路径，以便替换时删除
 
-    # 类型转换的复杂逻辑 (保持不变)
-    if "type" in update_dict and update_dict["type"] != db_material.type:
-        # ... (类型转换逻辑保持不变) ...
-        new_type = update_dict["type"]
-        if db_material.type == "file" and new_type in ["link", "text"]:
-            if old_file_path and os.path.exists(old_file_path):
-                os.remove(old_file_path)
-                print(f"DEBUG_COURSE_MATERIAL: Deleted old file {old_file_path} due to type change.")
+    # 获取旧的OSS对象名称，用于替换时删除
+    old_oss_object_name = None
+    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    if db_material.file_path and db_material.file_path.startswith(oss_base_url_parsed):
+        old_oss_object_name = db_material.file_path.replace(oss_base_url_parsed, '', 1)
+
+    new_oss_object_name = None  # 用于新的文件上传成功后，在 commit 失败时回滚删除
+
+    # 类型转换的复杂逻辑
+    # 检查是否尝试改变材料类型
+    type_changed = "type" in update_dict and update_dict["type"] != db_material.type
+    new_type_from_data = update_dict.get("type", db_material.type)  # 获取新的类型，如果没变就用旧的
+
+    if type_changed:
+        # 如果从 "file" 类型改为其他类型，需要删除旧的OSS文件
+        if db_material.type == "file" and old_oss_object_name:
+            try:
+                # 异步删除旧的OSS文件，不阻塞主线程
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_oss_object_name))
+                print(f"DEBUG_COURSE_MATERIAL: Deleted old OSS file {old_oss_object_name} due to type change.")
+            except Exception as e:
+                print(
+                    f"ERROR_COURSE_MATERIAL: Failed to schedule deletion of old OSS file {old_oss_object_name} during type change: {e}")
+
+        # 清除旧文件相关的数据库字段（file_path, original_filename, file_type, size_bytes）
+        # 也清除 url 或 content，根据新类型而定
+        if new_type_from_data in ["link", "text"]:
             db_material.file_path = None
             db_material.original_filename = None
             db_material.file_type = None
             db_material.size_bytes = None
+            if new_type_from_data == "link":
+                db_material.content = None  # 如果改为link，清除content
+                if not update_dict.get("url") and not db_material.url:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail="类型为 'link' 时，'url' 字段为必填。")
+            elif new_type_from_data == "text":
+                db_material.url = None  # 如果改为text，清除url
+                if not update_dict.get("content") and not db_material.content:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail="类型为 'text' 时，'content' 字段为必填。")
 
-        if new_type == "link":
-            db_material.file_path = None
-            db_material.original_filename = None
-            db_material.file_type = None
-            db_material.size_bytes = None
-            db_material.content = None
-            if not update_dict.get("url") and not db_material.url:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                    detail="类型为 'link' 时，'url' 字段为必填。")
-        elif new_type == "text":
-            db_material.file_path = None
-            db_material.original_filename = None
-            db_material.file_type = None
-            db_material.size_bytes = None
-            db_material.url = None
-            if not update_dict.get("content") and not db_material.content:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                    detail="类型为 'text' 时，'content' 字段为必填。")
-        elif new_type == "file":
-            db_material.url = None
-            db_material.content = None
+        db_material.type = new_type_from_data  # 更新类型
 
-        db_material.type = new_type
-
-    # 如果上传了新文件 (保持不变)
-    new_file_path = None  # 初始化为None，用于捕获异常时的清理
+    # 如果上传了新文件 (无论类型是否改变，只要有文件上传就处理)
     if file:
-        if db_material.type != "file" and ("type" not in update_dict or update_dict["type"] != "file"):
+        # 如果当前材料类型不是 "file" （且不是从 "file" 类型更新），则不允许文件上传
+        if db_material.type != "file" and new_type_from_data != "file":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="只有类型为 'file' 的材料才能上传文件。如需更改材料类型，请在material_data中同时指定 type='file'。")
 
-        if old_file_path and os.path.exists(old_file_path) and db_material.type == "file":
+        # 如果旧文件存在且是文件类型，先从OSS删除旧文件
+        if db_material.type == "file" and old_oss_object_name:
             try:
-                os.remove(old_file_path)
-                print(f"DEBUG_COURSE_MATERIAL: Deleted old file: {old_file_path}")
+                # 异步删除旧的OSS文件
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_oss_object_name))
+                print(f"DEBUG_COURSE_MATERIAL: Deleted old OSS file: {old_oss_object_name} for replacement.")
             except Exception as e:
-                print(f"ERROR_COURSE_MATERIAL: Failed to delete old file {old_file_path}: {e}")
+                print(
+                    f"ERROR_COURSE_MATERIAL: Failed to schedule deletion of old OSS file {old_oss_object_name} during replacement: {e}")
 
+        # 读取新文件内容并上传到OSS
+        file_bytes = await file.read()
         new_file_extension = os.path.splitext(file.filename)[1]
-        unique_new_filename = f"{uuid.uuid4().hex}{new_file_extension}"
-        new_file_path = os.path.join(ai_core.UPLOAD_DIRECTORY, unique_new_filename)
+        new_oss_object_name = f"course_materials/{uuid.uuid4().hex}{new_file_extension}"  # OSS上的路径和文件名
 
         try:
-            with open(new_file_path, "wb") as f:
-                contents = await file.read()
-                f.write(contents)
-            db_material.file_path = new_file_path
+            db_material.file_path = await oss_utils.upload_file_to_oss(  # 存储OSS URL
+                file_bytes=file_bytes,
+                object_name=new_oss_object_name,
+                content_type=file.content_type
+            )
             db_material.original_filename = file.filename
             db_material.file_type = file.content_type
             db_material.size_bytes = file.size
 
-            if db_material.type != "file":
+            if db_material.type != "file":  # 如果之前不是file类型，且上传了文件，则强制改为file类型
                 db_material.type = "file"
                 print(f"DEBUG_COURSE_MATERIAL: Material type automatically changed to 'file' due to file upload.")
 
+            # 清除其他类型特有的字段
             db_material.url = None
             db_material.content = None
 
-            print(f"DEBUG_COURSE_MATERIAL: New file '{file.filename}' saved to {new_file_path}")
+            print(f"DEBUG_COURSE_MATERIAL: New file '{file.filename}' saved to OSS: {db_material.file_path}")
+        except HTTPException as e:  # oss_utils.upload_file_to_oss will re-raise HTTPException
+            print(f"ERROR_COURSE_MATERIAL: 上传新文件到OSS失败: {e.detail}")
+            raise e  # 直接重新抛出
         except Exception as e:
-            print(f"ERROR_COURSE_MATERIAL: Failed to save new file: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail=f"Failed to save new file: {e}")
+            print(f"ERROR_COURSE_MATERIAL: 上传新文件到OSS时发生未知错误: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传到云存储失败: {e}")
 
-    # 应用 material_data 中的其他更新 (保持不变)
+    # 应用 material_data 中的其他更新 (覆盖已处理的file/type字段)
+    # 确保 material_data.dict(exclude_unset=True) 不会将 file, url, content, type等重新覆盖为None如果是没传的话
+    # 所以要跳过已手工处理的字段
+    fields_to_skip_manual_update = ["type", "url", "content", "original_filename", "file_type", "size_bytes", "file"]
     for key, value in update_dict.items():
-        if key in ["type", "url", "content", "original_filename", "file_type", "size_bytes"]:
+        if key in fields_to_skip_manual_update:
             continue
         if hasattr(db_material, key):
             if key == "title":
@@ -4897,7 +6602,8 @@ async def update_course_material(
         _get_text_part(db_material.content),
         _get_text_part(db_material.url),
         _get_text_part(db_material.original_filename),
-        _get_text_part(db_material.file_type)
+        _get_text_part(db_material.file_type),
+        _get_text_part(db_material.file_path)  # 添加file_path (OSS URL)到combined_text
     ])).strip()
 
     # 获取管理员LLM配置和API密钥用于嵌入生成 (管理员对象已从依赖注入提供)
@@ -4942,9 +6648,11 @@ async def update_course_material(
         db.refresh(db_material)
     except IntegrityError as e:
         db.rollback()
-        if new_file_path and os.path.exists(new_file_path):
-            os.remove(new_file_path)
-            print(f"DEBUG_COURSE_MATERIAL: Deleted new file on rollback: {new_file_path}")
+        # 如果数据库提交失败，尝试删除新上传的OSS文件
+        if new_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_oss_object_name))
+            print(
+                f"DEBUG_COURSE_MATERIAL: Update DB commit failed, attempting to delete new OSS file: {new_oss_object_name}")
         print(f"ERROR_DB: Update course material integrity constraint error: {e}")
         if "_course_material_title_uc" in str(e):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同一课程下已存在同名材料。")
@@ -4954,9 +6662,11 @@ async def update_course_material(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新课程材料失败，可能存在数据冲突。")
     except Exception as e:
         db.rollback()
-        if new_file_path and os.path.exists(new_file_path):
-            os.remove(new_file_path)
-            print(f"DEBUG_COURSE_MATERIAL: Deleted new file on error rollback: {new_file_path}")
+        # 如果发生其他错误，尝试删除新上传的OSS文件
+        if new_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_oss_object_name))
+            print(
+                f"DEBUG_COURSE_MATERIAL: Unknown error during update, attempting to delete new OSS file: {new_oss_object_name}")
         print(f"ERROR_DB: Unknown error during course material update: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新课程材料失败: {e}")
 
@@ -4981,18 +6691,25 @@ async def delete_course_material(
     if not db_material:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程材料未找到或不属于该课程。")
 
-    # 如果是文件类型，同时删除本地文件
-    if db_material.type == "file" and db_material.file_path and os.path.exists(db_material.file_path):
-        try:
-            os.remove(db_material.file_path)
-            print(f"DEBUG_COURSE_MATERIAL: 删除了本地文件: {db_material.file_path}")
-        except Exception as e:
-            print(f"ERROR_COURSE_MATERIAL: 删除本地文件失败: {e}")
-            # 不阻碍DB记录删除，但记录错误
+    # 如果材料是 'file' 类型，从OSS删除文件
+    if db_material.type == "file" and db_material.file_path:
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        # 从OSS URL中解析出 object_name
+        object_name = db_material.file_path.replace(oss_base_url_parsed, '', 1) if db_material.file_path.startswith(oss_base_url_parsed) else db_material.file_path
+
+        if object_name:
+            try:
+                await oss_utils.delete_file_from_oss(object_name)
+                print(f"DEBUG_COURSE_MATERIAL: 删除了OSS文件: {object_name}")
+            except Exception as e:
+                print(f"ERROR_COURSE_MATERIAL: 删除OSS文件 {object_name} 失败: {e}")
+                # 这里不抛出异常，即使OSS文件删除失败，也应该允许数据库记录被删除
+        else:
+            print(f"WARNING_COURSE_MATERIAL: 材料 {material_id} 的 file_path 无效或非OSS URL: {db_material.file_path}，跳过OSS文件删除。")
 
     db.delete(db_material)
     db.commit()
-    print(f"DEBUG_COURSE_MATERIAL: 课程材料 ID: {material_id} 及其关联文件已删除。")
+    print(f"DEBUG_COURSE_MATERIAL: 课程材料 ID: {material_id} 及其关联数据已删除。")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -5178,245 +6895,77 @@ async def delete_folder(
     return {"message": "Folder and its contents deleted successfully"}
 
 
-# --- 具体收藏内容管理接口  ---
+# --- 具体收藏内容管理接口 ---
 @app.post("/collections/", response_model=schemas.CollectedContentResponse, summary="创建新收藏内容")
 async def create_collected_content(
-        content_data: schemas.CollectedContentBase,
+        # Changed to Depends() to allow mixing body (JSON) and file (form-data)
+        content_data: schemas.CollectedContentBase = Depends(),
+        file: Optional[UploadFile] = File(None, description="可选：上传文件或图片作为收藏内容"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    为当前用户创建一条新收藏内容。支持直接创建文本/链接/图片/文件内容，
-    或通过 shared_item_type 和 shared_item_id 收藏平台内部资源（项目、课程、论坛话题、笔记、随手记录、知识库文章、聊天消息等）。
-    后端会根据内容生成 combined_text 和 embedding。
+    为当前用户创建一条新收藏内容。支持直接创建文本/链接/媒体内容，
+    或通过 shared_item_type 和 shared_item_id 收藏平台内部资源。
+    如果上传文件，将存储到OSS并保存URL。
     """
     print(
-        f"DEBUG: 用户 {current_user_id} 尝试创建收藏。标题: {content_data.title}, 共享类型: {content_data.shared_item_type}")
+        f"DEBUG: 用户 {current_user_id} 尝试创建收藏。标题: {content_data.title}, 共享类型: {content_data.shared_item_type}, 有文件: {bool(file)}")
 
-    # 直接调用内部辅助函数来处理所有业务逻辑
-    return await _create_collected_content_item_internal(db, current_user_id, content_data)
+    uploaded_file_object_name = None  # For rollback
+    uploaded_file_size = None
 
-    # 1. 验证目标文件夹是否存在且属于当前用户 (如果提供了folder_id)
-    if content_data.folder_id:
-        target_folder = db.query(Folder).filter(
-            Folder.id == content_data.folder_id,
-            Folder.owner_id == current_user_id
-        ).first()
-        if not target_folder:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                detail="目标文件夹未找到或无权访问。")
-
-    # 2. 处理共享内部资源逻辑
-    final_title = content_data.title  # 优先使用用户提供的标题
-    final_type = content_data.type  # 优先使用用户提供的类型
-    final_url = content_data.url
-    final_content = content_data.content
-    final_author = content_data.author
-    final_tags = content_data.tags
-    final_thumbnail = content_data.thumbnail
-    final_duration = content_data.duration
-    final_file_size = content_data.file_size
-    final_status = content_data.status
-
-    # 如果有 shared_item_type，说明是收藏内部资源
-    if content_data.shared_item_type and content_data.shared_item_id is not None:
-        model_map = {
-            "project": Project,
-            "course": Course,
-            "forum_topic": ForumTopic,
-            "note": Note,
-            "daily_record": DailyRecord,
-            "knowledge_article": KnowledgeArticle,
-            "chat_message": ChatMessage,  # 用于收藏聊天中的文件/图片等特定消息
-            "knowledge_document": KnowledgeDocument  # 收藏知识文档，而不是其文章
-        }
-        source_model = model_map.get(content_data.shared_item_type)
-
-        if not source_model:
+    # Handle direct file upload to OSS first
+    if file:
+        if content_data.type not in ["file", "image", "video"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"不支持的共享项类型: {content_data.shared_item_type}")
+                                detail="当上传文件时，收藏类型 (type) 必须为 'file', 'image' 或 'video'。")
 
-        # 获取源数据对象
-        source_item = db.query(source_model).filter(source_model.id == content_data.shared_item_id).first()
-        if not source_item:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                detail=f"共享项 (类型: {content_data.shared_item_type}, ID: {content_data.shared_item_id}) 未找到。")
+        file_bytes = await file.read()
+        file_extension = os.path.splitext(file.filename)[1]
+        content_type = file.content_type
+        uploaded_file_size = file.size
 
-        # 从源数据对象提取信息来填充收藏内容
-        final_title = source_item.title if hasattr(source_item, 'title') else source_item.name if hasattr(source_item,
-                                                                                                          'name') else f"{content_data.shared_item_type} #{content_data.shared_item_id}"
-        final_content = source_item.description if hasattr(source_item,
-                                                           'description') and source_item.description else source_item.content if hasattr(
-            source_item, 'content') else None
+        # Determine OSS path prefix based on content type
+        oss_path_prefix = "collected_files"
+        if content_type.startswith('image/'):
+            oss_path_prefix = "collected_images"
+        elif content_type.startswith('video/'):
+            oss_path_prefix = "collected_videos"
 
-        # 尝试提取URL、文件信息（特别是针对 ChatMessage 或 CourseMaterial 中的文件/图片）
-        if hasattr(source_item, 'url') and source_item.url:
-            final_url = source_item.url
-        elif hasattr(source_item,
-                     'media_url') and source_item.media_url and content_data.shared_item_type == "chat_message":
-            final_url = source_item.media_url
-        elif hasattr(source_item, 'file_path') and source_item.file_path and content_data.shared_item_type in [
-            "course_material", "knowledge_document"]:
-            # 注意：file_path是服务器本地路径，如果提供给前端，需要通过接口转换成可访问URL
-            # 这里简化处理，直接存储。如果需要，应转换为公共访问URL
-            # 也可以不在这里自动设置url，让用户自己指定或通过前端处理
-            # 或者更合理的，在CollectedContent中增加一个 file_storage_path 字段
-            # 目前，我们只提供可直接访问的URL。如果file_path是本地的，不做自动设置。
-            pass
+        uploaded_file_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
 
-        if hasattr(source_item, 'owner') and source_item.owner and hasattr(source_item.owner, 'name'):
-            final_author = source_item.owner.name
-        elif hasattr(source_item, 'creator') and source_item.creator and hasattr(source_item.creator, 'name'):
-            final_author = source_item.creator.name
-        elif hasattr(source_item, 'author') and source_item.author and hasattr(source_item.author,
-                                                                               'name'):  # knowledge_article 的 author 是用户对象
-            final_author = source_item.author.name
-        elif hasattr(source_item, 'sender') and source_item.sender and hasattr(source_item.sender,
-                                                                               'name'):  # chat_message 的 sender 是用户对象
-            final_author = source_item.sender.name
-
-        # 自动确定收藏类型
-        if content_data.shared_item_type == "chat_message" and final_url and (
-                content_data.type is None or content_data.type == "file"):
-            final_type = "file" if final_url.startswith(app.root_path + "/uploads") or final_url.endswith(
-                ('.pdf', '.doc', '.docx', '.mp4', '.avi', '.mov')) else "url"
-            if_image_url_pattern = r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))"
-            if final_url and re.match(if_image_url_pattern, final_url, re.IGNORECASE):
-                final_type = "image"
-            elif final_url:  # 如果是其他url类型，但不是文件或图片
-                final_type = "url"
-            else:  # 普通文本消息的collected type
-                final_type = "text"
-        elif content_data.shared_item_type == "knowledge_document" or (
-                content_data.shared_item_type == "course_material" and hasattr(source_item,
-                                                                               'file_type') and source_item.file_type):
-            if hasattr(source_item, 'file_type') and source_item.file_type and source_item.file_type.startswith(
-                    'image/'):
-                final_type = "image"
-            elif hasattr(source_item, 'file_path') and source_item.file_path:
-                final_type = "file"
-            else:
-                final_type = "text"
-        elif content_data.shared_item_type in ["project", "course", "forum_topic", "note", "daily_record",
-                                               "knowledge_article", "knowledge_document"]:
-            # 对于这些有结构化内容的内部资源，我们将其 type 设置为对应的 shared_item_type 字符串，以便前端区分
-            final_type = content_data.shared_item_type  # 例如：type="project", type="course"
-        else:  # 兜底，如果用户未提供 type, 默认设为 text
-            final_type = "text"  # TODO: Re-evaluate this default more generally for CollectedContent
-
-        # 提取 tags
-        if hasattr(source_item, 'tags') and source_item.tags:
-            final_tags = source_item.tags
-
-    if final_type is None and not (content_data.shared_item_type and content_data.shared_item_id is not None):
-        final_type = content_data.type or "text"  # Fallback if no shared item and no explicit type
-
-    # 如果此时 final_title 依然为空（例如纯内容文件），进行最后兜底
-    if not final_title:
-        if final_type == "text" and final_content:
-            final_title = final_content[:30] + "..." if len(final_content) > 30 else final_content
-        elif final_type == "url" and final_url:
-            final_title = final_url
-        elif final_type in ["file", "image"] and content_data.original_filename:
-            final_title = content_data.original_filename
-        else:
-            final_title = "无标题收藏"
-
-    # 3. 组合文本用于嵌入
-    # 组合文本现在更依赖于最终生成的字段
-    combined_text_for_embedding = ". ".join(filter(None, [
-        _get_text_part(final_title),
-        _get_text_part(final_content),  # 使用最终内容
-        _get_text_part(final_url),  # 使用最终URL
-        _get_text_part(final_tags),
-        _get_text_part(final_type),
-        _get_text_part(final_author)
-    ])).strip()
-
-    embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
-
-    # 获取当前用户的LLM配置用于嵌入生成
-    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
-    user_llm_api_key = None
-    user_llm_type = None
-    user_llm_base_url = None
-    user_llm_model_id = None
-
-    if current_user_obj.llm_api_type == "siliconflow" and current_user_obj.llm_api_key_encrypted:
         try:
-            user_llm_api_key = ai_core.decrypt_key(current_user_obj.llm_api_key_encrypted)
-            user_llm_type = current_user_obj.llm_api_type
-            user_llm_base_url = current_user_obj.llm_api_base_url
-            user_llm_model_id = current_user_obj.llm_model_id
-            print(f"DEBUG_EMBEDDING_KEY: 使用收藏创建者配置的硅基流动 API 密钥为收藏内容生成嵌入。")
-        except Exception as e:
-            print(
-                f"WARNING_COLLECTION_EMBEDDING: 解密用户 {current_user_id} LLM API密钥失败: {e}. 收藏内容嵌入将使用零向量。")
-            user_llm_api_key = None  # 解密失败，不要使用
-    else:
-        print(f"DEBUG_EMBEDDING_KEY: 收藏创建者未配置硅基流动 API 类型或密钥，收藏内容嵌入将使用零向量或默认行为。")
-
-    if combined_text_for_embedding:
-        try:
-            new_embedding = await ai_core.get_embeddings_from_api(
-                [combined_text_for_embedding],
-                api_key=user_llm_api_key,
-                llm_type=user_llm_type,
-                llm_base_url=user_llm_base_url,
-                llm_model_id=user_llm_model_id
+            # Upload to OSS
+            await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=uploaded_file_object_name,
+                content_type=content_type
             )
-            if new_embedding:
-                embedding = new_embedding[0]
-            print(f"DEBUG: 收藏内容嵌入向量已生成。")
+            print(f"DEBUG_COLLECTED_CONTENT: File '{file.filename}' uploaded to OSS as '{uploaded_file_object_name}'.")
+
+        except HTTPException as e:
+            print(f"ERROR_COLLECTED_CONTENT: Upload to OSS failed for {file.filename}: {e.detail}")
+            raise e
         except Exception as e:
-            print(f"ERROR: 生成收藏内容嵌入向量失败: {e}. 嵌入向量设为零。")
-            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
-    else:
-        print(f"WARNING: 收藏内容 combined_text 为空，嵌入向量设为零。")
+            print(f"ERROR_COLLECTED_CONTENT: Unknown error during OSS upload for {file.filename}: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传到云存储失败: {e}")
 
-    # 4. 创建数据库记录
-    db_item = CollectedContent(
-        owner_id=current_user_id,
-        folder_id=content_data.folder_id,
-        title=final_title,
-        type=final_type,  # 使用最终类型
-        url=final_url,  # 使用最终URL
-        content=final_content,  # 使用最终内容
-        tags=final_tags,
-        priority=content_data.priority,
-        notes=content_data.notes,
-        is_starred=content_data.is_starred,
-        thumbnail=final_thumbnail,  # 缩略图当前仍然从 input_data 获取
-        author=final_author,
-        duration=final_duration,
-        file_size=final_file_size,
-        status=final_status,  # 使用最终status
+        # If file uploaded, the `final_url` will be set by _create_collected_content_item_internal
+        # But we need to pass along original filename for _create_collected_content_item_internal to use in title/content
 
-        # 共享项信息 (直接从 input_data 获取，因为它们是用户明确提供的)
-        shared_item_type=content_data.shared_item_type,
-        shared_item_id=content_data.shared_item_id,
-
-        combined_text=combined_text_for_embedding,
-        embedding=embedding
+    # 调用内部辅助函数来处理所有业务逻辑
+    # Pass uploaded file details to the internal helper
+    return await _create_collected_content_item_internal(
+        db=db,
+        current_user_id=current_user_id,
+        content_data=content_data,
+        uploaded_file_bytes=file_bytes if file else None,  # Pass bytes only if file exists
+        uploaded_file_object_name=uploaded_file_object_name,
+        uploaded_file_content_type=file.content_type if file else None,
+        uploaded_file_original_filename=file.filename if file else None,
+        uploaded_file_size=uploaded_file_size
     )
-
-    db.add(db_item)
-    try:
-        db.commit()
-        db.refresh(db_item)
-    except IntegrityError as e:
-        db.rollback()
-        print(f"ERROR_DB: 创建收藏内容发生完整性约束错误: {e}")
-        if "_owner_shared_item_uc" in str(e):  # 捕获我们新增的唯一约束错误
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="此内容已被您收藏。")
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建收藏内容失败，可能存在数据冲突。")
-    except Exception as e:
-        db.rollback()
-        print(f"ERROR_DB: 创建收藏内容发生未知错误: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建收藏内容失败: {e}")
-
-    print(f"DEBUG: 收藏内容 '{db_item.title}' (ID: {db_item.id}) 创建成功。")
-    return db_item
 
 
 @app.post("/collections/add-from-platform", response_model=schemas.CollectedContentResponse,
@@ -5463,18 +7012,18 @@ async def add_platform_item_to_collection(
 async def get_all_collected_contents(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        folder_id: Optional[int] = None,  # 按文件夹过滤，null表示无文件夹（根目录项目）
-        type_filter: Optional[str] = None,  # 按类型过滤
-        tag_filter: Optional[str] = None,  # 按标签过滤
-        is_starred: Optional[bool] = None,  # 只看星标
-        status_filter: Optional[str] = None  # 按状态过滤
+        folder_id: Optional[int] = Query(None, description="按文件夹ID过滤。传入0表示顶级文件夹（即folder_id为NULL）"),
+        type_filter: Optional[str] = None,
+        tag_filter: Optional[str] = None,
+        is_starred: Optional[bool] = None,
+        status_filter: Optional[str] = None
 ):
     """
     获取当前用户的所有收藏内容。
     支持通过文件夹ID、类型、标签、星标状态和内容状态进行过滤。
-    如果 folder_id 为 None，则返回所有不在任何文件夹中的收藏。
+    如果 folder_id 为 None，则返回所有。传入0视为顶级文件夹（未指定文件夹）。
     """
-    print(f"DEBUG: 获取用户 {current_user_id} 的所有收藏内容。")
+    print(f"DEBUG: 获取用户 {current_user_id} 的所有收藏内容。文件夹ID: {folder_id}")
     query = db.query(CollectedContent).filter(CollectedContent.owner_id == current_user_id)
 
     if folder_id is not None:
@@ -5495,6 +7044,19 @@ async def get_all_collected_contents(
         query = query.filter(CollectedContent.status == status_filter)
 
     contents = query.order_by(CollectedContent.created_at.desc()).all()
+
+    # <<< 新增：填充文件夹名称用于响应 >>>
+    # 提前加载所有相关文件夹，避免N+1查询
+    folder_ids_in_results = list(set([item.folder_id for item in contents if item.folder_id is not None]))
+    folder_map = {f.id: f.name for f in db.query(Folder).filter(Folder.id.in_(folder_ids_in_results)).all()}
+
+    for item in contents:
+        if item.folder_id and item.folder_id in folder_map:
+            item.folder_name_for_response = folder_map[item.folder_id]
+        elif item.folder_id is None:
+            item.folder_name_for_response = "未分类"  # 或其他表示根目录的字符串
+    # <<< 新增结束 >>>
+
     print(f"DEBUG: 获取到 {len(contents)} 条收藏内容。")
     return contents
 
@@ -5507,7 +7069,7 @@ async def get_collected_content_by_id(
 ):
     """
     获取指定ID的收藏内容详情。用户只能获取自己的收藏。
-    每次��问会自动增加 access_count。
+    每次访问会自动增加 access_count。
     """
     print(f"DEBUG: 获取收藏内容 ID: {content_id} 的详情。")
     item = db.query(CollectedContent).filter(CollectedContent.id == content_id,
@@ -5522,32 +7084,153 @@ async def get_collected_content_by_id(
     db.commit()
     db.refresh(item)
 
+    # <<< 新增：填充文件夹名称用于响应 >>>
+    if item.folder_id:
+        folder_obj = db.query(Folder).filter(Folder.id == item.folder_id).first()
+        if folder_obj:
+            item.folder_name_for_response = folder_obj.name
+        else:
+            item.folder_name_for_response = "未知文件夹" # 或处理错误情况
+    elif item.folder_id is None:
+        item.folder_name_for_response = "未分类" # 或其他表示根目录的字符串
+    # <<< 新增结束 >>>
+
     return item
 
 
 @app.put("/collections/{content_id}", response_model=schemas.CollectedContentResponse, summary="更新指定收藏内容")
 async def update_collected_content(
         content_id: int,
-        content_data: schemas.CollectedContentBase,
+        content_data: schemas.CollectedContentBase = Depends(),  # 使用 Depends 处理 form-data 混合
+        file: Optional[UploadFile] = File(None, description="可选：上传新文件或图片替换旧的"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
     更新指定ID的收藏内容。用户只能更新自己的收藏。
-    更新后会重新生成 combined_text 和 embedding。
+    如果上传新文件，将替换旧文件。更新后会重新生成 combined_text 和 embedding。
     """
-    print(f"DEBUG: 更新收藏内容 ID: {content_id}。")[3]
-    db_item = db.query(CollectedContent).filter(CollectedContent.id == content_id,
-                                                CollectedContent.owner_id == current_user_id).first()[3]
+    print(f"DEBUG: 更新收藏内容 ID: {content_id}。有文件: {bool(file)}")
+    db_item = db.query(CollectedContent).filter(
+        CollectedContent.id == content_id,
+        CollectedContent.owner_id == current_user_id
+    ).first()
     if not db_item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Collected content not found or not authorized")[3]
+                            detail="Collected content not found or not authorized")
 
-    update_data = content_data.dict(exclude_unset=True)
+    update_dict = content_data.dict(exclude_unset=True)
+
+    old_media_oss_object_name = None  # 用于删除旧文件的OSS对象名称
+    new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
+
+    # 从现有的 db_item.url 中提取旧的 OSS object name
+    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    if db_item.url and db_item.url.startswith(oss_base_url_parsed):
+        old_media_oss_object_name = db_item.url.replace(oss_base_url_parsed, '', 1)
+
+    # 处理类型变更逻辑
+    # 如果传入的 update_dict 包含 'type' 字段，并且类型发生了变化
+    type_changed = "type" in update_dict and update_dict["type"] != db_item.type
+    new_type_from_data = update_dict.get("type", db_item.type)  # 如果类型没有在update_dict中，沿用旧的类型
+
+    if type_changed:
+        # 如果旧类型是文件/图片/视频，需要删除旧的OSS文件
+        if db_item.type in ["file", "image", "video"] and old_media_oss_object_name:
+            try:
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                print(f"DEBUG_COLLECTED_CONTENT: Deleted old OSS file {old_media_oss_object_name} due to type change.")
+            except Exception as e:
+                print(
+                    f"ERROR_COLLECTED_CONTENT: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during type change: {e}")
+
+        # 清除不适用于新类型的字段
+        if new_type_from_data not in ["file", "image", "video"]:  # 如果新类型是非媒体类型
+            db_item.url = None
+            db_item.file_size = None
+            db_item.duration = None
+            db_item.thumbnail = None  # 媒体专属字段
+
+        if new_type_from_data == "text":
+            # 如果新类型是text，要求 content 字段
+            if not update_dict.get('content') and not db_item.content:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="类型为 'text' 时，'content' 字段为必填。")
+            db_item.url = None  # Text type should not have URL
+
+        elif new_type_from_data == "link":
+            # 如果新类型是link，要求 url 字段
+            if not update_dict.get('url') and not db_item.url:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="类型为 'link' 时，'url' 字段为必填。")
+            # content for links is optional, but if it came from a file, clear it.
+            if db_item.type in ["file", "image", "video"]: db_item.content = None
+
+        db_item.type = new_type_from_data  # 更新类型
+
+    # 处理文件上传（如果提供了新文件或新的类型是 file/image/video）
+    if file:
+        current_type_after_update_check = update_dict.get("type", db_item.type)  # 获取最新材料类型
+        if current_type_after_update_check not in ["file", "image", "video"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="只有类型为 'file', 'image' 或 'video' 的收藏才能上传文件。如需更改材料类型，请在content_data中同时指定 type。")
+
+        # 如果旧的OSS文件存在且当前类型是文件/图片/视频，先删除旧文件
+        if db_item.type in ["file", "image", "video"] and old_media_oss_object_name:
+            try:
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                print(f"DEBUG_COLLECTED_CONTENT: Deleted old OSS file: {old_media_oss_object_name} for replacement.")
+            except Exception as e:
+                print(
+                    f"ERROR_COLLECTED_CONTENT: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during replacement: {e}")
+
+        # 读取新文件内容并上传到OSS
+        file_bytes = await file.read()
+        file_extension = os.path.splitext(file.filename)[1]
+        content_type = file.content_type
+        uploaded_file_size = file.size
+
+        oss_path_prefix = "collected_files"
+        if content_type.startswith('image/'):
+            oss_path_prefix = "collected_images"
+        elif content_type.startswith('video/'):
+            oss_path_prefix = "collected_videos"
+
+        new_uploaded_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+
+        try:
+            db_item.url = await oss_utils.upload_file_to_oss(  # 存储OSS URL
+                file_bytes=file_bytes,
+                object_name=new_uploaded_oss_object_name,
+                content_type=content_type
+            )
+            db_item.file_size = uploaded_file_size  # Update file size
+            # Update type if it was not already "file" / "image" / "video" but a file was sent
+            if db_item.type not in ["file", "image", "video"]:
+                if content_type.startswith('image/'):
+                    db_item.type = "image"
+                elif content_type.startswith('video/'):
+                    db_item.type = "video"
+                else:
+                    db_item.type = "file"
+                print(
+                    f"DEBUG_COLLECTED_CONTENT: Material type automatically changed to '{db_item.type}' due to file upload.")
+
+            # Clear content if it's a text-based content before but now replaced by file
+            if "content" not in update_dict:  # Only clear if content was not explicitly sent or it was a text type
+                db_item.content = None
+
+            print(f"DEBUG_COLLECTED_CONTENT: New file '{file.filename}' uploaded to OSS: {db_item.url}")
+        except HTTPException as e:
+            print(f"ERROR_COLLECTED_CONTENT: Upload new file to OSS failed: {e.detail}")
+            raise e
+        except Exception as e:
+            print(f"ERROR_COLLECTED_CONTENT: Unknown error during new file upload to OSS: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传到云存储失败: {e}")
 
     # 验证新的文件夹 (如果folder_id被修改)
-    if "folder_id" in update_data and update_data["folder_id"] is not None:
-        new_folder_id = update_data["folder_id"]
+    if "folder_id" in update_dict and update_dict["folder_id"] is not None:
+        new_folder_id = update_dict["folder_id"]
         if new_folder_id == 0:
             setattr(db_item, "folder_id", None)
         else:
@@ -5559,22 +7242,38 @@ async def update_collected_content(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                     detail="Target folder not found or not authorized.")
             setattr(db_item, "folder_id", new_folder_id)
-        update_data.pop("folder_id")
-    elif "folder_id" in update_data and update_data["folder_id"] is None:
+        update_dict.pop("folder_id")  # Remove already handled field
+    elif "folder_id" in update_dict and update_dict["folder_id"] is None:
         setattr(db_item, "folder_id", None)
-        update_data.pop("folder_id")
+        update_dict.pop("folder_id")  # Remove already handled field
 
-    for key, value in update_data.items():
-        setattr(db_item, key, value)
+    # 应用其他 update_dict 中的字段
+    # Skip fields already handled or fields that should not be updated from here if file was uploaded
+    fields_to_skip_after_file_upload = ["type", "url", "file_size", "duration", "thumbnail", "file", "content_text"]
+    for key, value in update_dict.items():
+        if key in fields_to_skip_after_file_upload:
+            continue
+        if hasattr(db_item, key) and value is not None:
+            setattr(db_item, key, value)
+        elif hasattr(db_item,
+                     key) and value is None:  # Allow clearing fields (except `title` if it's mandatory non-null)
+            if key == "title":  # Title is mandatory, cannot be None or empty
+                if not value or (isinstance(value, str) and not value.strip()):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="收藏内容标题不能为空。")
+            setattr(db_item, key, value)  # Allow setting to None for optional fields
 
     # 重新生成 combined_text
-    db_item.combined_text = (
-            (db_item.title or "") + ". " +
-            (db_item.content or "") + ". " +
-            (db_item.tags or "") + ". " +
-            (db_item.type or "") + ". " +
-            (db_item.author or "")
-    ).strip()
+    db_item.combined_text = ". ".join(filter(None, [
+        _get_text_part(db_item.title),
+        _get_text_part(db_item.content),
+        _get_text_part(db_item.url),  # Now contains OSS URL for files
+        _get_text_part(db_item.tags),
+        _get_text_part(db_item.type),
+        _get_text_part(db_item.author),
+        _get_text_part(db_item.original_filename if hasattr(db_item, 'original_filename') else None),
+        # For existing files
+        _get_text_part(db_item.file_type if hasattr(db_item, 'file_type') else None),  # For existing files
+    ])).strip()
 
     # 获取当前用户的LLM配置用于嵌入更新
     current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
@@ -5592,7 +7291,7 @@ async def update_collected_content(
             print(f"DEBUG_EMBEDDING_KEY: 使用收藏更新者配置的硅基流动 API 密钥更新收藏内容嵌入。")
         except Exception as e:
             print(
-                f"WARNING_COLLECTION_EMBEDDING: 解密用户 {current_user_id} LLM API密钥失败: {e}. 收藏内容嵌入将使用零向量。")
+                f"WARNING_COLLECTED_CONTENT_EMBEDDING: 解密用户 {current_user_id} LLM API密钥失败: {e}. 收藏内容嵌入将使用零向量。")
             user_llm_api_key = None
     else:
         print(f"DEBUG_EMBEDDING_KEY: 收藏更新者未配置硅基流动 API 类型或密钥，收藏内容嵌入将使用零向量或默认行为。")
@@ -5600,19 +7299,18 @@ async def update_collected_content(
     embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
     if db_item.combined_text:
         try:
-            # 传递所有LLM配置参数给 get_embeddings_from_api
             new_embedding = await ai_core.get_embeddings_from_api(
                 [db_item.combined_text],
                 api_key=user_llm_api_key,
                 llm_type=user_llm_type,
                 llm_base_url=user_llm_base_url,
                 llm_model_id=user_llm_model_id
-            )[17]
+            )
             if new_embedding:
                 embedding_recalculated = new_embedding[0]
-            print(f"DEBUG: 收藏内容 {db_item.id} 嵌入向量已更新。")[32]
+            print(f"DEBUG: 收藏内容 {db_item.id} 嵌入向量已更新。")
         except Exception as e:
-            print(f"ERROR: 更新收藏内容 {db_item.id} 嵌入向量失败: {e}. 嵌入向量设为零。")[32]
+            print(f"ERROR: 更新收藏内容 {db_item.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
             embedding_recalculated = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
     else:
         print(f"WARNING: 收藏内容 combined_text 为空，嵌入向量设为零。")
@@ -5620,9 +7318,29 @@ async def update_collected_content(
 
     db_item.embedding = embedding_recalculated  # 赋值给DB对象
 
-    db.add(db_item)[32]
-    db.commit()[32]
-    db.refresh(db_item)[24]
+    db.add(db_item)
+    try:
+        db.commit()
+        db.refresh(db_item)
+    except IntegrityError as e:
+        db.rollback()
+        # Rollback logic for newly uploaded file if DB commit fails
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(
+                f"DEBUG_COLLECTED_CONTENT: Update DB commit failed, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        print(f"ERROR_DB: 更新收藏内容发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新收藏内容失败，可能存在数据冲突。")
+    except Exception as e:
+        db.rollback()
+        # Rollback logic for newly uploaded file if any other error
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(
+                f"DEBUG_COLLECTED_CONTENT: Unknown error during update, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        print(f"ERROR_DB: 更新收藏内容发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"更新收藏内容失败: {e}")
+
     print(f"DEBUG: 收藏内容 {db_item.id} 更新成功。")
     return db_item
 
@@ -5635,19 +7353,37 @@ async def delete_collected_content(
 ):
     """
     删除指定ID的收藏内容。用户只能删除自己的收藏。
+    如果收藏的内容是文件或媒体（通过URL指向OSS），将同时删除OSS上的文件。
     """
     print(f"DEBUG: 删除收藏内容 ID: {content_id}。")
-    db_item = db.query(CollectedContent).filter(CollectedContent.id == content_id,
-                                                CollectedContent.owner_id == current_user_id).first()
+    db_item = db.query(CollectedContent).filter(
+        CollectedContent.id == content_id,
+        CollectedContent.owner_id == current_user_id
+    ).first()
     if not db_item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Collected content not found or not authorized")
+
+    # 如果是 'file', 'image', 'video' 类型，并且有 OSS URL，则尝试删除 OSS 文件
+    if db_item.type in ["file", "image", "video"] and db_item.url:
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        # 从OSS URL中解析出 object_name
+        object_name = db_item.url.replace(oss_base_url_parsed, '', 1) if db_item.url.startswith(oss_base_url_parsed) else None
+
+        if object_name:
+            try:
+                await oss_utils.delete_file_from_oss(object_name)
+                print(f"DEBUG_COLLECTED_CONTENT: 删除了OSS文件: {object_name} (For collected content {content_id})")
+            except Exception as e:
+                print(f"ERROR_COLLECTED_CONTENT: 删除OSS文件 {object_name} 失败: {e}")
+                # 这里不抛出异常，即使OSS文件删除失败，也应该允许数据库记录被删除
+        else:
+            print(f"WARNING_COLLECTED_CONTENT: 收藏内容 {content_id} 的 URL ({db_item.url}) 无效或非OSS URL，跳过OSS文件删除。")
 
     db.delete(db_item)
     db.commit()
     print(f"DEBUG: 收藏内容 {content_id} 删除成功。")
     return {"message": "Collected content deleted successfully"}
-
 
 
 # --- 聊天室管理接口 ---
@@ -6640,61 +8376,177 @@ async def process_join_request(
           summary="在指定聊天室发送新消息")
 async def send_chat_message(
         room_id: int,
-        message_data: schemas.ChatMessageCreate,
-        current_user_id: int = Depends(get_current_user_id),  # 发送者为当前用户
+        # 移除 message_data: schemas.ChatMessageCreate = Depends()，我们将手动从 Form 参数构建它
+        content_text: Optional[str] = Form(None, description="消息文本内容，当message_type为'text'时为必填"), # 使用 From 明确接收表单字段
+        message_type: Literal["text", "image", "file", "video", "system_notification"] = Form("text", description="消息类型"), # 使用 From
+        media_url: Optional[str] = Form(None, description="媒体文件OSS URL或外部链接"), # 使用 From
+        file: Optional[UploadFile] = File(None, description="上传文件、图片或视频作为消息"),
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
     在指定聊天室中发送一条新消息。
     只有活跃成员和群主可以发送消息。
+    支持发送文本、图片、文件、视频。
     """
-    print(f"DEBUG: 用户 {current_user_id} 在聊天室 {room_id} 发送消息。")
+    print(f"DEBUG: 用户 {current_user_id} 在聊天室 {room_id} 发送消息。类型: {message_type}")
 
-    # 1. 验证聊天室是否存在
-    db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not db_room:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found.")
+    # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
+    oss_object_name_for_rollback = None
 
-    # 2. 权限检查：发送者是否是活跃成员或群主**
-    is_creator = (db_room.creator_id == current_user_id)
-    is_active_member = db.query(ChatRoomMember).filter(
-        ChatRoomMember.room_id == room_id,
-        ChatRoomMember.member_id == current_user_id,
-        ChatRoomMember.status == "active"
-    ).first() is not None
+    try:
+        # 1. 验证聊天室是否存在
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found.")
 
-    if not (is_creator or is_active_member):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权在该聊天室发送消息。请先加入聊天室。")
+        # 2. 权限检查：发送者是否是活跃成员或群主
+        is_creator = (db_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
 
-    # 3. 验证发送者用户是否存在 (get_current_user_id 已经验证了，这里是双重检查)
-    db_sender = db.query(Student).filter(Student.id == current_user_id).first()
-    if not db_sender:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到。")
+        if not (is_creator or is_active_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="您无权在该聊天室发送消息。请先加入聊天室。")
 
-
-    db_message = ChatMessage(
-        room_id=room_id,
-        sender_id=current_user_id,
-        content_text=message_data.content_text,
-        message_type=message_data.message_type,
-        media_url=message_data.media_url
-    )
-
-    db.add(db_message)
-    # 更新聊天室的 updated_at，作为最后活跃时间
-    db_room.updated_at = func.now()
-    db.add(db_room)
-    db.commit()
-    db.refresh(db_message)
-
-    # 填充 sender_name
-    db_message.sender_name = db_sender.name
-
-    print(f"DEBUG: 聊天室 {room_id} 收到消息 (ID: {db_message.id})。")
-    return db_message
+        # 3. 验证发送者用户是否存在 (get_current_user_id 已经验证了，这里是双重检查)
+        db_sender = db.query(Student).filter(Student.id == current_user_id).first()
+        if not db_sender:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到。")
 
 
-# project/main.py
+        final_media_url = media_url # 初始化为 Form 接收到的 media_url
+        final_content_text = content_text # 初始化为 Form 接收到的 content_text
+        final_message_type = message_type # 初始化为 Form 接收到的 message_type
+
+
+        # 4. 处理文件上传（如果提供了文件）
+        if file:
+            # 检查 message_type 是否与文件上传一致
+            if final_message_type not in ["file", "image", "video"]: # 补充了 video 类型检查
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="当上传文件时，message_type 必须为 'file', 'image' 或 'video'。")
+
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            content_type = file.content_type
+
+            # 根据文件类型确定OSS存储路径前缀
+            oss_path_prefix = "chat_files"  # 默认文件
+            if content_type.startswith('image/'):
+                oss_path_prefix = "chat_images"
+            elif content_type.startswith('video/'):
+                oss_path_prefix = "chat_videos"
+
+            current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+            oss_object_name_for_rollback = current_oss_object_name  # 记录用于回滚
+
+            try:
+                final_media_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes,
+                    object_name=current_oss_object_name,
+                    content_type=content_type
+                )
+                print(f"DEBUG: 文件 '{file.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_media_url}")
+
+                # 如果内容文本为空，将文件名或简短描述作为内容
+                if not final_content_text and file.filename:
+                    final_content_text = f"文件: {file.filename}"
+                    if content_type.startswith('image/'):
+                        final_content_text = f"图片: {file.filename}"
+                    elif content_type.startswith('video/'):
+                        final_content_text = f"视频: {file.filename}"
+
+                # 确保当有文件时，message_type 确实反映文件类型
+                if content_type.startswith('image/') and final_message_type != "image":
+                    final_message_type = "image"
+                elif content_type.startswith('video/') and final_message_type != "video":
+                    final_message_type = "video"
+                elif final_message_type not in ["file", "image", "video"]:
+                    final_message_type = "file"
+
+
+            except HTTPException as e:  # oss_utils.upload_file_to_oss 会抛出 HTTPException
+                print(f"ERROR: 上传文件到OSS失败: {e.detail}")
+                raise e  # 直接重新抛出，让FastAPI处理
+            except Exception as e:
+                print(f"ERROR: 上传文件到OSS时发生未知错误: {e}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"文件上传到云存储失败: {e}")
+        else:  # 没有上传文件
+            # 这里的明确校验逻辑可以简化，因为 Pydantic 模型会处理
+            pass
+
+        # 5. 手动创建 ChatMessageCreate 实例，触发 Pydantic 校验
+        try:
+            message_data_validated = schemas.ChatMessageCreate(
+                content_text=final_content_text,
+                message_type=final_message_type,
+                media_url=final_media_url
+            )
+        except ValueError as e:
+            # 如果 Pydantic 校验失败，捕获并转换为 HTTPException
+            print(f"ERROR_VALIDATION: 聊天消息数据校验失败: {e}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"消息数据格式不正确: {e}")
+
+        # 6. 使用校验后的数据创建消息记录
+        db_message = ChatMessage(
+            room_id=room_id,
+            sender_id=current_user_id,
+            content_text=message_data_validated.content_text,
+            message_type=message_data_validated.message_type,
+            media_url=message_data_validated.media_url
+        )
+
+        db.add(db_message)
+        # 更新聊天室的 updated_at，作为最后活跃时间
+        db_room.updated_at = func.now()
+        db.add(db_room)
+        db.flush()  # 刷新以便后续操作可以访问 db_message 的 ID
+
+        # 触发成就检查 (例如，聊天消息发送数量类的成就)
+        if db_sender:
+            chat_message_points = 1  # 每发送一条聊天消息奖励1积分
+            await _award_points(
+                db=db,
+                user=db_sender,
+                amount=chat_message_points,
+                reason=f"发送聊天消息：'{message_data_validated.content_text[:20]}...'",
+                transaction_type="EARN",
+                related_entity_type="chat_message",
+                related_entity_id=db_message.id
+            )
+            await _check_and_award_achievements(db, current_user_id)
+            print(
+                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发送聊天消息，获得 {chat_message_points} 积分并检查成就 (待提交)。")
+
+        db.commit()  # 提交所有
+        db.refresh(db_message)
+
+        # 填充 sender_name
+        db_message.sender_name = db_sender.name
+
+        print(f"DEBUG: 聊天室 {room_id} 收到消息 (ID: {db_message.id})。")
+        return db_message
+
+    except HTTPException as e: # 捕获FastAPI的异常，包括OSS上传时抛出的
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: HTTP exception, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        raise e
+    except Exception as e:
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: Unknown error, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        print(f"ERROR_DB: 发送聊天消息发生未知错误: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"发送消息失败: {e}")
+
+
 @app.get("/chatrooms/{room_id}/messages/", response_model=List[schemas.ChatMessageResponse],
          summary="获取指定聊天室的历史消息")
 async def get_chat_messages(
@@ -6752,17 +8604,21 @@ async def get_chat_messages(
 # --- 小论坛 - 话题管理接口 ---
 @app.post("/forum/topics/", response_model=schemas.ForumTopicResponse, summary="发布新论坛话题")
 async def create_forum_topic(
-        topic_data: schemas.ForumTopicBase,
+        topic_data: schemas.ForumTopicBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
+        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为话题的附件"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),  # 话题发布者
         db: Session = Depends(get_db)
 ):
     """
-    发布一个新论坛话题。可选择关联分享平台其他内容。
+    发布一个新论坛话题。可选择关联分享平台其他内容，或直接上传文件。
     """
-    print(f"DEBUG: 用户 {current_user_id} 尝试发布话题: {topic_data.title}")
+    print(f"DEBUG: 用户 {current_user_id} 尝试发布话题: {topic_data.title}，有文件：{bool(file)}")
+
+    # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
+    oss_object_name_for_rollback = None
 
     try:
-        # 验证共享内容是否存在 (如果提供了 shared_item_type 和 shared_item_id)
+        # 1. 验证共享内容是否存在 (如果提供了 shared_item_type 和 shared_item_id)
         if topic_data.shared_item_type and topic_data.shared_item_id:
             model = None
             if topic_data.shared_item_type == "note":
@@ -6775,6 +8631,8 @@ async def create_forum_topic(
                 model = Project
             elif topic_data.shared_item_type == "knowledge_article":
                 model = KnowledgeArticle
+            elif topic_data.shared_item_type == "collected_content":  # 支持引用收藏
+                model = CollectedContent
 
             if model:
                 shared_item = db.query(model).filter(model.id == topic_data.shared_item_id).first()
@@ -6782,16 +8640,77 @@ async def create_forum_topic(
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                         detail=f"Shared item of type {topic_data.shared_item_type} with ID {topic_data.shared_item_id} not found.")
 
-        # 组合文本用于嵌入
-        combined_text = (
-                (topic_data.title or "") + ". " +
-                (topic_data.content or "") + ". " +
-                (topic_data.tags or "") + ". " +
-                (topic_data.shared_item_type or "")
-        ).strip()[13]
+        # 2. 处理文件上传（如果提供了文件）
+        final_media_url = topic_data.media_url
+        final_media_type = topic_data.media_type
+        final_original_filename = topic_data.original_filename
+        final_media_size_bytes = topic_data.media_size_bytes
+
+        if file:
+            if final_media_type not in ["file", "image", "video"]:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="当上传文件时，media_type 必须为 'file', 'image' 或 'video'。")
+
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            content_type = file.content_type
+            file_size = file.size
+
+            # 根据文件类型确定OSS存储路径前缀
+            oss_path_prefix = "forum_files"  # 默认文件
+            if content_type.startswith('image/'):
+                oss_path_prefix = "forum_images"
+            elif content_type.startswith('video/'):
+                oss_path_prefix = "forum_videos"
+
+            current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+            oss_object_name_for_rollback = current_oss_object_name  # 记录用于回滚
+
+            try:
+                final_media_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes,
+                    object_name=current_oss_object_name,
+                    content_type=content_type
+                )
+                final_original_filename = file.filename
+                final_media_size_bytes = file_size
+                # 确保 media_type 与实际上传的文件类型一致
+                if content_type.startswith('image/'):
+                    final_media_type = "image"
+                elif content_type.startswith('video/'):
+                    final_media_type = "video"
+                else:
+                    final_media_type = "file"
+
+                print(f"DEBUG: 文件 '{file.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_media_url}")
+
+            except HTTPException as e:  # oss_utils.upload_file_to_oss 会抛出 HTTPException
+                print(f"ERROR: 上传文件到OSS失败: {e.detail}")
+                raise e  # 直接重新抛出，让FastAPI处理
+            except Exception as e:
+                print(f"ERROR: 上传文件到OSS时发生未知错误: {e}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"文件上传到云存储失败: {e}")
+        else:  # 没有上传文件，但可能提供了 media_url (例如用户粘贴的外部链接)
+            # 验证 media_url 和 media_type 的一致性 (由 schema 校验，但这里再次检查)
+            if final_media_url and not final_media_type:
+                # 这种情况应该已经在 schema.py 的 @model_validator 处捕获
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="media_url 存在时，media_type 不能为空。")
+
+        # 3. 组合文本用于嵌入
+        combined_text = ". ".join(filter(None, [
+            _get_text_part(topic_data.title),
+            _get_text_part(topic_data.content),
+            _get_text_part(topic_data.tags),
+            _get_text_part(topic_data.shared_item_type),
+            _get_text_part(final_media_url),  # 加入媒体URL
+            _get_text_part(final_media_type),  # 加入媒体类型
+            _get_text_part(final_original_filename),  # 加入原始文件名
+        ])).strip()
 
         # 获取话题发布者的LLM配置用于嵌入生成
-        topic_author = db.query(Student).filter(Student.id == current_user_id).first()[7]
+        topic_author = db.query(Student).filter(Student.id == current_user_id).first()
         author_llm_api_key = None
         author_llm_type = None
         author_llm_base_url = None
@@ -6813,23 +8732,23 @@ async def create_forum_topic(
         embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 默认零向量
         if combined_text:
             try:
-                # 传递所有LLM配置参数给 get_embeddings_from_api
                 new_embedding = await ai_core.get_embeddings_from_api(
                     [combined_text],
                     api_key=author_llm_api_key,
                     llm_type=author_llm_type,
                     llm_base_url=author_llm_base_url,
                     llm_model_id=author_llm_model_id
-                )[13]
+                )
                 if new_embedding:
                     embedding = new_embedding[0]
-                print(f"DEBUG: 话题嵌入向量已生成。")[13]
+                print(f"DEBUG: 话题嵌入向量已生成。")
             except Exception as e:
-                print(f"ERROR: 生成话题嵌入向量失败: {e}. 嵌入向量设为零。")[12]
+                print(f"ERROR: 生成话题嵌入向量失败: {e}. 嵌入向量设为零。")
                 embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
         else:
             print(f"WARNING: 话题 combined_text 为空，嵌入向量设为零。")
 
+        # 4. 创建数据库记录
         db_topic = ForumTopic(
             owner_id=current_user_id,
             title=topic_data.title,
@@ -6837,16 +8756,20 @@ async def create_forum_topic(
             shared_item_type=topic_data.shared_item_type,
             shared_item_id=topic_data.shared_item_id,
             tags=topic_data.tags,
+            media_url=final_media_url,  # 保存最终的媒体URL
+            media_type=final_media_type,  # 保存最终的媒体类型
+            original_filename=final_original_filename,  # 保存原始文件名
+            media_size_bytes=final_media_size_bytes,  # 保存文件大小
             combined_text=combined_text,
             embedding=embedding
-        )[12]
+        )
 
-        db.add(db_topic)[7]
-        db.flush()[7]
-        print(f"DEBUG_FLUSH: 话题 {db_topic.id} 已刷新到会话。")[7]
+        db.add(db_topic)
+        db.flush()
+        print(f"DEBUG_FLUSH: 话题 {db_topic.id} 已刷新到会话。")
 
         # 发布话题奖励积分
-        if topic_author:  # 从 db.query(Student) 获取到的 topic_author
+        if topic_author:
             topic_post_points = 15
             await _award_points(
                 db=db,
@@ -6859,11 +8782,10 @@ async def create_forum_topic(
             )
             await _check_and_award_achievements(db, current_user_id)
             print(
-                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就 (待提交)。")[
-                7]
+                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布话题，获得 {topic_post_points} 积分并检查成就 (待提交)。")
 
-        db.commit()[7]
-        db.refresh(db_topic)[7]
+        db.commit()
+        db.refresh(db_topic)
 
         # 填充 owner_name
         owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
@@ -6873,8 +8795,17 @@ async def create_forum_topic(
         print(f"DEBUG: 话题 '{db_topic.title}' (ID: {db_topic.id}) 发布成功，所有事务已提交。")
         return db_topic
 
+    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: HTTP exception, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        raise e
     except Exception as e:
         db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: Unknown error, attempting to delete OSS file: {oss_object_name_for_rollback}")
         print(f"ERROR_CREATE_TOPIC_GLOBAL: 创建论坛话题失败，事务已回滚: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -6974,62 +8905,143 @@ async def get_forum_topic_by_id(
     return topic
 
 
+# project/main.py
+
+# ... (前面的导入和类定义保持不变) ...
+
 @app.put("/forum/topics/{topic_id}", response_model=schemas.ForumTopicResponse, summary="更新指定论坛话题")
 async def update_forum_topic(
         topic_id: int,
-        topic_data: schemas.ForumTopicBase,
+        topic_data: schemas.ForumTopicBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
+        file: Optional[UploadFile] = File(None, description="可选：上传新图片、视频或文件替换旧的"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),  # 只有话题发布者能更新
         db: Session = Depends(get_db)
 ):
     """
     更新指定ID的论坛话题内容。只有话题发布者能更新。
-    更新后会重新生成 combined_text 和 embedding。
+    支持替换附件文件。更新后会重新生成 combined_text 和 embedding。
     """
-    print(f"DEBUG: 更新话题 ID: {topic_id}。")[1]
-    db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id, ForumTopic.owner_id == current_user_id).first()[1]
+    print(f"DEBUG: 更新话题 ID: {topic_id}。有文件: {bool(file)}")
+    db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id, ForumTopic.owner_id == current_user_id).first()
     if not db_topic:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found or not authorized.")[1]
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found or not authorized.")
 
-    update_data = topic_data.dict(exclude_unset=True)
+    update_dict = topic_data.dict(exclude_unset=True)
 
-    # 验证共享内容是否存在 (如果修改了 shared_item)
-    if ("shared_item_type" in update_data and update_data["shared_item_type"]) or \
-            ("shared_item_id" in update_data and update_data["shared_item_id"]):
-        if update_data.get("shared_item_type") and update_data.get("shared_item_id"):
-            model = None
-            if update_data["shared_item_type"] == "note":
-                model = Note
-            elif update_data["shared_item_type"] == "daily_record":
-                model = DailyRecord
-            elif update_data["shared_item_type"] == "course":
-                model = Course
-            elif update_data["shared_item_type"] == "project":
-                model = Project
-            elif update_data["shared_item_type"] == "knowledge_article":
-                model = KnowledgeArticle
+    old_media_oss_object_name = None  # 用于删除旧文件的OSS对象名称
+    new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
-            if model:
-                shared_item = db.query(model).filter(model.id == update_data["shared_item_id"]).first()
-                if not shared_item:
-                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                        detail=f"Shared item of type {update_data['shared_item_type']} with ID {update_data['shared_item_id']} not found.")
-        else:
+    # 从现有的 db_topic.media_url 中提取旧的 OSS object name
+    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    if db_topic.media_url and db_topic.media_url.startswith(oss_base_url_parsed):
+        old_media_oss_object_name = db_topic.media_url.replace(oss_base_url_parsed, '', 1)
+
+    # 1. 处理共享内容和直接上传媒体的互斥校验
+    # 这个逻辑在 schema.py 的 model_validator 里已经处理了，但为了健壮性，这里可以再次检查或确保不覆盖。
+    # 理论上如果 update_dict 中同时提供了 shared_item_type 和 media_url，会在 schema 验证阶段就抛错。
+    # 所以无需再次手动检查互斥性。
+
+    # Check if media_url or media_type are explicitly being cleared or updated to non-file type
+    media_url_being_cleared = "media_url" in update_dict and update_dict["media_url"] is None
+    media_type_being_cleared_or_changed_to_null = "media_type" in update_dict and update_dict["media_type"] is None
+
+    # Check if type is changing to non-media type from existing media type
+    type_changing_from_media = False
+    if "media_type" in update_dict and update_dict["media_type"] != db_topic.media_type:
+        if db_topic.media_type in ["image", "video", "file"] and update_dict["media_type"] is None:
+            type_changing_from_media = True  # 从有媒体类型变为无媒体类型
+
+    # If media content is being explicitly removed or type changed, delete old OSS file
+    if old_media_oss_object_name and (
+            media_url_being_cleared or media_type_being_cleared_or_changed_to_null or type_changing_from_media):
+        try:
+            asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+            print(
+                f"DEBUG: Deleted old OSS file {old_media_oss_object_name} due to media content clearance/type change.")
+        except Exception as e:
+            print(
+                f"ERROR: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during media content clearance: {e}")
+
+        # 清空数据库中的相关媒体字段
+        db_topic.media_url = None
+        db_topic.media_type = None
+        db_topic.original_filename = None
+        db_topic.media_size_bytes = None
+
+    # 2. 处理文件上传（如果提供了新文件或更新了媒体类型）
+    if file:
+        target_media_type = update_dict.get("media_type")
+        if target_media_type not in ["file", "image", "video"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Both shared_item_type and shared_item_id must be provided together, or neither.")[
-                50]
+                                detail="当上传文件时，media_type 必须为 'file', 'image' 或 'video'。")
 
-    for key, value in update_data.items():
-        setattr(db_topic, key, value)
+        # If an old file existed, delete it (already handled by previous block or if new file is replacing it)
+        if old_media_oss_object_name and not media_url_being_cleared and not media_type_being_cleared_or_changed_to_null:
+            try:
+                # If a new file replaces it, schedule old file deletion.
+                # Avoids double deletion if old_media_oss_object_name was already handled by clearance logic.
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                print(f"DEBUG: Deleted old OSS file: {old_media_oss_object_name} for replacement.")
+            except Exception as e:
+                print(
+                    f"ERROR: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during replacement: {e}")
 
-    # 重新生成 combined_text
-    db_topic.combined_text = (
-            (db_topic.title or "") + ". " +
-            (db_topic.content or "") + ". " +
-            (db_topic.tags or "") + ". " +
-            (db_topic.shared_item_type or "")
-    ).strip()[50]
+        file_bytes = await file.read()
+        file_extension = os.path.splitext(file.filename)[1]
+        content_type = file.content_type
+        file_size = file.size
 
-    # 获取话题发布者的LLM配置用于嵌入更新
+        oss_path_prefix = "forum_files"
+        if content_type.startswith('image/'):
+            oss_path_prefix = "forum_images"
+        elif content_type.startswith('video/'):
+            oss_path_prefix = "forum_videos"
+
+        new_uploaded_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+
+        try:
+            db_topic.media_url = await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=new_uploaded_oss_object_name,
+                content_type=content_type
+            )
+            db_topic.original_filename = file.filename
+            db_topic.media_size_bytes = file_size
+            db_topic.media_type = target_media_type  # Use the media_type from request body
+
+            print(f"DEBUG: New file '{file.filename}' uploaded to OSS: {db_topic.media_url}")
+        except HTTPException as e:
+            print(f"ERROR: Upload new file to OSS failed: {e.detail}")
+            raise e
+        except Exception as e:
+            print(f"ERROR: Unknown error during new file upload to OSS: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传到云存储失败: {e}")
+
+    # 3. 应用其他 update_dict 中的字段
+    # 清理掉已通过文件上传或手动处理的 media 字段，防止再次覆盖
+    fields_to_skip_manual_update = ["media_url", "media_type", "original_filename", "media_size_bytes", "file"]
+    for key, value in update_dict.items():
+        if key in fields_to_skip_manual_update:
+            continue
+        if hasattr(db_topic, key) and value is not None:
+            setattr(db_topic, key, value)
+        elif hasattr(db_topic, key) and value is None:  # Allow clearing optional fields (except title)
+            if key == "title":  # Title is mandatory, cannot be None or empty
+                if not value or (isinstance(value, str) and not value.strip()):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="话题标题不能为空。")
+            setattr(db_topic, key, value)
+
+    # 4. 重新生成 combined_text 和 embedding
+    combined_text = ". ".join(filter(None, [
+        _get_text_part(db_topic.title),
+        _get_text_part(db_topic.content),
+        _get_text_part(db_topic.tags),
+        _get_text_part(db_topic.shared_item_type),
+        _get_text_part(db_topic.media_url),  # 包含新的媒体URL
+        _get_text_part(db_topic.media_type),  # 包含新的媒体类型
+        _get_text_part(db_topic.original_filename),  # 包含原始文件名
+    ])).strip()
+
     topic_author = db.query(Student).filter(Student.id == current_user_id).first()
     author_llm_api_key = None
     author_llm_type = None
@@ -7049,37 +9061,55 @@ async def update_forum_topic(
     else:
         print(f"DEBUG_EMBEDDING_KEY: 话题发布者未配置硅基流动 API 类型或密钥，话题嵌入将使用零向量或默认行为。")
 
-    if db_topic.combined_text:
+    if combined_text:
         try:
-            # 传递所有LLM配置参数给 get_embeddings_from_api
             new_embedding = await ai_core.get_embeddings_from_api(
-                [db_topic.combined_text],
+                [combined_text],
                 api_key=author_llm_api_key,
                 llm_type=author_llm_type,
                 llm_base_url=author_llm_base_url,
                 llm_model_id=author_llm_model_id
-            )[20]
+            )
             if new_embedding:
                 db_topic.embedding = new_embedding[0]
-            print(f"DEBUG: 话题 {db_topic.id} 嵌入向量已更新。")[20]
+            else:
+                db_topic.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+            print(f"DEBUG: 话题 {db_topic.id} 嵌入向量已更新。")
         except Exception as e:
-            print(f"ERROR: 更新话题 {db_topic.id} 嵌入向量失败: {e}. 嵌入向量设为零。")[20]
+            print(f"ERROR: 更新话题 {db_topic.id} 嵌入向量失败: {e}. 嵌入向量设为零。")
             db_topic.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
     else:
         print(f"WARNING: 话题 combined_text 为空，嵌入向量设为零。")
         db_topic.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
-    db.add(db_topic)[20]
-    db.commit()[20]
-    db.refresh(db_topic)
-
-    # 填充 owner_name, is_liked_by_current_user
-    owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
-    db_topic.owner_name = owner_obj.name if owner_obj else "未知用户"
-    db_topic.is_liked_by_current_user = False
-
-    print(f"DEBUG: 话题 {db_topic.id} 更新成功。")
-    return db_topic
+    db.add(db_topic)
+    try:
+        db.commit()
+        db.refresh(db_topic)
+    except IntegrityError as e:
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(f"DEBUG: Update DB commit failed, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        print(f"ERROR_DB: 更新话题发生完整性约束错误: {e}")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="更新话题失败，可能存在数据冲突。")
+    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(f"DEBUG: HTTP exception, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        raise e
+    except Exception as e:
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(
+                f"DEBUG: Unknown error during update, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        print(f"ERROR_UPDATE_TOPIC_GLOBAL: 更新话题失败，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"更新话题失败: {e}",
+        )
 
 
 @app.delete("/forum/topics/{topic_id}", summary="删除指定论坛话题")
@@ -7089,18 +9119,35 @@ async def delete_forum_topic(
         db: Session = Depends(get_db)
 ):
     """
-    删除指定ID的论坛话题及其所有评论和点赞。只有话题发布者能删除。
+    删除指定ID的论坛话题及其所有评论和点赞。如果话题关联了文件或媒体（通过URL指向OSS），将同时删除OSS上的文件。
+    只有话题发布者能删除。
     """
     print(f"DEBUG: 删除话题 ID: {topic_id}。")
     db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id, ForumTopic.owner_id == current_user_id).first()
     if not db_topic:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found or not authorized")
 
+    # <<< 新增：如果话题关联了文件或媒体，并且是OSS URL，则尝试从OSS删除文件 >>>
+    if db_topic.media_type in ["image", "video", "file"] and db_topic.media_url:
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        # 从OSS URL中解析出 object_name
+        object_name = db_topic.media_url.replace(oss_base_url_parsed, '', 1) if db_topic.media_url.startswith(oss_base_url_parsed) else None
+
+        if object_name:
+            try:
+                await oss_utils.delete_file_from_oss(object_name)
+                print(f"DEBUG_FORUM: 删除了话题 {topic_id} 关联的OSS文件: {object_name}")
+            except Exception as e:
+                print(f"ERROR_FORUM: 删除话题 {topic_id} 关联的OSS文件 {object_name} 失败: {e}")
+                # 即使OSS文件删除失败，也应该允许数据库记录被删除
+        else:
+            print(f"WARNING_FORUM: 话题 {topic_id} 的 media_url ({db_topic.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
+
     # SQLAlchemy的cascade="all, delete-orphan"会在db.delete(db_topic)时自动处理所有评论和点赞
     db.delete(db_topic)
     db.commit()
-    print(f"DEBUG: 话题 {topic_id} 及其评论点赞删除成功。")
-    return {"message": "Forum topic and its comments/likes deleted successfully"}
+    print(f"DEBUG: 话题 {topic_id} 及其评论点赞和关联文件删除成功。")
+    return {"message": "Forum topic and its comments/likes/associated media deleted successfully"}
 
 
 # --- 小论坛 - 评论管理接口 ---
@@ -7108,35 +9155,103 @@ async def delete_forum_topic(
           summary="为论坛话题添加评论")
 async def add_forum_comment(
         topic_id: int,
-        comment_data: schemas.ForumCommentBase,
+        comment_data: schemas.ForumCommentBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
+        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为评论的附件"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),  # 评论发布者
         db: Session = Depends(get_db)
 ):
     """
-    为指定论坛话题添加评论。可选择回复某个已有评论（楼中楼）。
+    为指定论坛话题添加评论。可选择回复某个已有评论（楼中楼），或直接上传文件作为附件。
     """
-    print(f"DEBUG: 用户 {current_user_id} 尝试为话题 {topic_id} 添加评论。")
+    print(f"DEBUG: 用户 {current_user_id} 尝试为话题 {topic_id} 添加评论。有文件：{bool(file)}")
 
-    try: # 将整个接口逻辑包裹在一个 try 块中，统一提交
-        # 验证话题是否存在
+    # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
+    oss_object_name_for_rollback = None
+
+    try:
+        # 1. 验证话题是否存在
         db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id).first()
         if not db_topic:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
 
-        # 验证父评论是否存在 (如果提供了 parent_comment_id)
+        # 2. 验证父评论是否存在 (如果提供了 parent_comment_id)
         if comment_data.parent_comment_id:
             parent_comment = db.query(ForumComment).filter(
                 ForumComment.id == comment_data.parent_comment_id,
                 ForumComment.topic_id == topic_id  # 确保父评论属于同一话题
             ).first()
             if not parent_comment:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parent comment not found in this topic.")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="Parent comment not found in this topic.")
 
+        # 3. 处理文件上传（如果提供了文件）
+        final_media_url = comment_data.media_url
+        final_media_type = comment_data.media_type
+        final_original_filename = comment_data.original_filename
+        final_media_size_bytes = comment_data.media_size_bytes
+
+        if file:
+            if final_media_type not in ["file", "image", "video"]:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="当上传文件时，media_type 必须为 'file', 'image' 或 'video'。")
+
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            content_type = file.content_type
+            file_size = file.size
+
+            # 根据文件类型确定OSS存储路径前缀 (与话题的路径一致，方便管理)
+            oss_path_prefix = "forum_files"
+            if content_type.startswith('image/'):
+                oss_path_prefix = "forum_images"
+            elif content_type.startswith('video/'):
+                oss_path_prefix = "forum_videos"
+
+            current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+            oss_object_name_for_rollback = current_oss_object_name  # 记录用于回滚
+
+            try:
+                final_media_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes,
+                    object_name=current_oss_object_name,
+                    content_type=content_type
+                )
+                final_original_filename = file.filename
+                final_media_size_bytes = file_size
+                # 确保 media_type 与实际上传的文件类型一致
+                if content_type.startswith('image/'):
+                    final_media_type = "image"
+                elif content_type.startswith('video/'):
+                    final_media_type = "video"
+                else:
+                    final_media_type = "file"
+
+                print(f"DEBUG: 文件 '{file.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_media_url}")
+
+            except HTTPException as e:  # oss_utils.upload_file_to_oss 会抛出 HTTPException
+                print(f"ERROR: 上传文件到OSS失败: {e.detail}")
+                raise e  # 直接重新抛出，让FastAPI处理
+            except Exception as e:
+                print(f"ERROR: 上传文件到OSS时发生未知错误: {e}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"文件上传到云存储失败: {e}")
+        else:  # 没有上传文件，但可能提供了 media_url (例如用户粘贴的外部链接)
+            # 验证 media_url 和 media_type 的一致性 (由 schema 校验，但这里再次检查)
+            if final_media_url and not final_media_type:
+                # 这种情况应该已经在 schema.py 的 @model_validator 处捕获
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="media_url 存在时，media_type 不能为空。")
+
+        # 4. 创建评论记录
         db_comment = ForumComment(
             topic_id=topic_id,
             owner_id=current_user_id,
             content=comment_data.content,
-            parent_comment_id=comment_data.parent_comment_id
+            parent_comment_id=comment_data.parent_comment_id,
+            media_url=final_media_url,  # 保存最终的媒体URL
+            media_type=final_media_type,  # 保存最终的媒体类型
+            original_filename=final_original_filename,  # 保存原始文件名
+            media_size_bytes=final_media_size_bytes  # 保存文件大小
         )
 
         db.add(db_comment)
@@ -7145,7 +9260,7 @@ async def add_forum_comment(
         db.add(db_topic)  # SQLAlchemy会自动识别这是更新
 
         # 在检查成就前，强制刷新会话，使 db_comment 和 db_topic 对查询可见！
-        db.flush() # 确保评论和话题的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
+        db.flush()
         print(f"DEBUG_FLUSH: 评论 {db_comment.id} 和话题 {db_topic.id} 更新已刷新到会话。")
 
         # 发布评论奖励积分
@@ -7162,21 +9277,31 @@ async def add_forum_comment(
                 related_entity_id=db_comment.id
             )
             await _check_and_award_achievements(db, current_user_id)
-            print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布评论，获得 {comment_post_points} 积分并检查成就 (待提交)。")
+            print(
+                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发布评论，获得 {comment_post_points} 积分并检查成就 (待提交)。")
 
-        db.commit() # 现在，这里是唯一也是最终的提交！
-        db.refresh(db_comment) # 提交后刷新db_comment以返回完整对象
+        db.commit()  # 现在，这里是唯一也是最终的提交！
+        db.refresh(db_comment)  # 提交后刷新db_comment以返回完整对象
 
         # 填充 owner_name
         owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
-        db_comment._owner_name = owner_obj.name # 访问私有属性以设置
+        db_comment.owner_name = owner_obj.name  # 访问私有属性以设置
         db_comment.is_liked_by_current_user = False
 
         print(f"DEBUG: 话题 {db_topic.id} 收到评论 (ID: {db_comment.id})，所有事务已提交。")
         return db_comment
 
-    except Exception as e: # 捕获所有异常并回滚
+    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
         db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: HTTP exception, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        raise e
+    except Exception as e:  # 捕获所有异常并回滚
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG: Unknown error, attempting to delete OSS file: {oss_object_name_for_rollback}")
         print(f"ERROR_ADD_COMMENT_GLOBAL: 添加论坛评论失败，事务已回滚: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -7239,40 +9364,168 @@ async def get_forum_comments(
 @app.put("/forum/comments/{comment_id}", response_model=schemas.ForumCommentResponse, summary="更新指定论坛评论")
 async def update_forum_comment(
         comment_id: int,
-        comment_data: schemas.ForumCommentBase,  # 只允许更新内容
+        comment_data: schemas.ForumCommentBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
+        file: Optional[UploadFile] = File(None, description="可选：上传新图片、视频或文件替换旧的"),  # 新增：接收上传文件
         current_user_id: int = Depends(get_current_user_id),  # 只有评论发布者能更新
         db: Session = Depends(get_db)
 ):
     """
     更新指定ID的论坛评论。只有评论发布者能更新。
+    支持替换附件文件。更新后会重新生成 combined_text 和 embedding。
     """
-    print(f"DEBUG: 更新评论 ID: {comment_id}。")
+    print(f"DEBUG: 更新评论 ID: {comment_id}。有文件: {bool(file)}")
     db_comment = db.query(ForumComment).filter(ForumComment.id == comment_id,
                                                ForumComment.owner_id == current_user_id).first()
     if not db_comment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum comment not found or not authorized.")
 
-    update_data = comment_data.dict(exclude_unset=True)
+    update_dict = comment_data.dict(exclude_unset=True)
 
-    if "content" in update_data:
-        setattr(db_comment, "content", update_data["content"])
+    old_media_oss_object_name = None  # 用于删除旧文件的OSS对象名称
+    new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
-    # 不允许修改 parent_comment_id
-    if "parent_comment_id" in update_data and update_data["parent_comment_id"] != db_comment.parent_comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Cannot change parent_comment_id of a comment.")
+    # 从现有的 db_comment.media_url 中提取旧的 OSS object name
+    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    if db_comment.media_url and db_comment.media_url.startswith(oss_base_url_parsed):
+        old_media_oss_object_name = db_comment.media_url.replace(oss_base_url_parsed, '', 1)
 
-    db.add(db_comment)
-    db.commit()
-    db.refresh(db_comment)
+    try:
+        # Check if media_url or media_type are explicitly being cleared or updated to non-media type
+        media_url_being_cleared = "media_url" in update_dict and update_dict["media_url"] is None
+        media_type_being_set = "media_type" in update_dict
+        new_media_type_from_data = update_dict.get("media_type")
 
-    # 填充 owner_name
-    owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
-    db_comment._owner_name = owner_obj.name
-    db_comment.is_liked_by_current_user = False  # 更新不会像状态一样更改
+        # If old media existed and it's explicitly being cleared, or type changes away from media
+        should_delete_old_media_file = False
+        if old_media_oss_object_name:
+            if media_url_being_cleared:  # media_url is set to None
+                should_delete_old_media_file = True
+            elif media_type_being_set and new_media_type_from_data is None:  # media_type is set to None
+                should_delete_old_media_file = True
+            elif media_type_being_set and (
+                    new_media_type_from_data not in ["image", "video", "file"]):  # media_type changes to non-media
+                should_delete_old_media_file = True
 
-    print(f"DEBUG: 评论 {db_comment.id} 更新成功。")
-    return db_comment
+        if should_delete_old_media_file:
+            try:
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                print(
+                    f"DEBUG: Deleted old OSS file {old_media_oss_object_name} due to media content clearance/type change.")
+            except Exception as e:
+                print(
+                    f"ERROR: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during media content clearance: {e}")
+
+            # 清空数据库中的相关媒体字段
+            db_comment.media_url = None
+            db_comment.media_type = None
+            db_comment.original_filename = None
+            db_comment.media_size_bytes = None
+
+        # 1. 处理文件上传（如果提供了新文件）
+        if file:
+            target_media_type = update_dict.get("media_type")
+            if target_media_type not in ["file", "image", "video"]:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="当上传文件时，media_type 必须为 'file', 'image' 或 'video'。")
+
+            # 如果新文件替换了现有文件，且现有文件是OSS上的，则删除它
+            if old_media_oss_object_name and not should_delete_old_media_file:  # Avoid double deletion
+                try:
+                    asyncio.create_task(oss_utils.delete_file_from_oss(old_media_oss_object_name))
+                    print(f"DEBUG: Deleted old OSS file: {old_media_oss_object_name} for replacement.")
+                except Exception as e:
+                    print(
+                        f"ERROR: Failed to schedule deletion of old OSS file {old_media_oss_object_name} during replacement: {e}")
+
+            file_bytes = await file.read()
+            file_extension = os.path.splitext(file.filename)[1]
+            content_type = file.content_type
+            file_size = file.size
+
+            oss_path_prefix = "forum_files"
+            if content_type.startswith('image/'):
+                oss_path_prefix = "forum_images"
+            elif content_type.startswith('video/'):
+                oss_path_prefix = "forum_videos"
+
+            new_uploaded_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+
+            # Upload to OSS
+            db_comment.media_url = await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=new_uploaded_oss_object_name,
+                content_type=content_type
+            )
+            db_comment.original_filename = file.filename
+            db_comment.media_size_bytes = file_size
+            db_comment.media_type = target_media_type  # Use the media_type from request body
+
+            print(f"DEBUG: New file '{file.filename}' uploaded to OSS: {db_comment.media_url}")
+
+            # Clear text content if this is a file-only comment and content was not provided in update
+            if "content" not in update_dict and db_comment.content:
+                db_comment.content = None  # If updating with a file, clear existing text content if user didn't specify new text
+        elif "media_url" in update_dict and update_dict[
+            "media_url"] is not None and not file:  # User provided a new URL but no file
+            # If new media_url is provided without a file, it's assumed to be an external URL
+            db_comment.media_url = update_dict["media_url"]
+            db_comment.media_type = update_dict.get("media_type")  # Should be provided via schema validator
+            db_comment.original_filename = None
+            db_comment.media_size_bytes = None
+            # content is optional in this case
+
+        # 2. 应用其他 update_dict 中的字段
+        # 清理掉已通过文件上传或手动处理的 media 字段，防止再次覆盖
+        fields_to_skip_manual_update = ["media_url", "media_type", "original_filename", "media_size_bytes", "file"]
+        for key, value in update_dict.items():
+            if key in fields_to_skip_manual_update:
+                continue
+            if hasattr(db_comment, key):
+                if key == "content":  # Content is mandatory for text-based comments
+                    if value is None or (isinstance(value, str) and not value.strip()):
+                        # Only raise error if it's a text-based comment. For media-only, content can be null.
+                        if db_comment.media_url is None:  # If no media, content must be there
+                            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="评论内容不能为空。")
+                        else:  # If there's media, content can be cleared
+                            setattr(db_comment, key, value)
+                    else:  # Content value is not None/empty
+                        setattr(db_comment, key, value)
+                elif key == "parent_comment_id":  # Cannot change parent_comment_id
+                    if value != db_comment.parent_comment_id:
+                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                            detail="Cannot change parent_comment_id of a comment.")
+                else:  # For other fields
+                    setattr(db_comment, key, value)
+
+        db.add(db_comment)
+        db.commit()
+        db.refresh(db_comment)
+
+        # 填充 owner_name
+        owner_obj = db.query(Student).filter(Student.id == current_user_id).first()
+        db_comment.owner_name = owner_obj.name
+        db_comment.is_liked_by_current_user = False  # 更新不会像状态一样更改
+
+        print(f"DEBUG: 评论 {db_comment.id} 更新成功。")
+        return db_comment
+
+    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(f"DEBUG: HTTP exception, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        raise e
+    except Exception as e:
+        db.rollback()
+        if new_uploaded_oss_object_name:
+            asyncio.create_task(oss_utils.delete_file_from_oss(new_uploaded_oss_object_name))
+            print(
+                f"DEBUG: Unknown error during update, attempting to delete new OSS file: {new_uploaded_oss_object_name}")
+        print(f"ERROR_UPDATE_COMMENT_GLOBAL: 更新评论失败，事务已回滚: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"更新评论失败: {e}",
+        )
 
 
 @app.delete("/forum/comments/{comment_id}", summary="删除指定论坛评论")
@@ -7283,6 +9536,7 @@ async def delete_forum_comment(
 ):
     """
     删除指定ID的论坛评论。如果评论有子评论，则会级联删除所有回复。
+    如果评论关联了文件或媒体（通过URL指向OSS），将同时删除OSS上的文件。
     只有评论发布者能删除。
     """
     print(f"DEBUG: 删除评论 ID: {comment_id}。")
@@ -7294,14 +9548,33 @@ async def delete_forum_comment(
     # 获取所属话题以便更新 comments_count
     db_topic = db.query(ForumTopic).filter(ForumTopic.id == db_comment.topic_id).first()
     if db_topic:
+        # 评论数减少的逻辑应该在实际删除完评论后进行，并且需要考虑级联删除子评论的情况
+        # 但在简单的计数器场景下，这里先进行初步减一，或者在钩子中处理会更好。
+        # 这里仅为直接评论减一，子评论的删除不会反映在这里。
         db_topic.comments_count -= 1
         db.add(db_topic)
+
+    # <<< 新增：如果评论关联了文件或媒体，并且是OSS URL，则尝试从OSS删除文件 >>>
+    if db_comment.media_type in ["image", "video", "file"] and db_comment.media_url:
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        # 从OSS URL中解析出 object_name
+        object_name = db_comment.media_url.replace(oss_base_url_parsed, '', 1) if db_comment.media_url.startswith(oss_base_url_parsed) else None
+
+        if object_name:
+            try:
+                await oss_utils.delete_file_from_oss(object_name)
+                print(f"DEBUG_FORUM: 删除了评论 {comment_id} 关联的OSS文件: {object_name}")
+            except Exception as e:
+                print(f"ERROR_FORUM: 删除评论 {comment_id} 关联的OSS文件 {object_name} 失败: {e}")
+                # 即使OSS文件删除失败，也应该允许数据库记录被删除
+        else:
+            print(f"WARNING_FORUM: 评论 {comment_id} 的 media_url ({db_comment.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
 
     # SQLAlchemy的cascade="all, delete-orphan"会在db.delete(db_comment)时自动处理所有子评论和点赞
     db.delete(db_comment)
     db.commit()
-    print(f"DEBUG: 评论 {comment_id} 及其子评论点赞删除成功。")
-    return {"message": "Forum comment and its children/likes deleted successfully"}
+    print(f"DEBUG: 评论 {comment_id} 及其子评论点赞和关联文件删除成功。")
+    return {"message": "Forum comment and its children/likes/associated media deleted successfully"}
 
 
 # --- 小论坛 - 点赞管理接口 ---
@@ -8196,4 +10469,3 @@ async def admin_reward_or_deduct_points(
 
     print(f"DEBUG_ADMIN_POINTS: 管理员 {current_admin_user.id} 成功调整用户 {target_user.id} 积分。")
     return latest_transaction  # 返回最新的交易记录
-

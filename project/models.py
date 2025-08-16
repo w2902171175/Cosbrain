@@ -7,8 +7,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.schema import UniqueConstraint
 from base import Base
+from sqlalchemy import event
+import asyncio
+from typing import Optional
 import json
 from datetime import datetime
+import oss_utils as oss_utils
 
 
 class ProjectApplication(Base):
@@ -89,9 +93,6 @@ class Student(Base):
     updated_at = Column(DateTime, onupdate=func.now())
     is_admin = Column(Boolean, default=False, nullable=False)
 
-    total_points = Column(Integer, default=0, nullable=False, comment="用户当前总积分")
-    last_login_at = Column(DateTime, nullable=True, comment="用户上次登录时间，用于每日打卡")
-
     achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
     point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
     created_chat_rooms = relationship("ChatRoom", back_populates="creator")
@@ -131,9 +132,6 @@ class Student(Base):
     last_login_at = Column(DateTime, nullable=True, comment="用户上次登录时间，用于每日打卡")
     login_count = Column(Integer, default=0, nullable=False,
                          comment="用户总登录天数（完成每日打卡的次数）")
-
-    achievements = relationship("UserAchievement", back_populates="user", cascade="all, delete-orphan")
-    point_transactions = relationship("PointTransaction", back_populates="user", cascade="all, delete-orphan")
 
     ai_conversations = relationship("AIConversation", back_populates="user_owner", cascade="all, delete-orphan")
     project_applications = relationship("ProjectApplication", foreign_keys=[ProjectApplication.student_id],
@@ -193,6 +191,16 @@ class Note(Base):
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)
     tags = Column(String)
 
+    # 章节信息字段
+    chapter = Column(String, nullable=True, comment="课程章节信息，例如：第一章 - AI概述")
+
+    # 媒体文件相关字段
+    media_url = Column(String, nullable=True, comment="笔记中嵌入的图片、视频或文件的OSS URL")
+    media_type = Column(String, nullable=True, comment="媒体类型：'image', 'video', 'file'")
+    original_filename = Column(String, nullable=True, comment="原始上传文件名")
+    media_size_bytes = Column(BigInteger, nullable=True, comment="媒体文件大小（字节）")
+    folder_id = Column(Integer, ForeignKey("folders.id"), nullable=True, index=True, comment="用户自定义文件夹ID")
+
     combined_text = Column(Text)
     embedding = Column(Vector(1024))
 
@@ -201,6 +209,7 @@ class Note(Base):
 
     owner = relationship("Student", back_populates="notes")
     course = relationship("Course", back_populates="notes_made")
+    folder = relationship("Folder", back_populates="notes")
 
 
 class DailyRecord(Base):
@@ -252,6 +261,7 @@ class Folder(Base):
     )
 
     collected_contents = relationship("CollectedContent", back_populates="folder", cascade="all, delete-orphan")
+    notes = relationship("Note", back_populates="folder", cascade="all, delete-orphan")
 
     owner = relationship("Student", back_populates="folders")
 
@@ -275,7 +285,7 @@ class CollectedContent(Base):
 
     title = Column(String, nullable=False)
     type = Column(String, nullable=False)
-    url = Column(String, nullable=True)
+    url = Column(String, nullable=True, comment="收藏内容的URL，可以是外部链接或OSS文件URL")
     content = Column(Text, nullable=True)
     tags = Column(String, nullable=True)
     priority = Column(Integer, default=3)
@@ -285,7 +295,7 @@ class CollectedContent(Base):
     thumbnail = Column(String, nullable=True)
     author = Column(String, nullable=True)
     duration = Column(String, nullable=True)
-    file_size = Column(BigInteger, nullable=True, comment="文件大小（字节）")
+    file_size = Column(BigInteger, nullable=True, comment="文件大小（字节，适用于OSS文件）")
     status = Column(String, default="active")
 
     access_count = Column(Integer, default=0, nullable=False, comment="访问（查看）次数")
@@ -338,7 +348,7 @@ class ChatMessage(Base):
     content_text = Column(Text, nullable=False)
     message_type = Column(String, default="text")
 
-    media_url = Column(String, nullable=True)
+    media_url = Column(String, nullable=True, comment="媒体文件OSS URL或外部链接")
 
     sent_at = Column(DateTime, server_default=func.now())
 
@@ -412,6 +422,11 @@ class ForumTopic(Base):
 
     tags = Column(String, nullable=True)
 
+    media_url = Column(String, nullable=True, comment="图片、视频或文件的OSS URL")
+    media_type = Column(String, nullable=True, comment="媒体类型：'image', 'video', 'file'")
+    original_filename = Column(String, nullable=True, comment="原始上传文件名")
+    media_size_bytes = Column(BigInteger, nullable=True, comment="媒体文件大小（字节）")
+
     likes_count = Column(Integer, default=0)
     comments_count = Column(Integer, default=0)
     views_count = Column(Integer, default=0)
@@ -437,6 +452,11 @@ class ForumComment(Base):
     content = Column(Text, nullable=False)
 
     parent_comment_id = Column(Integer, ForeignKey("forum_comments.id"), nullable=True)
+
+    media_url = Column(String, nullable=True, comment="图片、视频或文件的OSS URL")
+    media_type = Column(String, nullable=True, comment="媒体类型：'image', 'video', 'file'")
+    original_filename = Column(String, nullable=True, comment="原始上传文件名")
+    media_size_bytes = Column(BigInteger, nullable=True, comment="媒体文件大小（字节）")
 
     likes_count = Column(Integer, default=0)
 
@@ -479,25 +499,6 @@ class ForumLike(Base):
     comment = relationship("ForumComment", back_populates="likes")
 
 
-class AIConversation(Base):
-    __tablename__ = "ai_conversations"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True, comment="对话所属用户ID")
-    title = Column(String, nullable=True, comment="对话标题（可由AI生成或用户自定义）")
-
-    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="对话创建时间")
-    last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
-                          comment="对话最后更新时间")
-
-    user_owner = relationship("Student", back_populates="ai_conversations")
-    messages = relationship("AIConversationMessage", back_populates="conversation",
-                            order_by="AIConversationMessage.sent_at", cascade="all, delete-orphan")
-
-    def __repr__(self):
-        return f"<AIConversation(id={self.id}, user_id={self.user_id}, title='{self.title[:20] if self.title else ''}')>"
-
-
 class AIConversationMessage(Base):
     __tablename__ = "ai_conversation_messages"
 
@@ -523,6 +524,71 @@ class AIConversationMessage(Base):
 
     def __repr__(self):
         return f"<AIConversationMessage(id={self.id}, role='{self.role}', conv_id={self.conversation_id}, sent_at='{self.sent_at}')>"
+
+
+
+class AIConversationTemporaryFile(Base):
+    __tablename__ = "ai_conversation_temporary_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("ai_conversations.id"), nullable=False, index=True,
+                             comment="所属AI对话的ID")
+    oss_object_name = Column(String, nullable=False, comment="文件在OSS中的对象名称")
+    original_filename = Column(String, nullable=True, comment="原始上传文件名")
+    file_type = Column(String, nullable=False, comment="文件MIME类型")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+    extracted_text = Column(Text, nullable=True, comment="从文件中提取的文本内容，用于RAG")
+    embedding = Column(Vector(1024), nullable=True, comment="提取文本的嵌入向量")
+    status = Column(String, default="pending", nullable=False, comment="处理状态：'pending', 'processing', 'completed', 'failed'")
+    processing_message = Column(Text, nullable=True, comment="处理状态消息")
+
+    conversation = relationship("AIConversation", back_populates="temp_files")
+
+    __table_args__ = (
+        # 确保同一个对话中，OSS对象名称是唯一的，防止重复记录
+        UniqueConstraint('conversation_id', 'oss_object_name', name='_conv_temp_file_uc'),
+    )
+
+    def __repr__(self):
+        return f"<AIConversationTemporaryFile(id={self.id}, conv_id={self.conversation_id}, filename='{self.original_filename}', status='{self.status}')>"
+
+
+@event.listens_for(AIConversationTemporaryFile, 'before_delete')
+def receive_before_delete(mapper, connection, target: AIConversationTemporaryFile):
+    """
+    在 AIConversationTemporaryFile 记录删除之前，从 OSS 删除对应的文件。
+    """
+    oss_object_name = target.oss_object_name
+    if oss_object_name:
+        print(f"DEBUG_OSS_DELETE_EVENT: 准备删除 OSS 文件: {oss_object_name} (关联 AI 临时文件 ID: {target.id})")
+        # 异步删除文件，不阻塞数据库事务
+        # 注意：这里是同步事件监听器，调用异步函数需要用 asyncio.create_task()
+        asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name))
+    else:
+        print(f"WARNING_OSS_DELETE_EVENT: AI 临时文件 ID: {target.id} 没有关联的 OSS 对象名称，跳过 OSS 文件删除。")
+
+
+class AIConversation(Base):
+    __tablename__ = "ai_conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True, comment="对话所属用户ID")
+    title = Column(String, nullable=True, comment="对话标题（可由AI生成或用户自定义）")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="对话创建时间")
+    last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+                          comment="对话最后更新时间")
+
+    user_owner = relationship("Student", back_populates="ai_conversations")
+    messages = relationship("AIConversationMessage", back_populates="conversation",
+                            order_by="AIConversationMessage.sent_at", cascade="all, delete-orphan")
+    temp_files = relationship("AIConversationTemporaryFile", back_populates="conversation",
+                              cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<AIConversation(id={self.id}, user_id={self.user_id}, title='{self.title[:20] if self.title else ''}')>"
 
 
 class UserFollow(Base):
@@ -620,6 +686,60 @@ class KnowledgeBase(Base):
     articles = relationship("KnowledgeArticle", back_populates="knowledge_base", cascade="all, delete-orphan")
     documents = relationship("KnowledgeDocument", back_populates="knowledge_base",
                              cascade="all, delete-orphan")
+    kb_folders = relationship("KnowledgeBaseFolder", back_populates="knowledge_base", cascade="all, delete-orphan")
+
+
+class KnowledgeBaseFolder(Base):
+    __tablename__ = "knowledge_base_folders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kb_id = Column(Integer, ForeignKey("knowledge_bases.id"), nullable=False, index=True, comment="所属知识库ID")
+    owner_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True,
+                      comment="文件夹所有者ID (与知识库所有者相同)")
+
+    name = Column(String, nullable=False, comment="文件夹名称")
+    description = Column(Text, nullable=True, comment="文件夹描述")
+
+    parent_id = Column(Integer, ForeignKey("knowledge_base_folders.id"), nullable=True, index=True,
+                       comment="父文件夹ID")
+    order = Column(Integer, default=0, comment="排序")
+
+    linked_folder_type = Column(String, nullable=True,
+                                comment="链接到的外部文件夹类型：'note_folder'（课程笔记文件夹）或'collected_content_folder'（收藏文件夹）")
+    linked_folder_id = Column(BigInteger, nullable=True, comment="链接到的外部文件夹ID")
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    # Relationships
+    knowledge_base = relationship("KnowledgeBase", back_populates="kb_folders")
+    owner = relationship("Student")
+
+    children = relationship(
+        "KnowledgeBaseFolder",
+        primaryjoin="KnowledgeBaseFolder.parent_id == remote(KnowledgeBaseFolder.id)",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        single_parent=True
+    )
+    parent = relationship(
+        "KnowledgeBaseFolder",
+        primaryjoin="KnowledgeBaseFolder.id == remote(KnowledgeBaseFolder.parent_id)",
+        back_populates="children",
+        remote_side=[id]
+    )
+
+    articles = relationship("KnowledgeArticle", back_populates="kb_folder", cascade="all, delete-orphan")
+    documents = relationship("KnowledgeDocument", back_populates="kb_folder", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index('_kb_folder_name_unique_idx', 'kb_id', 'parent_id', 'name', unique=True,
+              postgresql_where=text("parent_id IS NOT NULL AND linked_folder_type IS NULL")),
+        Index('_kb_folder_root_name_unique_idx', 'kb_id', 'name', unique=True,
+              postgresql_where=text("parent_id IS NULL AND linked_folder_type IS NULL")),
+        Index('_kb_folder_linked_unique_idx', 'kb_id', 'linked_folder_type', 'linked_folder_id', unique=True,
+              postgresql_where=text("linked_folder_type IS NOT NULL AND linked_folder_id IS NOT NULL")),
+    )
 
 
 class KnowledgeArticle(Base):
@@ -633,6 +753,8 @@ class KnowledgeArticle(Base):
     version = Column(String)
     tags = Column(String)
 
+    kb_folder_id = Column(Integer, ForeignKey("knowledge_base_folders.id"), nullable=True, index=True,
+                          comment="所属知识库文件夹ID")
     combined_text = Column(Text)
     embedding = Column(Vector(1024))
 
@@ -641,6 +763,7 @@ class KnowledgeArticle(Base):
 
     knowledge_base = relationship("KnowledgeBase", back_populates="articles")
     author = relationship("Student", back_populates="knowledge_articles")
+    kb_folder = relationship("KnowledgeBaseFolder", back_populates="articles")
 
 
 class KnowledgeDocument(Base):
@@ -658,12 +781,16 @@ class KnowledgeDocument(Base):
     processing_message = Column(Text, nullable=True)
     total_chunks = Column(Integer, default=0)
 
+    kb_folder_id = Column(Integer, ForeignKey("knowledge_base_folders.id"), nullable=True, index=True,
+                          comment="所属知识库文件夹ID")
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")
     owner = relationship("Student", back_populates="uploaded_documents")
     chunks = relationship("KnowledgeDocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    kb_folder = relationship("KnowledgeBaseFolder", back_populates="documents")
 
 
 class KnowledgeDocumentChunk(Base):
@@ -723,6 +850,7 @@ class UserCourse(Base):
     course = relationship("Course", back_populates="user_courses")
 
 
+
 class CourseMaterial(Base):
     __tablename__ = "course_materials"
 
@@ -730,14 +858,14 @@ class CourseMaterial(Base):
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
 
     title = Column(String, nullable=False, comment="材料标题，如：Lecture 1 Introduction to AI")
-    # 材料类型: 'file' (本地上传文件), 'link' (外部链接), 'text' (少量文本内容)
-    type = Column(String, nullable=False, comment="材料类型：'file', 'link', 'text'")
+    # 材料类型: 'file' (OSS上传文件), 'link' (外部链接), 'text' (少量文本内容)
+    type = Column(String, nullable=False, comment="材料类型：'file', 'link', 'text', 'video', 'image'")
 
-    # 如果是 'file' 类型，存储本地路径和原始文件名、文件类型、大小
-    file_path = Column(String, nullable=True, comment="本地文件存储路径")
+    # 如果是 'file' 类型，存储OSS URL和原始文件名、文件类型、大小
+    file_path = Column(String, nullable=True, comment="OSS文件URL")
     original_filename = Column(String, nullable=True, comment="原始上传文件名")
     file_type = Column(String, nullable=True, comment="文件MIME类型")
-    size_bytes = Column(Integer, nullable=True, comment="文件大小（字节）")
+    size_bytes = Column(BigInteger, nullable=True, comment="文件大小（字节）") # 使用 BigInteger
 
     # 如果是 'link' 类型，存储URL
     url = Column(String, nullable=True, comment="外部链接URL")
@@ -754,8 +882,9 @@ class CourseMaterial(Base):
 
     course = relationship("Course", back_populates="materials")
 
-    UniqueConstraint('course_id', 'title', name='_course_material_title_uc'),  # 确保同一课程下材料标题唯一
-    UniqueConstraint('file_path', name='_course_material_file_path_uc'),  # 确保文件路径唯一，防止重复上传同一个文件
+    __table_args__ = (
+        UniqueConstraint('course_id', 'title', name='_course_material_title_uc'),  # 确保同一课程下材料标题唯一
+    )
 
 
 # --- 旧的 CollectionItem (可以考虑未来删除或重构到 CollectedContent) ---

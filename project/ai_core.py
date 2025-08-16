@@ -3,7 +3,7 @@ from fastapi import HTTPException, status
 import pandas as pd
 import numpy as np
 from cryptography.fernet import Fernet
-import os, httpx, json, uuid, time, asyncio, ast, re, PyPDF2, requests
+import os, httpx, json, uuid, time, asyncio, ast, re, PyPDF2, requests, io
 from typing import List, Dict, Any, Optional, Literal, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from gtts import gTTS
 from docx import Document as DocxDocument
 from models import Student, Project, KnowledgeBase, KnowledgeArticle, Note, Course, KnowledgeDocument, \
-    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial, AIConversationMessage
+    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial, AIConversationMessage,AIConversationTemporaryFile
 from schemas import WebSearchResult, WebSearchResponse, McpToolDefinition, McpStatusResponse, MatchedProject, \
     MatchedStudent, MatchedCourse
 
@@ -159,10 +159,6 @@ def _ensure_top_level_list(raw_input: Any) -> List[Any]:
     print(
         f"WARNING_MATCH_SKILLS: Top-level input type '{type(raw_input)}' is unexpected. Value: '{raw_input}'. Returning empty list.")
     return []
-
-# --- 文件存储路径配置 ---
-UPLOAD_DIRECTORY = "uploaded_files"
-os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
 
 
 # --- 加密库 (用于API密钥) ---
@@ -664,48 +660,63 @@ async def get_rerank_scores_from_api(
         return [0.0] * len(texts)
 
 
-def extract_text_from_document(filepath: str, file_type: str) -> str:
+def extract_text_from_document(file_content_bytes: bytes, file_type: str) -> str:
     # 保持同步，因为它涉及到本地文件IO和CPU密集型操作
     text_content = ""
+    if not file_content_bytes:
+        print(f"WARNING_DOC_PARSE: Received empty file content bytes for type {file_type}.")
+        raise ValueError("文件内容为空。")
+
+    # 使用 io.BytesIO 将字节流包装成文件对象，以便 PyPDF2 和 docx 库可以读取它
+    file_like_object = io.BytesIO(file_content_bytes)
+
     if file_type == "application/pdf":
         try:
-            with open(filepath, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                for page_num in range(len(reader.pages)):
-                    page = reader.pages[page_num]
-                    text_content += page.extract_text() or ""
-            print(f"DEBUG_DOC_PARSE: Successfully extracted text from PDF: {filepath}")
+            # 修改: 使用 file_like_object 代替 filepath
+            reader = PyPDF2.PdfReader(file_like_object)
+            for page_num in range(len(reader.pages)):
+                page = reader.pages[page_num]
+                text_content += page.extract_text() or ""
+            print(f"DEBUG_DOC_PARSE: Successfully extracted text from PDF (from bytes).")
         except Exception as e:
-            print(f"ERROR_DOC_PARSE: Failed to extract text from PDF {filepath}: {e}")
+            print(f"ERROR_DOC_PARSE: Failed to extract text from PDF (from bytes): {e}")
             raise ValueError(f"无法解析PDF文件：{e}")
     elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":  # .docx
         try:
-            doc = DocxDocument(filepath)
+            # 修改: 使用 file_like_object 代替 filepath
+            doc = DocxDocument(file_like_object)
             for paragraph in doc.paragraphs:
                 text_content += paragraph.text + "\n"
-            print(f"DEBUG_DOC_PARSE: Successfully extracted text from DOCX: {filepath}")
+            print(f"DEBUG_DOC_PARSE: Successfully extracted text from DOCX (from bytes).")
         except Exception as e:
-            print(f"ERROR_DOC_PARSE: Failed to extract text from DOCX {filepath}: {e}")
+            print(f"ERROR_DOC_PARSE: Failed to extract text from DOCX (from bytes): {e}")
             raise ValueError(f"无法解析DOCX文件：{e}")
     elif file_type.startswith("text/"):  # .txt 或其他纯文本
         try:
-            with open(filepath, 'r', encoding='utf-8') as file:
-                text_content = file.read()
-            print(f"DEBUG_DOC_PARSE: Successfully extracted text from TXT: {filepath}")
+            # 直接解码字节流为文本
+            text_content = file_content_bytes.decode('utf-8')
+            print(f"DEBUG_DOC_PARSE: Successfully extracted text from TXT (from bytes).")
+        except UnicodeDecodeError:
+            try: # 尝试其他编码
+                text_content = file_content_bytes.decode('gbk', errors='ignore')
+                print(f"DEBUG_DOC_PARSE: Successfully extracted text from TXT (from bytes) with GBK encoding.")
+            except Exception as e:
+                print(f"ERROR_DOC_PARSE: Failed to decode text content from bytes: {e}")
+                raise ValueError(f"无法解码文本文件内容：{e}")
         except Exception as e:
-            print(f"ERROR_DOC_PARSE: Failed to extract text from TXT {filepath}: {e}")
+            print(f"ERROR_DOC_PARSE: Failed to extract text from TXT (from bytes): {e}")
             raise ValueError(f"无法解析TXT文件：{e}")
     else:
         print(
-            f"WARNING_DOC_PARSE: Unsupported file type for text extraction: {file_type} for {filepath}. Attempting basic text read.")
+            f"WARNING_DOC_PARSE: Unsupported file type for text extraction from bytes: {file_type}. Attempting basic text decode."
+        )
         try:
-            with open(filepath, 'r', encoding='utf-8') as file:
-                text_content = file.read()
+            text_content = file_content_bytes.decode('utf-8', errors='ignore')
         except Exception as e:
-            raise ValueError(f"不支持的文件类型或无法提取文本：{file_type}。错误：{e}")
+            raise ValueError(f"不支持的文件类型或无法提取文本 ({file_type})：{e}。")
 
     if not text_content.strip():
-        print(f"WARNING_DOC_PARSE: Extracted content is empty for {filepath} of type {file_type}")
+        print(f"WARNING_DOC_PARSE: Extracted content is empty for file of type {file_type}")
         raise ValueError("文件内容为空或无法提取有效文本。")
 
     return text_content
@@ -788,8 +799,6 @@ async def execute_tool(
         tool_call_args: Dict[str, Any],
         user_id: int
 ) -> Union[str, List[Dict[str, Any]], Dict[str, Any]]:
-    print(f"DEBUG_TOOL: 尝试执行工具：{tool_call_name}，参数：{tool_call_args}")
-
     if tool_call_name == "web_search":
         search_query = tool_call_args.get("query")
         search_engine_config_id = tool_call_args.get("search_engine_config_id")
@@ -838,51 +847,67 @@ async def execute_tool(
         rag_query = tool_call_args.get("query")
         kb_ids = tool_call_args.get("kb_ids")
         note_ids = tool_call_args.get("note_ids")
+        temp_file_ids = tool_call_args.get("temp_file_ids")
+        conversation_id_from_args = tool_call_args.get("conversation_id") # 获取conversation_id
+
+        user_llm_api_key = None
+        user_llm_type = None
+        user_obj = db.query(Student).filter(Student.id == user_id).first()
+        if user_obj and user_obj.llm_api_type == "siliconflow" and user_obj.llm_api_key_encrypted:
+            try:
+                user_llm_api_key = decrypt_key(user_obj.llm_api_key_encrypted)
+                user_llm_type = user_obj.llm_api_type
+            except Exception as e:
+                pass
+
+        context_docs = []
+        source_articles_info = []
 
         if not kb_ids:
             user_kbs = db.query(KnowledgeBase).filter(KnowledgeBase.owner_id == user_id).all()
             kb_ids = [kb.id for kb in user_kbs]
             if not kb_ids:
-                return "错误：未指定知识库ID，且用户没有创建任何知识库。无法执行知识库检索。"
+                pass
+
+
+        if kb_ids:
+            articles_candidate = db.query(KnowledgeArticle).filter(
+                KnowledgeArticle.kb_id.in_(kb_ids),
+                KnowledgeArticle.author_id == user_id
+            ).all()
+            for article in articles_candidate:
+                if article.content and article.content.strip():
+                    context_docs.append({
+                        "content": article.title + "\n" + article.content,
+                        "type": "knowledge_article",
+                        "id": article.id,
+                        "title": article.title
+                    })
+
+            documents_candidate = db.query(KnowledgeDocument).filter(
+                KnowledgeDocument.kb_id.in_(kb_ids),
+                KnowledgeDocument.owner_id == user_id,
+                KnowledgeDocument.status == "completed"
+            ).all()
+            for doc in documents_candidate:
+                doc_chunks = db.query(KnowledgeDocumentChunk).filter(
+                    KnowledgeDocumentChunk.document_id == doc.id,
+                    KnowledgeDocumentChunk.owner_id == user_id,
+                    KnowledgeDocumentChunk.kb_id == doc.kb_id,
+                    KnowledgeDocumentChunk.content.isnot(None)
+                ).all()
+                combined_doc_content = "\n".join([chunk.content for chunk in doc_chunks if chunk.content])
+                if combined_doc_content.strip():
+                    context_docs.append({
+                        "content": doc.file_name + "\n" + combined_doc_content,
+                        "type": "knowledge_document",
+                        "id": doc.id,
+                        "title": doc.file_name
+                    })
 
         if not note_ids:
             user_notes = db.query(Note).filter(Note.owner_id == user_id).all()
             note_ids = [note.id for note in user_notes]
-
-        context_docs = []
-        source_articles_info = []
-
-        articles_candidate = db.query(KnowledgeArticle).filter(
-            KnowledgeArticle.kb_id.in_(kb_ids),
-            KnowledgeArticle.author_id == user_id
-        ).all()
-        for article in articles_candidate:
-            context_docs.append({
-                "content": article.title + "\n" + article.content,
-                "type": "knowledge_article",
-                "id": article.id,
-                "title": article.title
-            })
-
-        documents_candidate = db.query(KnowledgeDocument).filter(
-            KnowledgeDocument.kb_id.in_(kb_ids),
-            KnowledgeDocument.owner_id == user_id,
-            KnowledgeDocument.status == "completed"
-        ).all()
-        for doc in documents_candidate:
-            doc_chunks = db.query(KnowledgeDocumentChunk).filter(
-                KnowledgeDocumentChunk.document_id == doc.id,
-                KnowledgeDocumentChunk.owner_id == user_id,
-                KnowledgeDocumentChunk.kb_id == doc.kb_id
-            ).all()
-            for chunk in doc_chunks:
-                context_docs.append({
-                    "content": chunk.content,
-                    "type": "knowledge_document",
-                    "id": doc.id,
-                    "chunk_index": chunk.chunk_index,
-                    "title": doc.file_name
-                })
 
         if note_ids:
             notes_candidate = db.query(Note).filter(
@@ -890,21 +915,45 @@ async def execute_tool(
                 Note.owner_id == user_id
             ).all()
             for note in notes_candidate:
-                context_docs.append({
-                    "content": note.title + "\n" + note.content,
-                    "type": "note",
-                    "id": note.id,
-                    "title": note.title
-                })
+                full_note_content = note.title + "\n" + (note.content or "")
+                if note.media_url and (note.media_type == "text" or not note.content):
+                    full_note_content += f"\n附件链接: {note.media_url}"
+                if full_note_content.strip():
+                    context_docs.append({
+                        "content": full_note_content,
+                        "type": "note",
+                        "id": note.id,
+                        "title": note.title
+                    })
+
+        if temp_file_ids and conversation_id_from_args:
+            temp_files_candidate = db.query(AIConversationTemporaryFile).filter(
+                AIConversationTemporaryFile.id.in_(temp_file_ids),
+                AIConversationTemporaryFile.conversation_id == conversation_id_from_args,
+                AIConversationTemporaryFile.status == "completed"
+            ).all()
+            for temp_file in temp_files_candidate:
+                if temp_file.extracted_text and temp_file.extracted_text.strip():
+                    context_docs.append({
+                        "content": temp_file.original_filename + "\n" + temp_file.extracted_text,
+                        "type": "ai_temp_file",
+                        "id": temp_file.id,
+                        "title": temp_file.original_filename
+                    })
 
         if not context_docs:
-            return "知识库或笔记中没有找到与问题相关的文档信息。"
+            return "知识库、笔记或临时文件中没有找到与问题相关的文档信息。"
 
         candidate_contents = [doc["content"] for doc in context_docs]
         if not candidate_contents:
-            return "知识库或笔记中找到的文档内容为空，无法提取信息。"
+            return "知识库、笔记或临时文件中找到的文档内容为空，无法提取信息。"
 
-        reranked_scores = await get_rerank_scores_from_api(rag_query, candidate_contents)
+        reranked_scores = await get_rerank_scores_from_api(
+            rag_query,
+            candidate_contents,
+            api_key=user_llm_api_key,
+            llm_type=user_llm_type
+        )
 
         scored_candidates = sorted(
             zip(context_docs, reranked_scores),
@@ -926,7 +975,7 @@ async def execute_tool(
                 break
 
         if not context_for_llm:
-            return "虽然在知识库中找到了一些文档，但未能提炼出足够相关或有用的信息来回答问题。"
+            return "虽然在知识库、笔记或临时文件中找到了一些文档，但未能提炼出足够相关或有用的信息来回答问题。"
 
         retrieved_content = "\n\n".join([doc["content"] for doc in context_for_llm])
 
@@ -937,6 +986,10 @@ async def execute_tool(
                 "type": doc["type"],
                 "chunk_index": doc.get("chunk_index")
             }
+            if doc["type"] == "ai_temp_file":
+                temp_file_obj = db.query(AIConversationTemporaryFile).filter(AIConversationTemporaryFile.id == doc["id"]).first()
+                if temp_file_obj and hasattr(temp_file_obj, 'oss_object_name'):
+                     source_doc_info["file_path"] = f"{os.getenv('OSS_BASE_URL').rstrip('/')}/{temp_file_obj.oss_object_name}"
             source_articles_info.append(source_doc_info)
 
         return {"context": retrieved_content, "sources": source_articles_info}
@@ -970,8 +1023,6 @@ async def execute_tool(
             data_points = tool_call_args.get("data_points")
             title = tool_call_args.get("title", "")
 
-            print(f"DEBUG_TOOL: 调用MCP可视化图表工具: Type={chart_type}, Data={data_points}, Title={title}")
-
             if chart_type and data_points:
                 img_url = f"https://example.com/charts/{chart_type}_{uuid.uuid4().hex}.png"
                 return f"可视化图表已生成：{img_url}。标题：{title}。数据：{data_points}"
@@ -981,7 +1032,6 @@ async def execute_tool(
             prompt = tool_call_args.get("prompt")
             style = tool_call_args.get("style", "realistic")
 
-            print(f"DEBUG_TOOL: 调用MCP图像生成工具: Prompt='{prompt}', Style='{style}'")
             img_url = f"https://example.com/images/{style}_{uuid.uuid4().hex}.png"
             return f"图像已生成：{img_url}。基于描述：'{prompt}'。"
         else:
@@ -989,6 +1039,7 @@ async def execute_tool(
 
     else:
         return f"错误：未知工具：{tool_call_name}"
+
 
 
 async def get_all_available_tools_for_llm(db: Session, user_id: int) -> List[Dict[str, Any]]:
@@ -1074,21 +1125,19 @@ async def invoke_agent(
         kb_ids: Optional[List[int]] = None,
         note_ids: Optional[List[int]] = None,
         preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None,
-        past_messages: Optional[List[Dict[str, Any]]] = None  # <<<< 新增：接受历史消息
+        past_messages: Optional[List[Dict[str, Any]]] = None,
+        temp_file_ids: Optional[List[int]] = None
 ) -> Dict[str, Any]:
-    # 消息列表现在从 past_messages 开始，如果存在的话
     messages = past_messages if past_messages is not None else []
-    messages.append({"role": "user", "content": query})  # 加入当前用户问题
+    messages.append({"role": "user", "content": query})
 
-    # 用于本轮次将要保存的消息记录
     current_turn_messages_to_log = []
-    # 初始记录用户的问题
     current_turn_messages_to_log.append({
         "role": "user",
         "content": query
     })
 
-    response_data = {}  # 用于构建最终返回给 main.py 的 Dict
+    response_data = {}
 
     available_tools_for_llm = await get_all_available_tools_for_llm(db, user_id)
 
@@ -1118,10 +1167,9 @@ async def invoke_agent(
             else:
                 response_data["answer"] = "Service busy, please try again later or provide a more specific question."
                 response_data["answer_mode"] = "Failed_General_mode"
-            # Return all messages generated in this turn
             response_data["llm_type_used"] = llm_api_type
             response_data["llm_model_used"] = llm_model_id
-            response_data["turn_messages_to_log"] = current_turn_messages_to_log  # 返回本轮次消息
+            response_data["turn_messages_to_log"] = current_turn_messages_to_log
             return response_data
     else:
         tools_to_send_to_llm = available_tools_for_llm
@@ -1140,14 +1188,13 @@ async def invoke_agent(
     choice = llm_response_data['choices'][0]
     message_content = choice['message']
 
-    response_data["answer"] = ""  # 初始化最终答案
-    response_data["answer_mode"] = ""  # 初始化答案模式
+    response_data["answer"] = ""
+    response_data["answer_mode"] = ""
 
     if message_content.get('tool_calls'):
         print(f"DEBUG_AGENT: LLM decided to call tool(s): {message_content['tool_calls']}")
         tool_outputs_for_second_turn = []
         response_data["answer_mode"] = "Tool_Use_mode"
-        # 记录LLM决定调用工具的消息
         current_turn_messages_to_log.append({
             "role": "tool_call",
             "content": f"LLM决定调用工具，工具调用详情：{json.dumps(message_content['tool_calls'], ensure_ascii=False)}",
@@ -1156,7 +1203,6 @@ async def invoke_agent(
             "llm_model_used": llm_model_id
         })
 
-        # Process each tool call
         for tc in message_content['tool_calls']:
             tool_call_id = tc.get('id')
             tool_name = tc['function']['name']
@@ -1164,12 +1210,16 @@ async def invoke_agent(
 
             tool_output_result = None
             try:
-                # RAG 和 Web 搜索的特殊处理，用于提取架构的结构化信息
                 if tool_name == "rag_knowledge_base":
                     executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
-                        tool_call_args={"query": tool_args.get("query"), "kb_ids": kb_ids, "note_ids": note_ids},
+                        tool_call_args={
+                            "query": tool_args.get("query"),
+                            "kb_ids": kb_ids,
+                            "note_ids": note_ids,
+                            "temp_file_ids": temp_file_ids
+                        },
                         user_id=user_id
                     )
                     rag_context = executed_output.get("context", "") if isinstance(executed_output, dict) else str(
@@ -1218,11 +1268,11 @@ async def invoke_agent(
                     tool_output_result = f"Error: LLM attempted to call an unexpected tool: {tool_name}"
                     print(tool_output_result)
 
-                output_content_str = str(tool_output_result)  # 将复杂输出转换为内容的字符串
+                output_content_str = str(tool_output_result)
                 current_turn_messages_to_log.append({
                     "role": "tool_output",
                     "content": f"工具 {tool_name} 执行结果: {output_content_str[:500]}...",
-                    "tool_output_json": tool_output_result  # 在此处存储原始输出
+                    "tool_output_json": tool_output_result
                 })
                 tool_outputs_for_second_turn.append({
                     "tool_call_id": tool_call_id,
@@ -1243,7 +1293,6 @@ async def invoke_agent(
                 })
                 print(f"ERROR_AGENT: {error_msg}")
 
-        # 将LLM的工具调用消息和工具输出消息添加到上下文，进行第二轮LLM调用
         messages.append(message_content)
         for output in tool_outputs_for_second_turn:
             messages.append({"role": "tool", "tool_call_id": output["tool_call_id"], "content": output["output"]})
@@ -1263,7 +1312,6 @@ async def invoke_agent(
         if final_answer_content:
             response_data["answer"] = final_answer_content
             response_data["answer_mode"] = "Tool_Use_mode"
-            # 记录LLM的最终答案
             current_turn_messages_to_log.append({
                 "role": "assistant",
                 "content": final_answer_content,
@@ -1274,7 +1322,6 @@ async def invoke_agent(
             response_data[
                 "answer"] = "Tool call completed, but LLM failed to generate a clear answer. Please try a more specific question."
             response_data["answer_mode"] = "Tool_Use_Failed_Answer"
-            # 记录LLM未能回答的情况
             current_turn_messages_to_log.append({
                 "role": "assistant",
                 "content": "LLM未能生成明确答案。",
@@ -1288,7 +1335,6 @@ async def invoke_agent(
         if final_answer_content:
             response_data["answer"] = final_answer_content
             response_data["answer_mode"] = "General_mode"
-            # 记录LLM的直接答案
             current_turn_messages_to_log.append({
                 "role": "assistant",
                 "content": final_answer_content,
@@ -1298,7 +1344,6 @@ async def invoke_agent(
         else:
             response_data["answer"] = "AI failed to generate a clear answer. Please retry or rephrase the question."
             response_data["answer_mode"] = "Failed_General_mode"
-            # 记录LLM未能回答的情况
             current_turn_messages_to_log.append({
                 "role": "assistant",
                 "content": "LLM未能生成明确答案。",
@@ -1308,7 +1353,7 @@ async def invoke_agent(
 
     response_data["llm_type_used"] = llm_api_type
     response_data["llm_model_used"] = llm_model_id
-    response_data["turn_messages_to_log"] = current_turn_messages_to_log  # 返回本轮次生成的详细消息序列
+    response_data["turn_messages_to_log"] = current_turn_messages_to_log
 
     return response_data
 
@@ -2904,4 +2949,3 @@ async def find_matching_students_for_project(db: Session, project_id: int,
             )
 
     return final_recommendations
-
