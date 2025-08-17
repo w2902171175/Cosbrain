@@ -522,6 +522,18 @@ class AIConversationMessage(Base):
 
     conversation = relationship("AIConversation", back_populates="messages")
 
+    def to_dict(self):
+        """将AIConversationMessage对象转换为字典，用于LLM调用"""
+        data = {
+            "role": self.role,
+            "content": self.content
+        }
+        if self.tool_calls_json:
+            data["tool_calls_json"] = self.tool_calls_json
+        if self.tool_output_json:
+            data["tool_output_json"] = self.tool_output_json
+        return data
+
     def __repr__(self):
         return f"<AIConversationMessage(id={self.id}, role='{self.role}', conv_id={self.conversation_id}, sent_at='{self.sent_at}')>"
 
