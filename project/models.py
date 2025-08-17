@@ -51,11 +51,13 @@ class ProjectMember(Base):
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True, comment="成员学生ID")
 
     role = Column(String, default="member", nullable=False, comment="成员角色: admin, member")  # 项目管理员或普通成员
+    status = Column(String, default="active", nullable=False,
+                    comment="成员状态: active (活跃), inactive (不活跃), removed (被移除)")
     joined_at = Column(DateTime, server_default=func.now(), nullable=False, comment="加入时间")
 
     # Relationships
     project = relationship("Project", back_populates="members")
-    member = relationship("Student", foreign_keys=[student_id], back_populates="project_memberships")
+    member = relationship("Student", back_populates="project_memberships")
 
 
 class Student(Base):
@@ -137,6 +139,8 @@ class Student(Base):
     project_applications = relationship("ProjectApplication", foreign_keys=[ProjectApplication.student_id],
                                         back_populates="applicant", cascade="all, delete-orphan")
     project_memberships = relationship("ProjectMember", back_populates="member", cascade="all, delete-orphan")
+    project_likes = relationship("ProjectLike", back_populates="owner", cascade="all, delete-orphan")
+    course_likes = relationship("CourseLike", back_populates="owner", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Student(id={self.id}, email='{self.email}', username='{self.username}')>"
@@ -157,6 +161,7 @@ class Project(Base):
     learning_outcomes = Column(Text)
     team_size_preference = Column(String)
     project_status = Column(String)
+    likes_count = Column(Integer, default=0, comment="点赞数量")
 
     start_date = Column(DateTime, nullable=True, comment="项目开始日期")
     end_date = Column(DateTime, nullable=True, comment="项目结束日期")
@@ -164,6 +169,11 @@ class Project(Base):
     location = Column(String, nullable=True, comment="项目所在地理位置")
 
     creator_id = Column(Integer, ForeignKey("students.id"), nullable=False)  # 外键关联到 Student 表
+
+    cover_image_url = Column(String, nullable=True, comment="项目封面图片的OSS URL")
+    cover_image_original_filename = Column(String, nullable=True, comment="原始上传的封面图片文件名")
+    cover_image_type = Column(String, nullable=True, comment="封面图片MIME类型，例如 'image/jpeg'")
+    cover_image_size_bytes = Column(BigInteger, nullable=True, comment="封面图片文件大小（字节）")
 
     combined_text = Column(Text)
     embedding = Column(Vector(1024))
@@ -175,9 +185,55 @@ class Project(Base):
     creator = relationship("Student", back_populates="projects_created")
     applications = relationship("ProjectApplication", back_populates="project", cascade="all, delete-orphan")
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
+    likes = relationship("ProjectLike", back_populates="project", cascade="all, delete-orphan")
+    # --- 新增关系：一个项目可以有多个项目文件 ---
+    project_files = relationship("ProjectFile", back_populates="project", cascade="all, delete-orphan")
+    # --- 新增关系结束 ---
 
     def __repr__(self):
         return f"<Project(id={self.id}, title='{self.title}')>"
+
+
+# --- 新增：项目文件模型 ---
+class ProjectFile(Base):
+    __tablename__ = "project_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True, comment="所属项目ID")
+    upload_by_id = Column(Integer, ForeignKey("students.id"), nullable=False, comment="文件上传者ID")
+
+    file_name = Column(String, nullable=False, comment="原始上传文件名")
+    oss_object_name = Column(String, nullable=False, unique=True, comment="文件在OSS中的对象名称（唯一）")
+    file_path = Column(String, nullable=False, comment="文件在OSS上的完整URL")
+    file_type = Column(String, nullable=True, comment="文件的MIME类型，例如 'application/pdf', 'application/vnd.ms-excel'")
+    size_bytes = Column(BigInteger, nullable=True, comment="文件大小（字节）")
+    description = Column(Text, nullable=True, comment="文件描述")
+    # 访问类型：'public' (所有用户可见), 'member_only' (仅项目成员可见)
+    access_type = Column(String, default="member_only", nullable=False, comment="文件访问权限")
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    project = relationship("Project", back_populates="project_files")
+    uploader = relationship("Student", backref="uploaded_project_files")
+
+    def __repr__(self):
+        return f"<ProjectFile(id={self.id}, project_id={self.project_id}, file_name='{self.file_name}')>"
+
+# --- 事件监听器：在 ProjectFile 记录删除时，从 OSS 删除对应的文件 ---
+@event.listens_for(ProjectFile, 'before_delete')
+def receive_before_delete_project_file(mapper, connection, target: ProjectFile):
+    """
+    在 ProjectFile 记录删除之前，从 OSS 删除对应的文件。
+    """
+    oss_object_name = target.oss_object_name
+    if oss_object_name:
+        print(f"DEBUG_OSS_DELETE_EVENT: 准备删除 OSS 项目文件: {oss_object_name} (关联 ProjectFile ID: {target.id})")
+        # 异步删除文件，不阻塞数据库事务
+        asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name))
+    else:
+        print(f"WARNING_OSS_DELETE_EVENT: ProjectFile ID: {target.id} 没有关联的 OSS 对象名称，跳过 OSS 文件删除。")
+# --- 新增 ProjectFile 模型结束 ---
 
 
 class Note(Base):
@@ -247,18 +303,20 @@ class Folder(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
+    # START MODIFICATION FOR Folder relationships
     children = relationship(
         "Folder",
-        primaryjoin="Folder.parent_id == remote(Folder.id)",
+        # Remove primaryjoin and rely on foreign key constraint and back_populates
         back_populates="parent",
-        cascade="all, delete-orphan",
-        single_parent=True
+        cascade="all, delete-orphan", # Correctly cascade deletion for children
+        single_parent=True # Correctly mark children as exclusively tied to this parent
     )
     parent = relationship(
         "Folder",
-        primaryjoin="Folder.id == remote(Folder.parent_id)",
+        remote_side=[id],  # Explicitly state that 'id' of the remote Folder (parent) is the target
         back_populates="children"
     )
+    # END MODIFICATION FOR Folder relationships
 
     collected_contents = relationship("CollectedContent", back_populates="folder", cascade="all, delete-orphan")
     notes = relationship("Note", back_populates="folder", cascade="all, delete-orphan")
@@ -466,19 +524,22 @@ class ForumComment(Base):
     topic = relationship("ForumTopic", back_populates="comments")
     owner = relationship("Student", back_populates="forum_comments")
 
+    # START MODIFICATION FOR ForumComment relationships
+    # Parent relationship (many-to-one from child to parent)
     parent = relationship(
         "ForumComment",
-        remote_side=[id],  # 确保这里的 id 指向的是本类的 id 列
-        primaryjoin="ForumComment.parent_comment_id == remote(ForumComment.id)",
-        back_populates="children",
-        cascade="all, delete-orphan",
-        single_parent=True
+        remote_side=[id], # 'id' column of the remote side (the parent comment)
+        back_populates="children"
+        # Removed cascade and single_parent as they are not applicable here
     )
+    # Children relationship (one-to-many from parent to child)
     children = relationship(
         "ForumComment",
-        primaryjoin="ForumComment.id == remote(ForumComment.parent_comment_id)",
-        back_populates="parent"
+        back_populates="parent",
+        cascade="all, delete-orphan", # Correct place for cascade to delete orphans when parent is deleted
+        single_parent=True # A child belongs exclusively to one parent through this relationship
     )
+    # END MODIFICATION FOR ForumComment relationships
 
     likes = relationship("ForumLike", back_populates="comment", cascade="all, delete-orphan")
 
@@ -497,6 +558,40 @@ class ForumLike(Base):
     owner = relationship("Student", back_populates="forum_likes")
     topic = relationship("ForumTopic", back_populates="likes")
     comment = relationship("ForumComment", back_populates="likes")
+
+
+
+class ProjectLike(Base):
+    __tablename__ = "project_likes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("students.id"), nullable=False, comment="点赞者ID")
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, comment="被点赞项目ID")
+
+    created_at = Column(DateTime, server_default=func.now(), comment="点赞时间")
+
+    owner = relationship("Student", back_populates="project_likes")
+    project = relationship("Project", back_populates="likes")
+
+    __table_args__ = (
+        UniqueConstraint('owner_id', 'project_id', name='_project_like_uc'), # 确保一个用户不会重复点赞同一个项目
+    )
+
+class CourseLike(Base):
+    __tablename__ = "course_likes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("students.id"), nullable=False, comment="点赞者ID")
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, comment="被点赞课程ID")
+
+    created_at = Column(DateTime, server_default=func.now(), comment="点赞时间")
+
+    owner = relationship("Student", back_populates="course_likes")
+    course = relationship("Course", back_populates="likes")
+
+    __table_args__ = (
+        UniqueConstraint('owner_id', 'course_id', name='_course_like_uc'), # 确保一个用户不会重复点赞同一个课程
+    )
 
 
 class AIConversationMessage(Base):
@@ -727,19 +822,19 @@ class KnowledgeBaseFolder(Base):
     knowledge_base = relationship("KnowledgeBase", back_populates="kb_folders")
     owner = relationship("Student")
 
+    # START MODIFICATION FOR KnowledgeBaseFolder relationships
     children = relationship(
         "KnowledgeBaseFolder",
-        primaryjoin="KnowledgeBaseFolder.parent_id == remote(KnowledgeBaseFolder.id)",
         back_populates="parent",
-        cascade="all, delete-orphan",
-        single_parent=True
+        cascade="all, delete-orphan", # Correctly cascade deletion for children
+        single_parent=True # Correctly mark children as exclusively tied to this parent
     )
     parent = relationship(
         "KnowledgeBaseFolder",
-        primaryjoin="KnowledgeBaseFolder.id == remote(KnowledgeBaseFolder.parent_id)",
-        back_populates="children",
-        remote_side=[id]
+        remote_side=[id], # Explicitly state that 'id' of the remote KnowledgeBaseFolder (parent) is the target
+        back_populates="children"
     )
+    # END MODIFICATION FOR KnowledgeBaseFolder relationships
 
     articles = relationship("KnowledgeArticle", back_populates="kb_folder", cascade="all, delete-orphan")
     documents = relationship("KnowledgeDocument", back_populates="kb_folder", cascade="all, delete-orphan")
@@ -838,6 +933,7 @@ class Course(Base):
 
     combined_text = Column(Text)
     embedding = Column(Vector(1024))
+    likes_count = Column(Integer, default=0, comment="点赞数量")
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
@@ -846,6 +942,7 @@ class Course(Base):
     user_courses = relationship("UserCourse", back_populates="course")
     chat_room = relationship("ChatRoom", back_populates="course", uselist=False, cascade="all, delete-orphan")
     materials = relationship("CourseMaterial", back_populates="course", cascade="all, delete-orphan")
+    likes = relationship("CourseLike", back_populates="course", cascade="all, delete-orphan")
 
 
 class UserCourse(Base):
@@ -973,3 +1070,4 @@ class PointTransaction(Base):
 
     def __repr__(self):
         return f"<PointTransaction(user_id={self.user_id}, amount={self.amount}, type='{self.transaction_type}')>"
+

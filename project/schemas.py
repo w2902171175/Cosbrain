@@ -1,4 +1,4 @@
-# project/schemas.py
+# project/schemas.py (片段修改)
 from pydantic import BaseModel, EmailStr, Field, model_validator, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
@@ -119,6 +119,12 @@ class ProjectBase(BaseModel):
     end_date: Optional[datetime] = Field(None, description="项目结束日期")
     estimated_weekly_hours: Optional[int] = Field(None, description="项目估计每周所需投入小时数")
     location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
+    # --- 新增项目封面图片相关字段 ---
+    cover_image_url: Optional[str] = Field(None, description="项目封面图片的OSS URL")
+    cover_image_original_filename: Optional[str] = Field(None, description="原始上传的封面图片文件名")
+    cover_image_type: Optional[str] = Field(None, description="封面图片MIME类型，例如 'image/jpeg'")
+    cover_image_size_bytes: Optional[int] = Field(None, description="封面图片文件大小（字节）")
+    # --- 新增字段结束 ---
 
 
 class ProjectCreate(ProjectBase):
@@ -132,10 +138,21 @@ class ProjectResponse(ProjectBase):
     combined_text: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    likes_count: Optional[int] = Field(None, description="点赞数量")
+    is_liked_by_current_user: Optional[bool] = Field(False, description="当前用户是否已点赞")
+    # --- 新增项目文件列表 ---
+    project_files: Optional[List['ProjectFileResponse']] = Field(None, description="项目关联的文件列表")
+    # --- 新增结束 ---
+
+    @property
+    def creator_name(self) -> Optional[str]:
+        # ORM 对象上通过 `_creator_name` 赋值，@property 来读取它
+        return getattr(self, '_creator_name', None)
 
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True
 
 
 class ProjectUpdate(BaseModel):
@@ -155,6 +172,37 @@ class ProjectUpdate(BaseModel):
     end_date: Optional[datetime] = Field(None, description="项目结束日期")
     estimated_weekly_hours: Optional[int] = Field(None, description="项目估计每周所需投入小时数")
     location: Optional[str] = Field(None, description="项目所在地理位置，例如：广州大学城，珠海横琴新区，琶洲")
+    # --- 新增项目封面图片相关字段 ---
+    cover_image_url: Optional[str] = Field(None, description="项目封面图片的OSS URL")
+    cover_image_original_filename: Optional[str] = Field(None, description="原始上传的封面图片文件名")
+    cover_image_type: Optional[str] = Field(None, description="封面图片MIME类型，例如 'image/jpeg'")
+    cover_image_size_bytes: Optional[int] = Field(None, description="封面图片文件大小（字节）")
+    # --- 新增字段结束 ---
+
+
+# --- Project File Update/Delete helper Schemas ---
+class ProjectFileUpdateData(BaseModel):
+    id: int = Field(..., description="要更新的项目文件ID")
+    file_name: Optional[str] = Field(None, description="更新后的文件名（可选，如果仅更新描述或权限）")
+    description: Optional[str] = Field(None, description="更新后的文件描述")
+    access_type: Optional[Literal["public", "member_only"]] = Field(None, description="更新后的文件访问权限")
+
+    # 注意：file_path, file_type, size_bytes, oss_object_name 不应通过此接口更新。
+    # 如果要替换文件，需要先删除旧文件，再上传新文件。
+
+class ProjectFileDeletionRequest(BaseModel):
+    file_ids: List[int] = Field(..., description="要删除的项目文件ID列表")
+
+class ProjectUpdateWithFiles(BaseModel):
+    """
+    用于更新项目及其文件（包括新增、修改、删除）的组合请求体。
+    项目的主体数据通过 project_data 提供，文件操作通过单独的字段提供。
+    """
+    project_data: ProjectUpdate = Field(..., description="要更新的项目主体数据")
+    files_to_upload: Optional[List[Dict[str, Any]]] = Field(None, description="新上传文件的数据（文件名、描述、访问权限），文件本身通过 multipart form 另行传入。")
+    files_to_delete_ids: Optional[List[int]] = Field(None, description="仅删除，这些id对应的文件将从OSS和数据库中删除。")
+    files_to_update_metadata: Optional[List[ProjectFileUpdateData]] = Field(None, description="更新文件元数据（如描述、访问权限）。")
+
 
 
 # --- Project Application Schemas ---
@@ -204,6 +252,42 @@ class ProjectMemberResponse(ProjectMemberBase):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+# --- 新增 ProjectFile Schemas ---
+class ProjectFileBase(BaseModel):
+    file_name: str = Field(..., description="原始文件名")
+    description: Optional[str] = Field(None, description="文件描述")
+    access_type: Literal["public", "member_only"] = Field("member_only", description="文件访问权限: public (所有用户可见) 或 member_only (仅项目成员可见)")
+
+
+class ProjectFileCreate(ProjectFileBase):
+    pass
+
+
+class ProjectFileResponse(ProjectFileBase):
+    id: int
+    project_id: int
+    upload_by_id: int
+    oss_object_name: str = Field(..., description="文件在OSS中的对象名称")
+    file_path: str = Field(..., description="文件在OSS上的完整URL")
+    file_type: Optional[str] = Field(None, description="文件的MIME类型")
+    size_bytes: Optional[int] = Field(None, description="文件大小（字节）")
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    @property # Pydantic v2 @property 支持
+    def uploader_name(self) -> Optional[str]:
+        # ORM 对象上通过 `_uploader_name` 赋值，@property 来读取它
+        return getattr(self, '_uploader_name', None)
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+        populate_by_name = True # 确保 @property 名称被正确序列化
+
+# --- ProjectResponse 预警解决 (Forward Reference) ---
+ProjectResponse.model_rebuild()
 
 
 # --- Note Schemas ---
@@ -374,8 +458,26 @@ class CollectedContentSharedItemAddRequest(BaseModel):
 
     folder_id: Optional[int] = Field(None, description="要收藏到的文件夹ID")
     notes: Optional[str] = Field(None, description="收藏时的个人备注")
-    is_starred: Optional[bool] = Field(None, description="是否立即为该收藏添加星标")
+    is_starred: Optional[bool] = Field(False, description="是否立即为该收藏添加星标")
     title: Optional[str] = Field(None, description="收藏项的自定义标题。如果为空，后端将从共享项中提取。")
+
+
+
+class CollectItemRequestBase(BaseModel):
+    """
+    收藏操作的基础请求体，用于接收可选的文件夹、备注、星标和自定义标题等信息。
+    """
+    folder_id: Optional[int] = Field(None, description="要收藏到的文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
+    notes: Optional[str] = Field(None, description="收藏时的个人备注")
+    is_starred: Optional[bool] = Field(False, description="是否立即为该收藏添加星标")
+    title: Optional[str] = Field(None, description="收藏项的自定义标题。如果为空，后端将从共享项中提取。")
+    priority: Optional[int] = Field(None, description="收藏内容的优先级")
+
+    @model_validator(mode='after')
+    def convert_zero_to_none_folder(self) -> 'CollectItemRequestBase':
+        if self.folder_id == 0:
+            self.folder_id = None
+        return self
 
 
 class CollectedContentCreate(CollectedContentBase):
@@ -632,6 +734,30 @@ class ForumLikeResponse(BaseModel):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+# --- Project Like Schemas ---
+class ProjectLikeResponse(BaseModel):
+    id: int
+    owner_id: int
+    project_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+# --- Course Like Schemas ---
+class CourseLikeResponse(BaseModel):
+    id: int
+    owner_id: int
+    course_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
 
 
 # --- UserFollow Schemas ---
@@ -1063,6 +1189,8 @@ class CourseResponse(CourseBase):
     combined_text: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    likes_count: Optional[int] = Field(None, description="点赞数量")
+    is_liked_by_current_user: Optional[bool] = Field(False, description="当前用户是否已点赞")
 
     class Config:
         from_attributes = True
@@ -1123,6 +1251,8 @@ class CourseMaterialBase(BaseModel):
                 raise ValueError("类型为 'link' 时，'url' 字段为必填。")
             if field_name in ['original_filename', 'file_type', 'size_bytes'] and v is not None:
                 raise ValueError(f"类型为 'link' 时，'{field_name}' 字段不应提供。")
+            if field_name == "content" and v is not None:  # Content for links is optional
+                return v
         elif material_type == "text":
             if field_name == "content" and not v:
                 raise ValueError("类型为 'text' 时，'content' 字段为必填。")
@@ -1131,6 +1261,9 @@ class CourseMaterialBase(BaseModel):
         elif material_type in ["file", "image", "video"]:
             if field_name == "url" and not v:
                 raise ValueError(f"类型为 '{material_type}' 时，'url' 字段为必填。")
+            # For file/image/video, content is optional supplemental description
+            if field_name == "content" and v is not None:
+                return v
         return v
 
 
