@@ -1121,12 +1121,15 @@ async def invoke_agent(
         llm_api_type: str,
         llm_api_key: str,
         llm_api_base_url: Optional[str],
-        llm_model_id: Optional[str],
+        llm_model_id: Optional[str], # 这个llm_model_id是来自main.py的ai_qa请求或用户默认
         kb_ids: Optional[List[int]] = None,
         note_ids: Optional[List[int]] = None,
         preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None,
         past_messages: Optional[List[Dict[str, Any]]] = None,
-        temp_file_ids: Optional[List[int]] = None
+        temp_file_ids: Optional[List[int]] = None,
+        conversation_id_for_temp_files: Optional[int] = None,
+        # >>> 新增参数，直接控制是否启用工具 <<<
+        enable_tool_use: bool = False # 默认为False，即默认不启用工具
 ) -> Dict[str, Any]:
     messages = past_messages if past_messages is not None else []
     messages.append({"role": "user", "content": query})
@@ -1139,50 +1142,44 @@ async def invoke_agent(
 
     response_data = {}
 
-    available_tools_for_llm = await get_all_available_tools_for_llm(db, user_id)
-
     tools_to_send_to_llm = []
-    if preferred_tools:
-        print(f"DEBUG_AGENT: User preferred tools: {preferred_tools}")
-        for tool_def in available_tools_for_llm:
-            tool_name = tool_def["function"]["name"]
-            if ("rag" in preferred_tools and tool_name == "rag_knowledge_base") or \
-                    ("web_search" in preferred_tools and tool_name == "web_search") or \
-                    ("mcp_tool" in preferred_tools and tool_name.startswith("mcp_")):
-                tools_to_send_to_llm.append(tool_def)
-        if not tools_to_send_to_llm:
-            print(
-                "WARNING_AGENT: User specified preferred tools, but no matching active tools found. Falling back to general Q&A.")
-            final_llm_response = await call_llm_api(messages, llm_api_type, llm_api_key, llm_api_base_url, llm_model_id)
-            if 'choices' in final_llm_response and final_llm_response['choices'][0]['message'].get('content'):
-                final_answer_content = final_llm_response['choices'][0]['message']['content']
-                response_data["answer"] = final_answer_content
-                response_data["answer_mode"] = "General_mode"
-                current_turn_messages_to_log.append({
-                    "role": "assistant",
-                    "content": final_answer_content,
-                    "llm_type_used": llm_api_type,
-                    "llm_model_used": llm_model_id
-                })
-            else:
-                response_data["answer"] = "Service busy, please try again later or provide a more specific question."
-                response_data["answer_mode"] = "Failed_General_mode"
-            response_data["llm_type_used"] = llm_api_type
-            response_data["llm_model_used"] = llm_model_id
-            response_data["turn_messages_to_log"] = current_turn_messages_to_log
-            return response_data
-    else:
-        tools_to_send_to_llm = available_tools_for_llm
-        print(f"DEBUG_AGENT: Auto-selecting all tools.")
+    tool_choice_param = "none" # 默认不选择任何工具，除非明确启用
 
+    # >>> 核心逻辑修改：根据 enable_tool_use 参数决定是否准备工具 <<<
+    if enable_tool_use:
+        available_tools_for_llm = await get_all_available_tools_for_llm(db, user_id)
+        if preferred_tools:
+            print(f"DEBUG_AGENT: User preferred tools: {preferred_tools}")
+            for tool_def in available_tools_for_llm:
+                tool_name = tool_def["function"]["name"]
+                if ("rag" in preferred_tools and tool_name == "rag_knowledge_base") or \
+                   ("web_search" in preferred_tools and tool_name == "web_search") or \
+                   ("mcp_tool" in preferred_tools and tool_name.startswith("mcp_")):
+                    tools_to_send_to_llm.append(tool_def)
+            if tools_to_send_to_llm: # 只有当有工具被选中时，才将tool_choice设为auto
+                tool_choice_param = "auto"
+            else:
+                print("WARNING_AGENT: User specified preferred tools, but no matching active tools found. Falling back to general Q&A.")
+                # tools_to_send_to_llm 为空，tool_choice_param 仍为 "none"
+        else: # 如果 enable_tool_use 为 True，但 preferred_tools 为 None，则默认使用所有可用工具
+            tools_to_send_to_llm = available_tools_for_llm
+            tool_choice_param = "auto"
+            print(f"DEBUG_AGENT: Tool use enabled but no preferred tools specified. Auto-selecting all available tools.")
+    else:
+        # 如果 enable_tool_use 为 False，则不发送任何工具
+        tools_to_send_to_llm = [] # 确保为空列表
+        tool_choice_param = "none" # 确保明确不选择工具
+        print(f"DEBUG_AGENT: Tool use explicitly disabled (enable_tool_use is False). Calling LLM without tools.")
+
+    # 调用 LLM API，根据 tools_to_send_to_llm 和 tool_choice_param 传递参数
     llm_response_data = await call_llm_api(
         messages,
         llm_api_type,
         llm_api_key,
         llm_api_base_url,
-        llm_model_id,
-        tools=tools_to_send_to_llm,
-        tool_choice="auto"
+        llm_model_id, # 确保这里传递的是 invoke_agent 接收到的llm_model_id
+        tools=tools_to_send_to_llm if tools_to_send_to_llm else None, # 如果列表为空，则传递None
+        tool_choice=tool_choice_param
     )
 
     choice = llm_response_data['choices'][0]
@@ -1218,7 +1215,8 @@ async def invoke_agent(
                             "query": tool_args.get("query"),
                             "kb_ids": kb_ids,
                             "note_ids": note_ids,
-                            "temp_file_ids": temp_file_ids
+                            "temp_file_ids": temp_file_ids,
+                            "conversation_id": conversation_id_for_temp_files
                         },
                         user_id=user_id
                     )
