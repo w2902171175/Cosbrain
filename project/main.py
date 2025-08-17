@@ -13,7 +13,7 @@ from sqlalchemy import and_, or_, ForeignKey
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer
 from dotenv import load_dotenv
-import requests, schemas, secrets, json, os, uuid, asyncio, httpx, re
+import requests, schemas, secrets, json, os, uuid, asyncio, httpx, re, traceback
 load_dotenv()
 # 密码哈希
 from passlib.context import CryptContext
@@ -5355,24 +5355,43 @@ async def get_document_chunks(
     return chunks
 
 
-# --- AI问答与智能搜索接口 ---
+# project/main.py
+
+# ... (其他导入保持不变) ...
+
+# 辅助函数：清理可选的 JSON 字符串参数
+def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]:
+    """
+    清理从表单接收到的可选JSON字符串参数。
+    将 None, 空字符串, 或'string'字面量（通常来自Swagger UI默认值）转换为 None。
+    """
+    if input_str is None:
+        return None
+
+    stripped_str = input_str.strip()
+
+    # 将空字符串 或 Swagger UI默认的'string'占位符视为None
+    if stripped_str == "" or stripped_str.lower() == "string":
+        return None
+
+    return stripped_str
+
+
+# ... (下面的 FastAPI 应用实例 app = FastAPI(...) 保持不变) ...
+
+
 @app.post("/ai/qa", response_model=schemas.AIQAResponse, summary="AI智能问答 (通用、RAG或工具调用)")
 async def ai_qa(
-        query: str = Form(..., description="用户的问题文本"),  # 将 query 改为 Form 参数
+        query: str = Form(..., description="用户的问题文本"),
         conversation_id: Optional[int] = Form(None, description="要继续的对话Session ID。如果为空，则开始新的对话。"),
-        # conversation_id 改为 Form 参数
-        kb_ids: Optional[List[int]] = Form(None, description="要检索的知识库ID列表，格式为JSON字符串",
-                                           json_payload=True),  # kb_ids 改为 Form 参数（并指示它是JSON payload）
-        note_ids: Optional[List[int]] = Form(None, description="要检索的笔记ID列表，格式为JSON字符串",
-                                             json_payload=True),  # note_ids 改为 Form 参数
-        use_tools: Optional[bool] = Form(False, description="是否启用AI智能工具调用"),  # use_tools 改为 Form 参数
-        preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = Form(None,
-                                                                                         description="AI在工具模式下偏好使用的工具类型列表，格式为JSON字符串",
-                                                                                         json_payload=True),
-        # preferred_tools 改为 Form 参数
-        llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),  # llm_model_id 改为 Form 参数
-        uploaded_file: Optional[UploadFile] = File(None, description="可选：上传文件（图片或文档）对AI进行提问"),
-        # 新增文件上传参数
+        kb_ids_json: Optional[str] = Form(None, description="要检索的知识库ID列表，格式为JSON字符串。例如: '[1, 2, 3]'"),
+        note_ids_json: Optional[str] = Form(None, description="要检索的笔记ID列表，格式为JSON字符串。例如: '[10, 11]'"),
+        use_tools: Optional[bool] = Form(False, description="是否启用AI智能工具调用"),
+        preferred_tools_json: Optional[str] = Form(None,
+                                                   description="AI在工具模式下偏好使用的工具类型列表，格式为JSON字符串。例如: '[\"rag\", \"web_search\"]'"),
+        llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),
+        uploaded_file: Optional[Union[UploadFile, str]] = File(None,
+                                                               description="可选：上传文件（图片或文档）对AI进行提问"),
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
@@ -5385,11 +5404,55 @@ async def ai_qa(
     - `use_tools` 为 `True`：LLM将尝试智能选择并调用工具 (RAG、网络搜索、MCP工具)。
     """
     print(
-        f"DEBUG: 用户 {current_user_id} 提问: {query}，使用工具模式: {use_tools}，偏好工具: {preferred_tools}，文件: {uploaded_file.filename if uploaded_file else '无'}")
+        f"DEBUG: 用户 {current_user_id} 提问: {query}，使用工具模式: {use_tools}，偏好工具(json): {preferred_tools_json}，文件: {uploaded_file.filename if isinstance(uploaded_file, UploadFile) else (f'非文件类型值: {uploaded_file}' if uploaded_file else '无')}")
 
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    # ↓↓↓↓↓ 【修改：使用辅助函数清理所有可选的 JSON 字符串参数】 ↓↓↓↓↓
+    kb_ids_json = _clean_optional_json_string_input(kb_ids_json)
+    note_ids_json = _clean_optional_json_string_input(note_ids_json)
+    preferred_tools_json = _clean_optional_json_string_input(preferred_tools_json)
+    llm_model_id = _clean_optional_json_string_input(llm_model_id)  # 也清理这个字段
+    # ↑↑↑↑↑ 【修改：使用辅助函数清理所有可选的 JSON 字符串参数】 ↑↑↑↑↑
+
+    # >>> 解析 JSON 字符串参数 <<<
+    actual_kb_ids: Optional[List[int]] = None
+    if kb_ids_json:  # 经过上面的清理，现在这里只有非None且非空且非“string”的字符串会进入
+        try:
+            actual_kb_ids = json.loads(kb_ids_json)
+            if not isinstance(actual_kb_ids, list) or not all(isinstance(x, int) for x in actual_kb_ids):
+                raise ValueError("kb_ids 必须是一个整数列表格式的JSON字符串。")
+        except (json.JSONDecodeError, ValueError) as e:
+            # 现在这一段错误应该只在用户确实输入了`[1,a]`之类的非法JSON时才会触发，而不是空字符串
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"kb_ids 格式不正确: {e}。应为 JSON 整数列表。")
+
+    actual_note_ids: Optional[List[int]] = None
+    if note_ids_json:  # 经过上面的清理，现在这里只有非None且非空且非“string”的字符串会进入
+        try:
+            actual_note_ids = json.loads(note_ids_json)
+            if not isinstance(actual_note_ids, list) or not all(isinstance(x, int) for x in actual_note_ids):
+                raise ValueError("note_ids 必须是一个整数列表格式的JSON字符串。")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"note_ids 格式不正确: {e}。应为 JSON 整数列表。")
+
+    actual_preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
+    if preferred_tools_json:  # 经过上面的清理，现在这里只有非None且非空且非“string”的字符串会进入
+        try:
+            parsed_tools = json.loads(preferred_tools_json)
+            if not isinstance(parsed_tools, list) or not all(isinstance(x, str) for x in parsed_tools):
+                raise ValueError("preferred_tools 必须是一个字符串列表格式的JSON字符串。")
+            valid_tool_types = ["rag", "web_search", "mcp_tool"]
+            if not all(tool in valid_tool_types for tool in parsed_tools):
+                raise ValueError(f"preferred_tools 包含无效的工具类型。有效类型: {valid_tool_types}")
+            actual_preferred_tools = parsed_tools
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"preferred_tools 格式不正确: {e}。应为 JSON 字符串列表。")
+    # >>> 解析 JSON 字符串参数结束 <<<
 
     # 1. 获取或创建 AI Conversation
     db_conversation: AIConversation
@@ -5404,7 +5467,6 @@ async def ai_qa(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定的对话未找到或无权访问。")
 
         # 加载历史消息作为LLM的上下文
-        # 限制历史消息数量，防止超出LLM的上下文窗口
         raw_past_messages = db.query(AIConversationMessage).filter(
             AIConversationMessage.conversation_id == db_conversation.id
         ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 例如，限制为最后10条消息作为上下文
@@ -5414,9 +5476,8 @@ async def ai_qa(
             if msg.role == "tool_call" and msg.tool_calls_json:
                 llm_message["tool_calls"] = msg.tool_calls_json  # for LLM format
             elif msg.role == "tool_output" and msg.tool_output_json:
-                llm_message["name"] = "tool_response_name"  # LLM通常需要一个工具名作为 "name" 字段
-                llm_message["content"] = json.dumps(msg.tool_output_json,
-                                                    ensure_ascii=False)  # LLM 的工具输出内容
+                llm_message["name"] = "tool_response"  # Default tool name for output
+                llm_message["content"] = json.dumps(msg.tool_output_json, ensure_ascii=False)  # LLM 的工具输出内容
 
             past_messages_for_llm.append(llm_message)
 
@@ -5428,9 +5489,9 @@ async def ai_qa(
         db.flush()  # 这里刷新一次以获取新对话的 ID
         print(f"DEBUG_AI_CONV: 创建了新的对话 session ID: {db_conversation.id}")
 
-    # <<< 新增文件上传处理逻辑起点 >>>
+    # <<< 文件上传处理逻辑 >>>
     temp_file_ids_for_context: List[int] = []
-    if uploaded_file:
+    if isinstance(uploaded_file, UploadFile):  # 只有当 uploaded_file 确实是一个 UploadFile 对象时才处理
         allowed_mime_types = [
             "text/plain", "text/markdown", "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -5469,29 +5530,36 @@ async def ai_qa(
 
             temp_file_ids_for_context.append(temp_file_record.id)
 
-            # 在后台异步处理文件，提取文本并生成嵌入
-            from database import SessionLocal
-            background_db_session = SessionLocal()  # 为后台任务创建新的会话
+            # 异步启动后台文件处理任务
+            from database import SessionLocal  # 确保 SessionLocal 已导入
+            background_db_session = SessionLocal()
             asyncio.create_task(
-                process_ai_temp_file_in_background(
+                ai_core.process_ai_temp_file_in_background(
                     temp_file_record.id,
-                    current_user_id,  # 传入用户ID以便获取其LLM配置
+                    current_user_id,  # 传递用户ID
                     oss_object_name,
                     uploaded_file.content_type,
-                    background_db_session
+                    background_db_session  # 传递新的会话
                 )
             )
 
             # 将文件信息作为用户消息的一部分，提示AI已上传文件
             file_link = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{oss_object_name}"
-            file_prompt = f"\n\n用户上传了一个名为 '{uploaded_file.filename}' 的{uploaded_file.content_type}文件 ({file_link})。您稍后可以利用其内容进行回答。"
+            file_prompt = f"\n\n[用户上传了一个文件，名为 '{uploaded_file.filename}' ({uploaded_file.content_type})。链接: {file_link}。请尝试利用其内容。文件内容将通过RAG工具提供。]"
             query += file_prompt  # 将文件信息加入当前查询，提示LLM
 
         except Exception as e:
             db.rollback()  # 文件上传或记录创建失败，回滚
             print(f"ERROR_AI_QA: 处理上传文件失败: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"处理上传文件失败: {e}")
-    # <<< 新增文件上传处理逻辑终点 >>>
+    elif uploaded_file is not None and isinstance(uploaded_file, str) and uploaded_file.strip():
+        # 如果收到了非空字符串，但不是 UploadFile，这意味着客户端发送了错误的数据
+        # 在这里可以日志警告，但不会因此抛出422，而是忽略文件
+        print(f"WARNING_AI_QA: 接收到非预期的字符串作为文件内容：'{uploaded_file}'。将忽略此文件上传。")
+    else:
+        # uploaded_file 是 None，或者是一个空字符串，按无文件处理
+        pass
+    # ↑↑↑↑↑ 【文件上传处理逻辑结束】 ↑↑↑↑↑
 
     llm_type = user.llm_api_type
     llm_key_encrypted = user.llm_api_key_encrypted
@@ -5518,12 +5586,16 @@ async def ai_qa(
             llm_api_key=llm_key,
             llm_api_base_url=llm_base_url,
             llm_model_id=llm_model_id_final,
-            kb_ids=kb_ids,
-            note_ids=note_ids,
-            preferred_tools=preferred_tools,
+            # 使用经过清理和解析后的实际列表。现在这些应该不会是空字符串了
+            kb_ids=actual_kb_ids,
+            note_ids=actual_note_ids,
+            preferred_tools=actual_preferred_tools,
             past_messages=past_messages_for_llm,
-            # <<< 新增：传递临时文件ID到 invoke_agent，以便 RAG 阶段考虑这些文件 >>>
-            temp_file_ids=temp_file_ids_for_context
+            # <<< 传递临时文件ID到 invoke_agent，以便 RAG 阶段考虑这些文件 >>>
+            temp_file_ids=temp_file_ids_for_context,
+            # 为了 execute_tool 中的临时文件查询，也传递 conversation_id
+            conversation_id_for_temp_files=db_conversation.id,
+            enable_tool_use=use_tools
         )
 
         response_to_client = schemas.AIQAResponse(
@@ -5573,7 +5645,7 @@ async def ai_qa(
 
     except Exception as e:
         db.rollback()
-        print(f"ERROR: AI问答请求失败: {e}")
+        print(f"ERROR: AI问答请求失败: {e}. 详细错误: {traceback.format_exc()}")
         # 如果是新创建的对话，并且在问答过程中失败，可以考虑删除它
         if not conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
             try:  # 尝试清理空对话（如果没消息）
@@ -5586,7 +5658,6 @@ async def ai_qa(
                 print(f"ERROR_AI_CONV_CLEANUP: 问答失败后清理空对话 {db_conversation.id} 失败: {cleanup_e}")
                 db.rollback()  # 再次回滚以防清理也出错
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI问答失败: {e}")
-
 
 
 @app.post("/search/semantic", response_model=List[schemas.SemanticSearchResult], summary="智能语义搜索")
