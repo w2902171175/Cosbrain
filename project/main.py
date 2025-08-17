@@ -20,7 +20,7 @@ from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage, ProjectApplication, ProjectMember, KnowledgeBaseFolder,AIConversationTemporaryFile
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage, ProjectApplication, ProjectMember, KnowledgeBaseFolder,AIConversationTemporaryFile, CourseLike, ProjectLike, ProjectFile
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse, CollectedContentSharedItemAddRequest,ProjectApplicationResponse, ProjectApplicationProcess, ProjectMemberResponse
 
@@ -463,7 +463,7 @@ async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
 
 
 # --- 辅助函数：安全地获取文本部分 (现在是全局的了！) ---
-def _get_text_part(value: Any) -> str: # 将 Optional[str] 变为 Any，以处理日期时间等情况
+def _get_text_part(value: Any) -> str:
     """
     Helper to get string from potentially None, empty string, datetime, or int/float
     Ensures that values used in combined_text are non-empty strings.
@@ -482,8 +482,7 @@ def _get_text_part(value: Any) -> str: # 将 Optional[str] 变为 Any，以处�
 async def _create_collected_content_item_internal(
         db: Session,
         current_user_id: int,
-        content_data: schemas.CollectedContentBase,  # 接收 CollectedContentBase
-        # New: Add explicit file bytes and object_name if coming from a direct upload
+        content_data: schemas.CollectedContentBase,
         uploaded_file_bytes: Optional[bytes] = None,
         uploaded_file_object_name: Optional[str] = None,
         uploaded_file_content_type: Optional[str] = None,
@@ -495,9 +494,34 @@ async def _create_collected_content_item_internal(
     支持直接文件/媒体上传到OSS。
     """
     # 1. 验证目标文件夹是否存在且属于当前用户 (如果提供了folder_id)
-    if content_data.folder_id:
+    final_folder_id = content_data.folder_id
+    if final_folder_id is None:  # 如果用户没有指定文件夹ID
+        default_folder_name = "默认文件夹"
+        default_folder = db.query(Folder).filter(
+            Folder.owner_id == current_user_id,
+            Folder.name == default_folder_name,
+            Folder.parent_id.is_(None)  # 确保是顶级的“默认文件夹”
+        ).first()
+
+        if not default_folder:
+            # 如果“默认文件夹”不存在，则创建它
+            print(f"DEBUG_COLLECTION: 用户 {current_user_id} 的 '{default_folder_name}' 不存在，正在创建。")
+            new_default_folder = Folder(
+                owner_id=current_user_id,
+                name=default_folder_name,
+                description="自动创建的默认收藏文件夹。",
+                parent_id=None  # 确保是顶级文件夹
+            )
+            db.add(new_default_folder)
+            db.flush()  # 刷新以获取ID，但不提交，因为整个函数结束后才统一提交
+            final_folder_id = new_default_folder.id
+        else:
+            final_folder_id = default_folder.id
+        print(f"DEBUG_COLLECTION: 收藏将放入文件夹 ID: {final_folder_id} ('{default_folder_name}')")
+    else:
+        # 如果用户指定了 folder_id，验证其存在性和权限
         target_folder = db.query(Folder).filter(
-            Folder.id == content_data.folder_id,
+            Folder.id == final_folder_id,
             Folder.owner_id == current_user_id
         ).first()
         if not target_folder:
@@ -715,7 +739,7 @@ async def _create_collected_content_item_internal(
     # 4. 创建数据库记录
     db_item = CollectedContent(
         owner_id=current_user_id,
-        folder_id=content_data.folder_id,
+        folder_id=final_folder_id,
         title=final_title,
         type=final_type,
         url=final_url,
@@ -2164,19 +2188,77 @@ def get_student_by_id(student_id: int, db: Session = Depends(get_db)):
 
 # --- 项目相关接口  ---
 @app.get("/projects/", response_model=List[schemas.ProjectResponse], summary="获取所有项目列表")
-def get_all_projects(db: Session = Depends(get_db)):
-    projects = db.query(Project).all()
+async def get_all_projects(current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    query = db.query(Project)
+    projects = await _get_projects_with_details(query, current_user_id, db)
     print(f"DEBUG: 获取所有项目列表，共 {len(projects)} 个。")
     return projects
 
 
+
 @app.get("/projects/{project_id}", response_model=schemas.ProjectResponse, summary="获取指定项目详情")
-def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == project_id).first()
+async def get_project_by_id(project_id: int, current_user_id: int = Depends(get_current_user_id),
+                            db: Session = Depends(get_db)):
+    """
+    获取指定项目详情，包括项目封面信息和关联的项目文件列表。
+    项目文件将根据其访问权限和当前用户的项目成员身份进行过滤。
+    """
+    print(f"DEBUG: 获取项目 ID: {project_id} 的详情。用户 {current_user_id}。")
+    # 使用 joinedload 预加载 project_files 及其 uploader，以及 creator 和 likes，避免N+1查询
+    project = db.query(Project).options(
+        joinedload(Project.project_files).joinedload(ProjectFile.uploader), # 确保上传者信息被预加载
+        joinedload(Project.creator),
+        joinedload(Project.likes)
+    ).filter(Project.id == project_id).first()
+
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found.")
-    print(f"DEBUG: 获取项目 ID: {project_id} 的详情。")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+    # 填充 creator_name (直接从预加载的 creator 对象获取)
+    # 确保 project.creator 不为 None，再访问其 name 属性
+    project._creator_name = project.creator.name if project.creator else "未知用户"
+
+    # 填充 is_liked_by_current_user
+    project.is_liked_by_current_user = False
+    if current_user_id:
+        # 由于已经 joinedload 了 project.likes，可以直接在内存中检查点赞关系
+        if any(like.owner_id == current_user_id for like in project.likes):
+            project.is_liked_by_current_user = True
+
+    # --- 1. 获取项目成员身份（用于文件访问权限判断）---
+    is_project_creator = (project.creator_id == current_user_id)
+    is_project_member = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.student_id == current_user_id,
+        ProjectMember.status == "active"
+    ).first() is not None
+
+    visible_project_files = []
+    # 遍历预加载的 project.project_files 列表
+    for file_record in project.project_files:
+        # 'public' 文件对所有用户可见
+        if file_record.access_type == "public":
+            # 直接访问预加载的 uploader 关系来获取上传者姓名，避免重复查询
+            file_record._uploader_name = file_record.uploader.name if file_record.uploader else "未知用户"
+            visible_project_files.append(file_record)
+        # 'member_only' 文件仅对项目创建者或成员可见
+        elif file_record.access_type == "member_only":
+            if is_project_creator or is_project_member:
+                # 直接访问预加载的 uploader 关系来获取上传者姓名
+                file_record._uploader_name = file_record.uploader.name if file_record.uploader else "未知用户"
+                visible_project_files.append(file_record)
+
+    # --- 2. 将过滤后的 project_files 列表赋值给 project 对象 ---
+    # Pydantic 响应模型会从 ORM 对象的 `project_files` 属性中加载数据
+    # 这里我们直接替换 ORM 对象的 `project_files` 列表为过滤后的列表
+    project.project_files = visible_project_files
+
+    print(f"DEBUG: 项目 {project_id} 详情查询完成。可见文件数: {len(visible_project_files)}。")
     return project
+
+
+
+
 
 
 @app.post("/projects/{project_id}/apply", response_model=schemas.ProjectApplicationResponse, summary="学生申请加入项目")
@@ -2257,6 +2339,146 @@ async def apply_to_project(
 
     print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 成功向项目 {project_id} 提交了申请 (ID: {db_application.id})。")
     return db_application
+
+
+# --- Configuration for Frontend URLs (placeholders for now) ---
+# 假设这些是前端应用中显示具体项目、课程、论坛话题详情的路由。
+# 这里的路径是API返回给前端的“软链接”路径，前端需要自行拼接 BASE_URL。
+FRONTEND_PROJECT_DETAIL_URL_PREFIX = "/projects/" # 例如，将形成 /projects/123
+FRONTEND_COURSE_DETAIL_URL_PREFIX = "/courses/"   # 例如，将形成 /courses/456
+FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX = "/forum/topics/" # 例如，将形成 /forum/topics/789
+
+
+
+@app.post("/projects/{project_id}/collect", response_model=schemas.CollectedContentResponse, summary="收藏指定项目")
+async def collect_project(
+        project_id: int,
+        collect_data: schemas.CollectItemRequestBase, # 使用新的通用请求体
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    允许用户收藏一个项目。\n
+    如果用户没有指定 `folder_id`，系统会自动将收藏放入名为“默认文件夹”的文件夹中。\n
+    如果没有“默认文件夹”，系统会先自动创建一个。
+    """
+    print(f"DEBUG_COLLECT: 用户 {current_user_id} 尝试收藏项目 ID: {project_id}")
+
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+    # 构造 CollectedContentBase payload，并填充项目特有的信息
+    collected_content_data = schemas.CollectedContentBase(
+        title=collect_data.title or db_project.title, # 优先使用用户自定义标题，否则使用项目标题
+        type="project", # 显式设置为“project”类型
+        url=f"{FRONTEND_PROJECT_DETAIL_URL_PREFIX}{project_id}", # 收藏的URL是前端项目详情页URL
+        content=db_project.description, # 将项目描述作为收藏内容
+        tags=db_project.keywords, # 将项目关键词作为标签
+        priority=collect_data.priority, # 沿用请求中提供的优先级
+        notes=collect_data.notes, # 沿用请求中提供的备注
+        is_starred=collect_data.is_starred, # 沿用请求中提供的星标状态
+        thumbnail=None, # 项目Schema中没有直接的缩略图，可根据实际情况填充
+        author=db_project.creator.name if db_project.creator else None, # 获取项目创建者姓名
+        shared_item_type="project", # 标记为收藏的内部类型
+        shared_item_id=project_id, # 标记为收藏的内部ID
+        folder_id=collect_data.folder_id # 文件夹ID将由 _create_collected_content_item_internal 处理
+    )
+
+    # 调用核心辅助函数来创建 CollectedContent 记录
+    return await _create_collected_content_item_internal(db, current_user_id, collected_content_data)
+
+
+@app.post("/courses/{course_id}/collect", response_model=schemas.CollectedContentResponse, summary="收藏指定课程")
+async def collect_course(
+        course_id: int,
+        collect_data: schemas.CollectItemRequestBase,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    允许用户收藏一个课程。\n
+    如果用户没有指定 `folder_id`，系统会自动将收藏放入名为“默认文件夹”的文件夹中。\n
+    如果没有“默认文件夹”，系统会先自动创建一个。
+    """
+    print(f"DEBUG_COLLECT: 用户 {current_user_id} 尝试收藏课程 ID: {course_id}")
+
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+
+    # 重新解析或处理课程的 skills，因为它们在数据库中是 JSONB 格式
+    course_required_skills_text = ""
+    if db_course.required_skills:
+        try:
+            # 尝试从JSON字符串解析，如果已经是列表则直接使用
+            parsed_skills = json.loads(db_course.required_skills) if isinstance(db_course.required_skills, str) else db_course.required_skills
+            if isinstance(parsed_skills, list):
+                course_required_skills_text = ", ".join([skill.get("name", "") for skill in parsed_skills if isinstance(skill, dict) and skill.get("name")])
+        except (json.JSONDecodeError, AttributeError):
+            course_required_skills_text = "" # 解析失败时回退
+
+    # 构造 CollectedContentBase payload，并填充课程特有的信息
+    collected_content_data = schemas.CollectedContentBase(
+        title=collect_data.title or db_course.title, # 优先使用用户自定义标题，否则使用课程标题
+        type="course", # 显式设置为“course”类型
+        url=f"{FRONTEND_COURSE_DETAIL_URL_PREFIX}{course_id}", # 收藏的URL是前端课程详情页URL
+        content=db_course.description + (f" 所需技能: {course_required_skills_text}" if course_required_skills_text else ""), # 将课程描述和技能作为收藏内容
+        tags=db_course.category, # 将课程分类作为标签
+        priority=collect_data.priority, # 沿用请求中提供的优先级
+        notes=collect_data.notes, # 沿用请求中提供的备注
+        is_starred=collect_data.is_starred, # 沿用请求中提供的星标状态
+        thumbnail=db_course.cover_image_url, # 使用课程封面图片作为缩略图
+        author=db_course.instructor, # 使用讲师作为作者
+        shared_item_type="course", # 标记为收藏的内部类型
+        shared_item_id=course_id, # 标记为收藏的内部ID
+        folder_id=collect_data.folder_id # 文件夹ID将由 _create_collected_content_item_internal 处理
+    )
+
+    # 调用核心辅助函数来创建 CollectedContent 记录
+    return await _create_collected_content_item_internal(db, current_user_id, collected_content_data)
+
+
+
+@app.post("/forum/topics/{topic_id}/collect", response_model=schemas.CollectedContentResponse, summary="收藏指定论坛话题")
+async def collect_forum_topic(
+        topic_id: int,
+        collect_data: schemas.CollectItemRequestBase,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    允许用户收藏一个论坛话题。\n
+    如果用户没有指定 `folder_id`，系统会自动将收藏放入名为“默认文件夹”的文件夹中。\n
+    如果没有“默认文件夹”，系统会先自动创建一个。
+    """
+    print(f"DEBUG_COLLECT: 用户 {current_user_id} 尝试收藏论坛话题 ID: {topic_id}")
+
+    db_topic = db.query(ForumTopic).filter(ForumTopic.id == topic_id).first()
+    if not db_topic:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="论坛话题未找到。")
+
+
+    # 构造 CollectedContentBase payload，并填充话题特有的信息
+    collected_content_data = schemas.CollectedContentBase(
+        title=collect_data.title or db_topic.title, # 优先使用用户自定义标题，否则使用话题标题
+        type="forum_topic", # 显式设置为“forum_topic”类型
+        url=f"{FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX}{topic_id}", # 收藏的URL是前端话题详情页URL
+        content=db_topic.content, # 将话题内容作为收藏内容
+        tags=db_topic.tags, # 将话题标签作为标签
+        priority=collect_data.priority, # 沿用请求中提供的优先级
+        notes=collect_data.notes, # 沿用请求中提供的备注
+        is_starred=collect_data.is_starred, # 沿用请求中提供的星标状态
+        thumbnail=db_topic.media_url if db_topic.media_type == "image" else None, # 如果话题是图片则使用其URL作为缩略图
+        author=db_topic.owner.name if db_topic.owner else None, # 获取话题发布者姓名
+        shared_item_type="forum_topic", # 标记为收藏的内部类型
+        shared_item_id=topic_id, # 标记为收藏的内部ID
+        folder_id=collect_data.folder_id # 文件夹ID将由 _create_collected_content_item_internal 处理
+    )
+
+    # 调用核心辅助函数来创建 CollectedContent 记录
+    return await _create_collected_content_item_internal(db, current_user_id, collected_content_data)
 
 
 @app.get("/projects/{project_id}/applications", response_model=List[schemas.ProjectApplicationResponse],
@@ -2407,12 +2629,14 @@ async def process_project_application(
          summary="获取项目成员列表")
 async def get_project_members(
         project_id: int,
+        # 保持登录认证，确保只有已认证用户能访问
+        # 如果希望未登录用户也能访问，请移除上面的 `current_user_id: int = Depends(get_current_user_id)`
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
     获取指定项目的所有成员列表。
-    项目创建者、项目成员或系统管理员可以查看。
+    现在所有已认证用户都可以查看。
     """
     print(f"DEBUG_PROJECT_MEMBERS: 用户 {current_user_id} 尝试获取项目 {project_id} 的成员列表。")
 
@@ -2421,21 +2645,8 @@ async def get_project_members(
     if not db_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
 
-    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
-    if not current_user_obj:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    # 2. 权限检查：项目创建者、项目成员或系统管理员
-    is_creator = (db_project.creator_id == current_user_id)
-    is_project_member = db.query(ProjectMember).filter(
-        ProjectMember.project_id == project_id,
-        ProjectMember.student_id == current_user_id
-    ).first() is not None
-
-    if not (is_creator or is_project_member or current_user_obj.is_admin):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该项目的成员列表。")
-
-    # 3. 查询成员列表，并预加载成员信息
+    # 2. 查询成员列表，并预加载成员信息
     # 使用 joinedload 避免 N+1 查询问题
     query = db.query(ProjectMember).options(joinedload(ProjectMember.member)).filter(
         ProjectMember.project_id == project_id
@@ -2443,7 +2654,7 @@ async def get_project_members(
 
     memberships = query.order_by(ProjectMember.joined_at).all()
 
-    # 4. 填充响应模型
+    # 3. 填充响应模型
     response_members = []
     for member_ship in memberships:
         member_response = schemas.ProjectMemberResponse.model_validate(member_ship, from_attributes=True)
@@ -2558,12 +2769,14 @@ async def create_course(
 
 
 @app.get("/courses/", response_model=List[schemas.CourseResponse], summary="获取所有课程列表")
-def get_all_courses(db: Session = Depends(get_db)):
+async def get_all_courses(current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)): # 添加 current_user_id 依赖
     """
     获取平台上所有课程的概要列表。
     """
-    # 将变量名从 `projects` 改为 `courses` 并返回 `courses`
-    courses = db.query(Course).all()
+    query = db.query(Course)
+    # 调用新的辅助函数来填充 is_liked_by_current_user
+    courses = await _get_courses_with_details(query, current_user_id, db) # 修改这里
+
     print(f"DEBUG: 获取所有课程列表，共 {len(courses)} 个。")
 
     for course in courses:
@@ -2575,11 +2788,12 @@ def get_all_courses(db: Session = Depends(get_db)):
         elif course.required_skills is None:
             course.required_skills = []
 
-    return courses  # 返回 Course 对象的列表
+    return courses
+
 
 
 @app.get("/courses/{course_id}", response_model=schemas.CourseResponse, summary="获取指定课程详情")
-def get_course_by_id(course_id: int, db: Session = Depends(get_db)):
+async def get_course_by_id(course_id: int, current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)): # 添加 current_user_id 依赖
     """
     获取指定ID的课程详情。
     """
@@ -2587,6 +2801,16 @@ def get_course_by_id(course_id: int, db: Session = Depends(get_db)):
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+    # 填充 is_liked_by_current_user
+    course.is_liked_by_current_user = False
+    if current_user_id:
+        like = db.query(CourseLike).filter(
+            CourseLike.owner_id == current_user_id,
+            CourseLike.course_id == course.id
+        ).first()
+        if like:
+            course.is_liked_by_current_user = True
 
     # 确保返回时 required_skills 是解析后的列表形式
     if isinstance(course.required_skills, str):
@@ -2733,110 +2957,134 @@ async def recommend_courses_for_student(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"课程推荐失败: {e}")
 
 
-# --- 用户认证与管理接口 ---
+
 @app.post("/projects/", response_model=schemas.ProjectResponse, summary="创建新项目")
 async def create_project(
-        project_data: schemas.ProjectCreate,
-        current_user_id: str = Depends(get_current_user_id),
+        project_data_json: str = Form(..., description="项目主体数据，JSON字符串格式"),
+        # Optional: project cover image upload
+        cover_image: Optional[UploadFile] = File(None, description="可选：上传项目封面图片"),
+        # Optional: multiple project files/attachments upload with their metadata
+        project_files_meta_json: Optional[str] = Form(None,
+                                                      description="项目附件的元数据列表，JSON字符串格式。例如: '[{\"file_name\":\"doc.pdf\", \"description\":\"概述\", \"access_type\":\"public\"}]'"),
+        project_files: Optional[List[UploadFile]] = File(None, description="可选：上传项目附件文件列表"),
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     current_user_id_int = int(current_user_id)
-    print(f"DEBUG: 用户 {current_user_id_int} 尝试创建项目: {project_data.title}")
+
+    print(f"DEBUG_RECEIVE_PROJECT: 接收到 project_data_json: '{project_data_json}'")
+    print(
+        f"DEBUG_RECEIVE_COVER: 接收到 cover_image: {cover_image.filename if cover_image else 'None'}, size: {cover_image.size if cover_image else 'N/A'}")
+    print(f"DEBUG_RECEIVE_FILES_META: 接收到 project_files_meta_json: '{project_files_meta_json}'")
+    print(f"DEBUG_RECEIVE_FILES: 接收到 project_files count: {len(project_files) if project_files else 0}")
+
+    try:
+        project_data = schemas.ProjectCreate.model_validate_json(project_data_json)
+        print(f"DEBUG: 用户 {current_user_id_int} 尝试创建项目: {project_data.title}")
+    except json.JSONDecodeError as e:
+        print(f"ERROR_JSON_DECODE: 项目数据 JSON 解析失败: {e}. 原始字符串: '{project_data_json}'")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"项目数据 JSON 格式不正确: {e}")
+    except ValueError as e:
+        print(f"ERROR_PYDANTIC_VALIDATION: 项目数据 Pydantic 验证失败: {e}. 原始字符串: '{project_data_json}'")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"项目数据验证失败: {e}")
 
     current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
     if not current_user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    required_skills_list_for_db = []
-    if project_data.required_skills:
-        required_skills_list_for_db = [skill.model_dump() for skill in project_data.required_skills]
-
-    required_roles_list_for_db = []
-    if project_data.required_roles:
-        required_roles_list_for_db = project_data.required_roles
-
-    # 重建 combined_text
-    skills_text = ""
-    if required_skills_list_for_db:
-        skills_text = ", ".join(
-            [s.get("name", "") for s in required_skills_list_for_db if isinstance(s, dict) and s.get("name")])
-
-    roles_text = ""
-    if required_roles_list_for_db:
-        roles_text = "、".join(required_roles_list_for_db)
-
-    combined_text_content = ". ".join(filter(None, [
-        _get_text_part(project_data.title),
-        _get_text_part(project_data.description),
-        _get_text_part(skills_text),
-        _get_text_part(roles_text),
-        _get_text_part(project_data.keywords),
-        _get_text_part(project_data.project_type),
-        _get_text_part(project_data.expected_deliverables),
-        _get_text_part(project_data.contact_person_info),
-        _get_text_part(project_data.learning_outcomes),
-        _get_text_part(project_data.team_size_preference),
-        _get_text_part(project_data.project_status),
-        _get_text_part(project_data.start_date),
-        _get_text_part(project_data.end_date),
-        _get_text_part(project_data.estimated_weekly_hours),
-        _get_text_part(project_data.location)
-    ])).strip()
-
-    # 获取项目创建者配置的硅基流动 API 密钥用于生成嵌入向量
-    siliconflow_api_key_for_embedding = None
-    if current_user.llm_api_type == "siliconflow" and current_user.llm_api_key_encrypted:
-        try:
-            siliconflow_api_key_for_embedding = ai_core.decrypt_key(current_user.llm_api_key_encrypted)
-            print(f"DEBUG_EMBEDDING_KEY: 使用创建者配置的硅基流动 API 密钥为项目生成嵌入。")
-        except Exception as e:
-            print(f"ERROR_EMBEDDING_KEY: 解密创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用占位符。")
-            siliconflow_api_key_for_embedding = None # 解密失败，不要使用
-    else:
-        print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
-
-    embedding = None
-    if combined_text_content:
-        try:
-            project_creator_llm_api_key = None
-            project_creator_llm_type = current_user.llm_api_type
-            project_creator_llm_base_url = current_user.llm_api_base_url
-            project_creator_llm_model_id = current_user.llm_model_id
-
-            if project_creator_llm_type == "siliconflow" and current_user.llm_api_key_encrypted:
-                try:
-                    project_creator_llm_api_key = ai_core.decrypt_key(current_user.llm_api_key_encrypted)
-                    print(f"DEBUG_EMBEDDING_KEY: 使用创建者配置的硅基流动 API 密钥为项目生成嵌入。")
-                except Exception as e:
-                    print(f"ERROR_EMBEDDING_KEY: 解密创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用零向量或默认行为。")
-                    project_creator_llm_api_key = None
-            else:
-                print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用零向量或默认行为。")
-
-            new_embedding = await ai_core.get_embeddings_from_api(
-                [combined_text_content],
-                api_key=project_creator_llm_api_key,
-                llm_type=project_creator_llm_type,
-                llm_base_url=project_creator_llm_base_url,
-                llm_model_id=project_creator_llm_model_id
-            )
-            if new_embedding:
-                embedding = new_embedding[0]
-            else:
-                embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保为零向量
-            print(f"DEBUG: 项目嵌入向量已生成。")
-        except Exception as e:
-            print(f"ERROR: 生成项目嵌入向量失败: {e}")
-            embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保失败时是零向量
-    else:  # 如果 combined_text_content 为空
-        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+    # List to store OSS objects that were newly uploaded during this request, for rollback purposes
+    newly_uploaded_oss_objects_for_rollback: List[str] = []
 
     try:
+        final_cover_image_url = None
+        final_cover_image_original_filename = None
+        final_cover_image_type = None
+        final_cover_image_size_bytes = None
+
+        # --- Process Cover Image Upload ---
+        if cover_image and cover_image.filename:
+            # 即使文件对象存在，也要检查其大小或文件名是否有效，避免处理空文件部分
+            if cover_image.size == 0 or not cover_image.filename.strip():
+                print(f"WARNING: 接收到一个空封面文件或文件名为 ' ' 的封面文件。跳过封面处理。")
+                # 将其视为没有有效的封面文件上传
+            else:
+                print("DEBUG: 接收到有效封面文件。开始处理封面上传。")
+
+                if not cover_image.content_type.startswith("image/"):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"不支持的封面文件类型: {cover_image.content_type}。项目封面只接受图片文件。")
+
+                file_bytes = await cover_image.read()
+                file_extension = os.path.splitext(cover_image.filename)[1]
+                content_type = cover_image.content_type
+                file_size = cover_image.size
+
+                oss_path_prefix = "project_covers"
+                current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+                newly_uploaded_oss_objects_for_rollback.append(current_oss_object_name)  # Add to rollback list
+
+                try:
+                    final_cover_image_url = await oss_utils.upload_file_to_oss(
+                        file_bytes=file_bytes,
+                        object_name=current_oss_object_name,
+                        content_type=content_type
+                    )
+                    final_cover_image_original_filename = cover_image.filename
+                    final_cover_image_type = content_type
+                    final_cover_image_size_bytes = file_size
+
+                    print(
+                        f"DEBUG: 封面文件 '{cover_image.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_cover_image_url}")
+
+                except HTTPException as e:
+                    print(f"ERROR: 上传封面文件到OSS失败: {e.detail}")
+                    raise e
+                except Exception as e:
+                    print(f"ERROR: 上传封面文件到OSS时发生未知错误: {e}")
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                        detail=f"封面文件上传到云存储失败: {e}")
+        else:
+            print("DEBUG: 未接收到有效封面文件。")
+
+        # --- Parse and Validate Project Files Metadata ---
+        parsed_project_files_meta: List[schemas.ProjectFileCreate] = []
+        if project_files_meta_json:
+            try:
+                raw_meta = json.loads(project_files_meta_json)
+                if not isinstance(raw_meta, list):
+                    raise ValueError("project_files_meta_json 必须是 JSON 列表。")
+                parsed_project_files_meta = [schemas.ProjectFileCreate(**f) for f in raw_meta]
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail=f"项目附件元数据 JSON 格式不正确或验证失败: {e}")
+
+        # --- Validate consistency between file attachments and their metadata ---
+        if project_files:
+            if not parsed_project_files_meta or len(project_files) != len(parsed_project_files_meta):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="项目附件文件数量与提供的元数据数量不匹配，或缺失附件元数据。")
+            # Enforce file_name consistency for user provided metadata with actual uploaded file's filename
+            for i, file_obj in enumerate(project_files):
+                if parsed_project_files_meta[i].file_name != file_obj.filename:
+                    # For a stricter API, you could raise an error here.
+                    # For more flexibility, we'll overwrite metadata's file_name with actual filename.
+                    print(
+                        f"WARNING: 附件元数据中的文件名 '{parsed_project_files_meta[i].file_name}' 与实际上传文件名 '{file_obj.filename}' 不匹配，将使用实际文件名。")
+                    parsed_project_files_meta[i].file_name = file_obj.filename
+        elif parsed_project_files_meta:  # metadata exists but no files were provided (error condition)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="提供了项目附件元数据但未上传任何文件。")
+
+        # --- Create Project Record (before files, to get project_id) ---
+        # The db_project object needs to exist before ProjectFiles can be related to it
+        # This will be the first DB commit point, if this fails, earlier OSS uploads need to be cleaned up
         db_project = Project(
             title=project_data.title,
             description=project_data.description,
-            required_skills=required_skills_list_for_db,
-            required_roles=required_roles_list_for_db,
+            # Ensure skills and roles are converted to list format if they are Pydantic models from input
+            required_skills=[skill.model_dump() for skill in
+                             project_data.required_skills] if project_data.required_skills else [],
+            required_roles=project_data.required_roles if project_data.required_roles else [],
             keywords=project_data.keywords,
             project_type=project_data.project_type,
             expected_deliverables=project_data.expected_deliverables,
@@ -2849,14 +3097,181 @@ async def create_project(
             estimated_weekly_hours=project_data.estimated_weekly_hours,
             location=project_data.location,
             creator_id=current_user_id_int,
-            combined_text=combined_text_content,
-            embedding=embedding
+            cover_image_url=final_cover_image_url,
+            cover_image_original_filename=final_cover_image_original_filename,
+            cover_image_type=final_cover_image_type,
+            cover_image_size_bytes=final_cover_image_size_bytes,
+            combined_text="",  # Will be updated after all files are processed
+            embedding=None  # Will be updated after all files are processed
         )
-
         db.add(db_project)
-        db.commit()
+        db.flush()  # Flush to get the ID for db_project, but don't commit yet to allow rollback of files
+
+        # --- Process Project Attachment Files ---
+        project_files_for_db = []
+        allowed_file_mime_types = [
+            "text/plain", "text/markdown", "application/pdf",
+            "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/json", "application/xml", "text/html", "text/css", "text/javascript",
+            "application/x-python-code", "text/x-python", "application/x-sh",
+            # 可以根据需要添加其他文件类型
+        ]
+
+        if project_files:
+            for index, file_obj in enumerate(project_files):
+                file_metadata = parsed_project_files_meta[index]
+
+                if file_obj.content_type.startswith('image/'):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"项目附件不支持图片文件：{file_obj.filename}。请使用项目封面上传或作为图片消息在聊天室上传。")
+                if file_obj.content_type.startswith('video/'):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"项目附件不支持视频文件：{file_obj.filename}。请作为视频消息在聊天室上传。")
+                if file_obj.content_type not in allowed_file_mime_types:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"不支持的项目附件文件类型: {file_obj.filename} ({file_obj.content_type})。仅支持常见文档、文本和代码文件。")
+
+                file_bytes_content = await file_obj.read()
+                file_extension = os.path.splitext(file_obj.filename)[1]
+
+                # IMPORTANT: Use the newly created project ID in the OSS path
+                oss_path_prefix = f"project_attachments/{db_project.id}"
+                current_oss_object_name_attach = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+                newly_uploaded_oss_objects_for_rollback.append(current_oss_object_name_attach)  # Add to rollback list
+
+                attachment_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes_content,
+                    object_name=current_oss_object_name_attach,
+                    content_type=file_obj.content_type
+                )
+
+                new_project_file = ProjectFile(
+                    project_id=db_project.id,
+                    upload_by_id=current_user_id_int,
+                    file_name=file_obj.filename,
+                    oss_object_name=current_oss_object_name_attach,
+                    file_path=attachment_url,
+                    file_type=file_obj.content_type,
+                    size_bytes=file_obj.size,
+                    description=file_metadata.description,
+                    access_type=file_metadata.access_type
+                )
+                project_files_for_db.append(new_project_file)
+                db.add(new_project_file)  # Add to session
+                print(f"DEBUG: 项目附件文件 '{file_obj.filename}' 已上传并添加到session。")
+
+        # --- Rebuild combined_text and Update Embedding for Project ---
+        _required_skills_text = ", ".join(
+            [s.get("name", "") for s in db_project.required_skills if isinstance(s, dict) and s.get("name")])
+        _required_roles_text = "、".join(db_project.required_roles)
+
+        # Include attachment filenames and descriptions in combined_text if attachments exist
+        attachments_text = ""
+        if project_files_for_db:
+            attachment_snippets = []
+            for pf in project_files_for_db:
+                snippet = f"{pf.file_name}"
+                if pf.description:
+                    snippet += f" ({pf.description})"
+                attachment_snippets.append(snippet)
+            attachments_text = "。附件列表：" + "。".join(attachment_snippets)
+
+        db_project.combined_text = ". ".join(filter(None, [
+            _get_text_part(db_project.title),
+            _get_text_part(db_project.description),
+            _get_text_part(_required_skills_text),
+            _get_text_part(_required_roles_text),
+            _get_text_part(db_project.keywords),
+            _get_text_part(db_project.project_type),
+            _get_text_part(db_project.expected_deliverables),
+            _get_text_part(db_project.learning_outcomes),
+            _get_text_part(db_project.team_size_preference),
+            _get_text_part(db_project.project_status),
+            _get_text_part(db_project.start_date),
+            _get_text_part(db_project.end_date),
+            _get_text_part(db_project.estimated_weekly_hours),
+            _get_text_part(db_project.location),
+            _get_text_part(db_project.cover_image_original_filename),
+            _get_text_part(db_project.cover_image_type),
+            attachments_text  # Include attachments in combined_text
+        ])).strip()
+
+        # Determine LLM API key for embedding generation (using project creator's config)
+        project_creator_llm_api_key = None
+        project_creator_llm_type = current_user.llm_api_type
+        project_creator_llm_base_url = current_user.llm_api_base_url
+        project_creator_llm_model_id = current_user.llm_model_id
+
+        if project_creator_llm_type == "siliconflow" and current_user.llm_api_key_encrypted:
+            try:
+                project_creator_llm_api_key = ai_core.decrypt_key(current_user.llm_api_key_encrypted)
+                print(
+                    f"DEBUG_EMBEDDING_KEY: (Recalculating embedding) 使用创建者配置的硅基流动 API 密钥为项目生成嵌入。")
+            except Exception as e:
+                print(
+                    f"ERROR_EMBEDDING_KEY: (Recalculating embedding) 解密创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用零向量或默认行为。")
+                project_creator_llm_api_key = None
+        else:
+            print(
+                f"DEBUG_EMBEDDING_KEY: (Recalculating embedding) 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
+
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        if db_project.combined_text:
+            try:
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [db_project.combined_text],
+                    api_key=project_creator_llm_api_key,
+                    llm_type=project_creator_llm_type,
+                    llm_base_url=project_creator_llm_base_url,
+                    llm_model_id=project_creator_llm_model_id
+                )
+                if new_embedding:
+                    db_project.embedding = new_embedding[0]
+                else:
+                    db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+                print(f"DEBUG: 项目嵌入向量已生成。")
+            except Exception as e:
+                print(f"ERROR: 生成项目嵌入向量失败: {e}")
+                db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
+            db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+
+        db.add(db_project)  # Ensure the project object with updated combined_text and embedding is marked for a commit
+
+        db.commit()  # FINAL COMMIT of all DB changes (project, ProjectFiles)
         db.refresh(db_project)
 
+        # Populate `project_files` and `creator_name` for the ProjectResponse schema
+        # We need to re-fetch with joinedload for project_files and uploader information.
+        db_project_with_files_and_uploader = db.query(Project).options(
+            joinedload(Project.project_files).joinedload(ProjectFile.uploader)
+        ).filter(Project.id == db_project.id).first()
+
+        visible_project_files_for_response = []
+        is_project_creator_after_commit = (db_project.creator_id == current_user_id_int)
+        is_project_member_after_commit = db.query(ProjectMember).filter(
+            ProjectMember.project_id == db_project.id,
+            ProjectMember.student_id == current_user_id_int,
+            ProjectMember.status == "active"
+        ).first() is not None
+
+        if db_project_with_files_and_uploader and db_project_with_files_and_uploader.project_files:
+            for file_record in db_project_with_files_and_uploader.project_files:
+                if file_record.access_type == "public":
+                    file_record._uploader_name = file_record.uploader.name if file_record.uploader else "未知用户"
+                    visible_project_files_for_response.append(file_record)
+                elif file_record.access_type == "member_only":
+                    if is_project_creator_after_commit or is_project_member_after_commit:
+                        file_record._uploader_name = file_record.uploader.name if file_record.uploader else "未知用户"
+                        visible_project_files_for_response.append(file_record)
+        db_project.project_files = visible_project_files_for_response  # Assign to the ORM object being returned
+
+        db_project._creator_name = current_user.name if current_user else "未知用户"  # Set creator name for response
+
+        # Ensure required_skills and required_roles are correct list format for Pydantic response
         if isinstance(db_project.required_skills, str):
             try:
                 db_project.required_skills = json.loads(db_project.required_skills)
@@ -2875,12 +3290,28 @@ async def create_project(
 
         print(f"DEBUG: 项目 '{db_project.title}' (ID: {db_project.id}) 创建成功。")
         return db_project
-    except IntegrityError as e:
+    except HTTPException as e:  # Catch FastAPI's HTTP exceptions
         db.rollback()
+        # Rollback logic for any newly uploaded OSS objects
+        if newly_uploaded_oss_objects_for_rollback:
+            for obj_name in newly_uploaded_oss_objects_for_rollback:
+                asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                print(f"DEBUG: HTTP exception occurred, attempting to delete new OSS file: {obj_name}")
+        raise e
+    except IntegrityError as e:  # Catch database integrity errors
+        db.rollback()
+        if newly_uploaded_oss_objects_for_rollback:
+            for obj_name in newly_uploaded_oss_objects_for_rollback:
+                asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                print(f"DEBUG: DB integrity error occurred, attempting to delete new OSS file: {obj_name}")
         print(f"ERROR_DB: 创建项目发生完整性约束错误: {e}")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="创建项目失败，可能存在数据冲突或唯一性约束。")
-    except Exception as e:
+    except Exception as e:  # Catch any other unexpected errors
         db.rollback()
+        if newly_uploaded_oss_objects_for_rollback:
+            for obj_name in newly_uploaded_oss_objects_for_rollback:
+                asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                print(f"DEBUG: Unknown error occurred, attempting to delete new OSS file: {obj_name}")
         print(f"ERROR_DB: 创建项目发生未知错误: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建项目失败: {e}")
 
@@ -2888,14 +3319,30 @@ async def create_project(
 @app.put("/projects/{project_id}", response_model=schemas.ProjectResponse, summary="更新指定项目")
 async def update_project(
         project_id: int,
-        project_data: schemas.ProjectUpdate,
-        current_user_id: str = Depends(get_current_user_id),
+        # 使用 Form() 接收 JSON 字符串数据
+        project_data_json: str = Form(..., description="要更新的项目主体数据，JSON字符串格式"),
+        # Optional: project cover image upload
+        cover_image: Optional[UploadFile] = File(None, description="可选：上传项目封面图片，将替换现有封面"),
+        # Optional: multiple project files/attachments upload with their metadata
+        # 注意：这里是新上传的文件的元数据。现有文件的元数据更新通过 files_to_update_metadata_json
+        project_files_meta_json: Optional[str] = Form(None,
+                                                      description="新项目附件的元数据列表，JSON字符串格式。例如: '[{\"file_name\":\"doc.pdf\", \"description\":\"概述\", \"access_type\":\"public\"}]'"),
+        project_files: Optional[List[UploadFile]] = File(None,
+                                                         description="可选：上传的新项目附件文件列表，与 project_files_meta_json 对应"),
+        # Files to delete or update metadata for
+        files_to_delete_ids_json: Optional[str] = Form(None,
+                                                       description="要删除的项目文件ID列表，JSON字符串格式，例如: '[1, 2, 3]'"),
+        files_to_update_metadata_json: Optional[str] = Form(None, description="要更新元数据的文件列表，JSON字符串格式"),
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     current_user_id_int = int(current_user_id)
-    print(f"DEBUG: 用户 {current_user_id_int} 尝试更新项目 ID: {project_id}。")
+    print(f"DEBUG_UPDATE_PROJECT: 用户 {current_user_id_int} 尝试更新项目 ID: {project_id}。")
 
-    try:  # 将整个接口逻辑包裹在一个 try 块中，统一提交
+    # List to store OSS objects that were newly uploaded during this request, for rollback purposes
+    newly_uploaded_oss_objects_for_rollback: List[str] = []
+
+    try:
         db_project = db.query(Project).filter(Project.id == project_id).first()
         if not db_project:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
@@ -2910,47 +3357,145 @@ async def update_project(
         print(
             f"DEBUG_PERM_PROJECT: Project Creator ID: {db_project.creator_id}, Current User ID: {current_user_id_int}, Is Creator: {is_creator}, Is System Admin: {is_system_admin}")
 
+        # 权限检查：只有项目创建者或系统管理员可以修改项目（包括其文件）
         if not (is_creator or is_system_admin):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                 detail="无权更新此项目。只有项目创建者或系统管理员可以修改。")
 
-        update_data = project_data.dict(exclude_unset=True)
+        # --- 1. 解析传入的 JSON 字符串数据 ---
+        try:
+            # 解析项目主体数据
+            project_data_dict = json.loads(project_data_json)
+            update_project_data_schema = schemas.ProjectUpdate(**project_data_dict)  # 用 ProjectUpdate Schema 校验
+            update_data = update_project_data_schema.dict(exclude_unset=True)  # Only fields passed in body
 
+            # 解析新上传文件元数据
+            parsed_project_files_meta: List[schemas.ProjectFileCreate] = []
+            if project_files_meta_json:
+                raw_meta = json.loads(project_files_meta_json)
+                if not isinstance(raw_meta, list):
+                    raise ValueError("project_files_meta_json 必须是 JSON 列表。")
+                parsed_project_files_meta = [schemas.ProjectFileCreate(**f) for f in raw_meta]
+
+            # 解析要删除的文件ID
+            files_to_delete_ids: Optional[List[int]] = None
+            if files_to_delete_ids_json:
+                files_to_delete_ids = json.loads(files_to_delete_ids_json)
+                if not isinstance(files_to_delete_ids, list) or not all(
+                        isinstance(i, int) for i in files_to_delete_ids):
+                    raise ValueError("files_to_delete_ids_json 必须是整数ID的列表。")
+                files_to_delete_ids = list(set(files_to_delete_ids))  # 去重，避免重复删除
+
+            # 解析要更新元数据的文件列表
+            files_to_update_metadata: Optional[List[schemas.ProjectFileUpdateData]] = []
+            if files_to_update_metadata_json:
+                parsed_files_to_update = json.loads(files_to_update_metadata_json)
+                files_to_update_metadata = [schemas.ProjectFileUpdateData(**f) for f in
+                                            parsed_files_to_update]  # 用 ProjectFileUpdateData Schema 校验
+
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"JSON数据解析失败或格式不正确: {e}")
+
+        # --- 2. 处理项目主体信息更新，包括封面图片 ---
         old_project_status = db_project.project_status
-        new_project_status = update_data.get("project_status")
-
+        new_project_status = update_data.get("project_status", old_project_status)  # Get new status, default to old one
         has_status_changed_to_completed = False
         if new_project_status == "已完成" and old_project_status != "已完成":
             has_status_changed_to_completed = True
             print(
                 f"DEBUG_PROJECT_STATUS: detecting status change from '{old_project_status}' to '{new_project_status}' for project {project_id}.")
 
-        # 应用所有传入的更新到db_project对象
-        processed_fields = []
-        if "required_skills" in update_data:
-            db_project.required_skills = update_data["required_skills"]
-            processed_fields.append("required_skills")
-        if "required_roles" in update_data:
-            db_project.required_roles = update_data["required_roles"]
-            processed_fields.append("required_roles")
+        # --- Handle Cover Image Upload/Update/Clear ---
+        # Get old OSS object name for cover image (if any)
+        old_cover_oss_object_name = None
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        if db_project.cover_image_url and db_project.cover_image_url.startswith(oss_base_url_parsed):
+            old_cover_oss_object_name = db_project.cover_image_url.replace(oss_base_url_parsed, '', 1)
 
+        # Priority 1: If a new cover image file is uploaded via 'cover_image' parameter
+        if cover_image and cover_image.filename and cover_image.size > 0:
+            print("DEBUG: 接收到新的封面图片文件。处理上传。")
+            if not cover_image.content_type.startswith("image/"):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail=f"不支持的封面文件类型: {cover_image.content_type}。项目封面只接受图片文件。")
+
+            # Delete old cover image from OSS if it exists
+            if old_cover_oss_object_name:
+                asyncio.create_task(oss_utils.delete_file_from_oss(old_cover_oss_object_name))
+                print(f"DEBUG_PROJECT: Deleted old cover image from OSS for replacement: {old_cover_oss_object_name}")
+
+            # Upload new cover image
+            file_bytes = await cover_image.read()
+            file_extension = os.path.splitext(cover_image.filename)[1]
+            content_type = cover_image.content_type
+            file_size = cover_image.size
+
+            oss_path_prefix = "project_covers"
+            current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+            newly_uploaded_oss_objects_for_rollback.append(current_oss_object_name)  # Add to rollback list
+
+            final_cover_image_url = await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=current_oss_object_name,
+                content_type=content_type
+            )
+            db_project.cover_image_url = final_cover_image_url
+            db_project.cover_image_original_filename = cover_image.filename
+            db_project.cover_image_type = content_type
+            db_project.cover_image_size_bytes = file_size
+
+            # Ensure these fields are not overwritten by update_data later if they were also present
+            update_data.pop("cover_image_url", None)
+            update_data.pop("cover_image_original_filename", None)
+            update_data.pop("cover_image_type", None)
+            update_data.pop("cover_image_size_bytes", None)
+
+            print(
+                f"DEBUG_PROJECT: 新封面图片 '{cover_image.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_cover_image_url}")
+
+        # Priority 2: If 'cover_image_url' (or related meta fields) is explicitly provided in project_data_json
+        # This branch is only taken if 'cover_image' (UploadFile) was NOT provided in the request
+        elif "cover_image_url" in update_data:
+            new_cover_image_url_from_json = update_data.get("cover_image_url")  # Can be str or None
+
+            # Check if existing cover needs to be deleted
+            if old_cover_oss_object_name:
+                # If new URL is None/empty OR new URL is different and not an OSS URL (e.g., external or different OSS bucket)
+                new_cover_is_oss_url = new_cover_image_url_from_json and new_cover_image_url_from_json.startswith(
+                    oss_base_url_parsed)
+                if not new_cover_image_url_from_json or \
+                        (new_cover_image_url_from_json != db_project.cover_image_url and not new_cover_is_oss_url):
+                    asyncio.create_task(oss_utils.delete_file_from_oss(old_cover_oss_object_name))
+                    print(
+                        f"DEBUG_PROJECT: Deleted old cover image from OSS because it's being replaced by non-OSS URL or cleared: {old_cover_oss_object_name}")
+
+            # Apply updates for cover image fields from JSON
+            db_project.cover_image_url = new_cover_image_url_from_json
+            db_project.cover_image_original_filename = update_data.get("cover_image_original_filename", None)
+            db_project.cover_image_type = update_data.get("cover_image_type", None)
+            db_project.cover_image_size_bytes = update_data.get("cover_image_size_bytes", None)
+
+            # Ensure these fields are popped after being handled
+            update_data.pop("cover_image_url", None)
+            update_data.pop("cover_image_original_filename", None)
+            update_data.pop("cover_image_type", None)
+            update_data.pop("cover_image_size_bytes", None)
+        else:
+            print("DEBUG: 未接收到新的封面图片文件，也未在JSON中指定封面URL更新。")
+
+        # Apply other general updates from project_data_json
         for key, value in update_data.items():
-            if key in processed_fields:
-                continue
             if hasattr(db_project, key):
                 setattr(db_project, key, value)
 
-        db.add(db_project)  # 将修改后的db_project添加到会话中，此处是将其标记为脏
+        db.add(db_project)  # Add the updated project to the session
 
-        # 在检查成就前，强制刷新会话，使db_project的最新状态对查询可见！
-        # 仅当状态改变时才需要刷新，因为这是触发成就检查的条件
-        if has_status_changed_to_completed:
-            db.flush()
-            print(f"DEBUG_FLUSH: 项目 {project_id} 状态更新已刷新到会话，以便后续查询可见。")
+        # Flush to allow subsequent operations (like file deletion/attachment to project) to see latest project state
+        db.flush()
 
-        # 如果状态变为已完成，则进行积分奖励和成就检查
-        # _check_and_award_achievements 现在可以查询到 db_project 的最新 project_status 了
+        # --- Check for Project Completion and Award Points (after main project update is flushed) ---
         if has_status_changed_to_completed:
+            print(f"DEBUG_FLUSH: 项目 {project_id} 状态更新已刷新到会话。")
             project_creator_user = db.query(Student).filter(Student.id == db_project.creator_id).first()
             if project_creator_user:
                 project_completion_points = 50
@@ -2969,56 +3514,165 @@ async def update_project(
             else:
                 print(f"WARNING: 项目 {db_project.id} 完成，但项目创建者 {db_project.creator_id} 未找到，无法奖励积分。")
 
-        # 重建 combined_text 和更新 embedding (这些操作依赖 db_project 的最新内存状态)
-        current_skills_for_text = db_project.required_skills
-        parsed_skills_for_text = []
-        if isinstance(current_skills_for_text, str):
-            try:
-                parsed_skills_for_text = json.loads(current_skills_for_text)
-            except json.JSONDecodeError:
-                parsed_skills_for_text = []
-        elif current_skills_for_text is None:
-            parsed_skills_for_text = []
-        skills_text = ""
-        if isinstance(parsed_skills_for_text, list):
-            skills_text = ", ".join(
-                [s.get("name", "") for s in parsed_skills_for_text if isinstance(s, dict) and s.get("name")])
+        # --- 3. Process File Deletions ---
+        if files_to_delete_ids:
+            for file_id in files_to_delete_ids:
+                db_project_file_to_delete = db.query(ProjectFile).filter(
+                    ProjectFile.id == file_id,
+                    ProjectFile.project_id == project_id
+                ).first()
+                if db_project_file_to_delete:
+                    # Verify permission: either uploader, project creator, or system admin
+                    if db_project_file_to_delete.upload_by_id == current_user_id_int or is_creator or is_system_admin:
+                        # OSS deletion is handled by SQLAlchemy 'before_delete' event listener
+                        db.delete(db_project_file_to_delete)
+                        print(f"DEBUG_PROJECT_FILE: 文件 {file_id} 已标记删除。")
+                    else:
+                        print(
+                            f"WARNING_PROJECT_FILE: 用户 {current_user_id_int} 无权删除文件 {file_id} (不拥有或非项目创建者/管理员)。跳过。")
+                else:
+                    print(f"WARNING_PROJECT_FILE: 请求删除的文件 {file_id} 未找到或不属于项目 {project_id}。")
 
-        current_roles_for_text = db_project.required_roles
-        parsed_roles_for_text = []
-        if isinstance(current_roles_for_text, str):
-            try:
-                parsed_roles_for_text = json.loads(current_roles_for_text)
-            except json.JSONDecodeError:
-                parsed_roles_for_text = []
-        elif current_roles_for_text is None:
-            parsed_roles_for_text = []
-        roles_text = ""
-        if isinstance(parsed_roles_for_text, list):
-            roles_text = "、".join(parsed_roles_for_text)
+        # --- 4. Process File Metadata Updates ---
+        if files_to_update_metadata:
+            for file_update_data in files_to_update_metadata:
+                db_project_file_to_update = db.query(ProjectFile).filter(
+                    ProjectFile.id == file_update_data.id,
+                    ProjectFile.project_id == project_id
+                ).first()
+                if db_project_file_to_update:
+                    # Verify permission to update: uploader, project creator, or system admin
+                    if db_project_file_to_update.upload_by_id == current_user_id_int or is_creator or is_system_admin:
+                        update_file_data_dict = file_update_data.dict(exclude_unset=True)
+                        for key, value in update_file_data_dict.items():
+                            if key != "id" and hasattr(db_project_file_to_update, key):
+                                setattr(db_project_file_to_update, key, value)
+                        db.add(db_project_file_to_update)
+                        print(f"DEBUG_PROJECT_FILE: 文件 {file_update_data.id} 元数据已更新。")
+                    else:
+                        print(
+                            f"WARNING_PROJECT_FILE: 用户 {current_user_id_int} 无权更新文件 {file_update_data.id} (不拥有或非项目创建者/管理员)。跳过。")
+                else:
+                    print(
+                        f"WARNING_PROJECT_FILE: 请求更新的文件 {file_update_data.id} 未找到或不属于项目 {project_id}。")
+
+        # --- 5. Process New Project Attachment Files Upload ---
+        allowed_file_mime_types = [
+            "text/plain", "text/markdown", "application/pdf",
+            "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/json", "application/xml", "text/html", "text/css", "text/javascript",
+            "application/x-python-code", "text/x-python", "application/x-sh"
+        ]
+
+        if project_files:
+            if not parsed_project_files_meta or len(project_files) != len(parsed_project_files_meta):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="新上传项目附件数量与提供的元数据数量不匹配，或缺失附件元数据。")
+
+            for index, file_obj in enumerate(project_files):
+                file_metadata = parsed_project_files_meta[index]
+
+                if file_obj.content_type.startswith('image/'):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"项目附件不支持图片文件：{file_obj.filename}。请使用项目封面上传或作为图片消息在聊天室上传。")
+                if file_obj.content_type.startswith('video/'):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"项目附件不支持视频文件：{file_obj.filename}。请作为视频消息在聊天室上传。")
+                if file_obj.content_type not in allowed_file_mime_types:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                        detail=f"不支持的项目附件文件类型: {file_obj.filename} ({file_obj.content_type})。仅支持常见文档、文本和代码文件。")
+
+                file_bytes_content = await file_obj.read()
+                file_extension = os.path.splitext(file_obj.filename)[1]
+                oss_path_prefix = f"project_attachments/{project_id}"  # Use existing project_id for attachments
+                current_oss_object_name_attach = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+                newly_uploaded_oss_objects_for_rollback.append(current_oss_object_name_attach)  # Add to rollback list
+
+                attachment_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes_content,
+                    object_name=current_oss_object_name_attach,
+                    content_type=file_obj.content_type
+                )
+
+                new_project_file = ProjectFile(
+                    project_id=project_id,
+                    upload_by_id=current_user_id_int,
+                    file_name=file_obj.filename,
+                    oss_object_name=current_oss_object_name_attach,
+                    file_path=attachment_url,
+                    file_type=file_obj.content_type,
+                    size_bytes=file_obj.size,
+                    description=file_metadata.description,
+                    access_type=file_metadata.access_type
+                )
+                db.add(new_project_file)
+                print(f"DEBUG_PROJECT_FILE: 新项目附件文件 '{file_obj.filename}' 已上传并标记添加。")
+
+
+        db.flush()  # Ensure all additions/deletions on ProjectFile are reflected in the session before querying relationships
+
+        # Populate required_skills and required_roles as needed for text generation
+        _required_skills_text = ""
+        if db_project.required_skills:
+            if isinstance(db_project.required_skills, str):  # Handle if it's still a JSON string
+                try:
+                    db_project.required_skills = json.loads(db_project.required_skills)
+                except json.JSONDecodeError:
+                    db_project.required_skills = []
+            if isinstance(db_project.required_skills, list):
+                _required_skills_text = ", ".join(
+                    [s.get("name", "") for s in db_project.required_skills if isinstance(s, dict) and s.get("name")])
+
+        _required_roles_text = ""
+        if db_project.required_roles:
+            if isinstance(db_project.required_roles, str):  # Handle if it's still a JSON string
+                try:
+                    db_project.required_roles = json.loads(db_project.required_roles)
+                except json.JSONDecodeError:
+                    db_project.required_roles = []
+            if isinstance(db_project.required_roles, list):
+                _required_roles_text = "、".join(db_project.required_roles)
+
+        # Re-fetch ProjectFiles from the session to get the latest list INCLUDING newly added ones
+        # and EXCLUDING deleted ones (due to cascade logic and .delete operations earlier).
+        current_attached_files = db.query(ProjectFile).filter(ProjectFile.project_id == project_id).all()
+        attachments_text = ""
+        if current_attached_files:
+            attachment_snippets = []
+            for pf in current_attached_files:
+                snippet = f"{pf.file_name}"
+                if pf.description:
+                    snippet += f" ({pf.description})"
+                attachment_snippets.append(snippet)
+            attachments_text = "。附件列表：" + "。".join(attachment_snippets)
 
         db_project.combined_text = ". ".join(filter(None, [
             _get_text_part(db_project.title),
             _get_text_part(db_project.description),
-            _get_text_part(skills_text),
-            _get_text_part(roles_text),
+            _get_text_part(_required_skills_text),
+            _get_text_part(_required_roles_text),
             _get_text_part(db_project.keywords),
             _get_text_part(db_project.project_type),
             _get_text_part(db_project.expected_deliverables),
-            _get_text_part(db_project.contact_person_info),
             _get_text_part(db_project.learning_outcomes),
             _get_text_part(db_project.team_size_preference),
             _get_text_part(db_project.project_status),
             _get_text_part(db_project.start_date),
             _get_text_part(db_project.end_date),
             _get_text_part(db_project.estimated_weekly_hours),
-            _get_text_part(db_project.location)
+            _get_text_part(db_project.location),
+            _get_text_part(db_project.cover_image_original_filename),
+            _get_text_part(db_project.cover_image_type),
+            attachments_text  # Now includes current attachments
         ])).strip()
 
+        # Determine LLM API key for embedding generation (using project creator's config)
         project_creator_llm_api_key = None
-        # 重新从数据库查询创建者，确保获取最新状态
         project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
-        if project_creator:  # 确保创建者存在
+        if project_creator:  # Should always exist, as creator_id is not nullable
             project_creator_llm_type = project_creator.llm_api_type
             project_creator_llm_base_url = project_creator.llm_api_base_url
             project_creator_llm_model_id = project_creator.llm_model_id
@@ -3026,18 +3680,21 @@ async def update_project(
             if project_creator_llm_type == "siliconflow" and project_creator.llm_api_key_encrypted:
                 try:
                     project_creator_llm_api_key = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
-                    print(f"DEBUG_EMBEDDING_KEY: 使用项目创建者配置的硅基流动 API 密钥更新项目嵌入。")
+                    print(
+                        f"DEBUG_EMBEDDING_KEY: (Recalculating embedding) 使用创建者配置的硅基流动 API 密钥为项目更新嵌入。")
                 except Exception as e:
                     print(
-                        f"ERROR_EMBEDDING_KEY: 解密项目创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用零向量或默认行为。")
+                        f"ERROR_EMBEDDING_KEY: (Recalculating embedding) 解密创建者硅基流动 API 密钥失败: {e}。项目嵌入将使用零向量或默认行为。")
                     project_creator_llm_api_key = None
             else:
-                print(f"DEBUG_EMBEDDING_KEY: 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用零向量或默认行为。")
-        else:  # 如果创建者不存在，则相关LLM配置也空
+                print(
+                    f"DEBUG_EMBEDDING_KEY: (Recalculating embedding) 项目创建者未配置硅基流动 API 类型或密钥，项目嵌入将使用占位符。")
+        else:  # Fallback if creator not found (shouldn't happen)
             project_creator_llm_type = None
             project_creator_llm_base_url = None
             project_creator_llm_model_id = None
 
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
         if db_project.combined_text:
             try:
                 new_embedding = await ai_core.get_embeddings_from_api(
@@ -3049,28 +3706,443 @@ async def update_project(
                 )
                 if new_embedding:
                     db_project.embedding = new_embedding[0]
-                else:  # 如果没有返回嵌入，设为零向量
+                else:
                     db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
                 print(f"DEBUG: 项目 {project_id} 嵌入向量已更新。")
             except Exception as e:
-                print(f"ERROR: 更新项目 {project_id} 嵌入向量失败: {e}")
-                db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR  # 确保失败时是零向量
-        else:  # 如果 combined_text 为空
+                print(f"ERROR: 更新项目 {project_id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+                db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
             db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
-        db.add(db_project)  # 再次添加，确保 combined_text 和 embedding 的更新被会话跟踪
+        db.add(db_project)  # Ensure the project object with updated combined_text and embedding is marked for a commit
 
-        db.commit()  # 现在，这里是唯一也是最终的提交！
-        print(f"DEBUG: 项目 {project_id} 信息更新请求处理完毕，所有事务已提交。")
-        return db_project  # 返回 ProjectResponse 时会自动从会话或数据库中获取最新状态
+        db.commit()  # FINAL COMMIT of all DB changes (project, ProjectFiles)
 
-    except Exception as e:  # 捕获所有异常并回滚
+        # Refresh Project instance to ensure all relationships are loaded for the response model after commit
+        db.refresh(db_project)
+
+        # Populate `project_files` and `creator_name` for the ProjectResponse schema
+        # We need to re-fetch with joinedload for project_files and uploader information.
+        # This ensures that the response always contains the fully updated and filtered list of files.
+        db_project_for_response = db.query(Project).options(
+            joinedload(Project.project_files).joinedload(ProjectFile.uploader)
+        ).filter(Project.id == project_id).first()
+
+        visible_project_files_for_response = []
+        # Re-verify permissions based on the state after commit (for member_only files)
+        is_current_user_project_creator_for_response = (db_project_for_response.creator_id == current_user_id_int)
+        is_current_user_project_member_for_response = db.query(ProjectMember).filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.student_id == current_user_id_int,
+            ProjectMember.status == "active"
+        ).first() is not None
+
+        if db_project_for_response and db_project_for_response.project_files:
+            for file_record in db_project_for_response.project_files:
+                if file_record.access_type == "public":
+                    file_record._uploader_name = file_record.uploader.name if file_record.uploader else "未知用户"
+                    visible_project_files_for_response.append(file_record)
+                elif file_record.access_type == "member_only":
+                    if is_current_user_project_creator_for_response or is_current_user_project_member_for_response:
+                        file_record._uploader_name = file_record.uploader.name if file_record.uploader else "未知用户"
+                        visible_project_files_for_response.append(file_record)
+        # Assign the filtered files to the ORM object that will be returned
+        db_project_for_response.project_files = visible_project_files_for_response
+
+        # Populate creator_name for response
+        if db_project_for_response.creator:
+            db_project_for_response._creator_name = db_project_for_response.creator.name
+        else:
+            db_project_for_response._creator_name = "未知用户"
+
+        print(f"DEBUG: 项目 {project_id} 信息和文件更新请求处理完毕，所有事务已提交。")
+        return db_project_for_response  # Return the ORM object, Pydantic will map it
+
+    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
         db.rollback()
+        # 如果有新上传的文件，但DB事务回滚，则删除OSS上的文件
+        if newly_uploaded_oss_objects_for_rollback:
+            for obj_name in newly_uploaded_oss_objects_for_rollback:
+                asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                print(f"DEBUG_PROJECT_UPDATE_ERROR: HTTP exception, attempting to delete new OSS file: {obj_name}")
+        raise e
+    except Exception as e:  # 捕获所有其他意外错误，并执行回滚
+        db.rollback()
+        # 如果有新上传的文件，但DB事务回滚，则删除OSS上的文件
+        if newly_uploaded_oss_objects_for_rollback:
+            for obj_name in newly_uploaded_oss_objects_for_rollback:
+                asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                print(f"DEBUG_PROJECT_UPDATE_ERROR: Unknown error, attempting to delete new OSS file: {obj_name}")
         print(f"ERROR_PROJECT_UPDATE_GLOBAL: 项目 {project_id} 更新过程中发生错误，事务已回滚: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"项目更新失败：{e}",
         )
+
+
+@app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除指定项目（仅限项目创建者或系统管理员）")
+async def delete_project(
+        project_id: int,  # 要删除的项目ID
+        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
+        db: Session = Depends(get_db)
+):
+    """
+    删除指定ID的项目。只有项目的创建者或系统管理员可以执行此操作。
+    此操作将级联删除项目的所有关联数据，包括：
+    - 项目文件（及其OSS文件）
+    - 项目申请
+    - 项目成员
+    - 项目点赞
+    - 关联的聊天室（及其消息和成员）
+    注意：项目的封面图片如果托管在OSS，也将在删除项目时被移除。
+    """
+    print(f"DEBUG_DELETE_PROJECT: 用户 {current_user_id} 尝试删除项目 ID: {project_id}。")
+
+    try:
+        # 1. 获取项目信息和当前用户信息
+        db_project = db.query(Project).filter(Project.id == project_id).first()
+        if not db_project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user: # 理论上不会发生，因为 get_current_user_id 已经验证
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        # 2. 权限检查：只有项目创建者或系统管理员可以删除
+        is_creator = (db_project.creator_id == current_user_id)
+        is_system_admin = current_user.is_admin
+
+        print(f"DEBUG_DELETE_PROJECT_PERM: 项目创建者ID: {db_project.creator_id}, 当前用户ID: {current_user_id}, "
+              f"是创建者: {is_creator}, 是系统管理员: {is_system_admin}")
+
+        if not (is_creator or is_system_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权删除此项目。只有项目创建者或系统管理员可以执行此操作。")
+
+        # 3. 删除项目封面图片（如果托管在OSS）
+        # Project 模型的 cover_image_url 是直接 string，没有像 ProjectFile 那样的 event listener
+        # 所以这里需要手动删除 OSS 上的封面文件
+        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        cover_image_oss_object_name = None
+        if db_project.cover_image_url and db_project.cover_image_url.startswith(oss_base_url_parsed):
+            cover_image_oss_object_name = db_project.cover_image_url.replace(oss_base_url_parsed, '', 1)
+
+        if cover_image_oss_object_name:
+            try:
+                # 异步删除文件，不阻塞数据库事务
+                asyncio.create_task(oss_utils.delete_file_from_oss(cover_image_oss_object_name))
+                print(f"DEBUG_DELETE_PROJECT: 安排删除项目封面OSS文件: {cover_image_oss_object_name}")
+            except Exception as e:
+                print(f"ERROR_DELETE_PROJECT: 安排删除项目封面OSS文件 {cover_image_oss_object_name} 失败: {e}")
+                # 即使删除OSS文件失败，也应允许数据库记录被删除，不中断流程
+
+        # 4. 删除数据库中的项目记录
+        # 由于 Project 模型对 ProjectFile、ProjectApplication、ProjectMember、ChatRoom 等
+        # 关系设置了 cascade="all, delete-orphan"，所有关联记录将随项目一并删除。
+        # ProjectFile 的 before_delete 事件会处理其对应的OSS文件删除。
+        db.delete(db_project)
+        db.commit() # 提交删除操作
+
+        print(f"DEBUG_DELETE_PROJECT: 项目 {project_id} 及其所有关联数据已成功删除。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT) # 返回 204 No Content 表示成功且无响应体
+
+    except HTTPException as e:
+        db.rollback() # 遇到 HTTPException 也回滚，确保数据库状态一致
+        raise e
+    except Exception as e:
+        db.rollback() # 捕获其他所有异常并回滚
+        print(f"ERROR_DELETE_PROJECT_GLOBAL: 删除项目 {project_id} 过程中发生未知错误，事务已回滚: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"删除项目失败: {e}")
+
+
+@app.delete("/projects/{project_id}/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定项目的附件文件")
+async def delete_project_file(
+        project_id: int,  # 所属项目ID
+        file_id: int,  # 要删除的文件ID
+        current_user_id: int = Depends(get_current_user_id),  # 当前操作用户ID
+        db: Session = Depends(get_db)
+):
+    """
+    从指定项目中删除一个附件文件。
+    只有文件的上传者、项目创建者、项目活跃成员或系统管理员可以执行此操作。
+    文件将从数据库中删除，并且其对应的OSS文件也会被自动删除。
+    """
+    print(f"DEBUG_DELETE_PROJECT_FILE: 用户 {current_user_id} 尝试删除项目 {project_id} 中的文件 ID: {file_id}。")
+
+    try:
+        # 1. 验证项目和文件是否存在，并确保文件属于该项目
+        db_project = db.query(Project).filter(Project.id == project_id).first()
+        if not db_project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+        db_project_file = db.query(ProjectFile).filter(
+            ProjectFile.id == file_id,
+            ProjectFile.project_id == project_id
+        ).first()
+
+        if not db_project_file:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目文件未找到或不属于该项目。")
+
+        # 2. 获取当前操作用户和项目创建者的信息
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:  # 理论上不会发生
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+
+        # 3. 权限检查
+        is_uploader = (db_project_file.upload_by_id == current_user_id)
+        is_project_creator = (db_project.creator_id == current_user_id)
+        is_project_member = db.query(ProjectMember).filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.student_id == current_user_id,
+            ProjectMember.status == "active"
+        ).first() is not None
+        is_system_admin = current_user.is_admin
+
+        print(f"DEBUG_DELETE_PROJECT_FILE_PERM: "
+              f"文件上传者ID: {db_project_file.upload_by_id}, 项目创建者ID: {db_project.creator_id}, "
+              f"当前用户ID: {current_user_id}, "
+              f"是上传者: {is_uploader}, 是项目创建者: {is_project_creator}, "
+              f"是项目成员: {is_project_member}, 是系统管理员: {is_system_admin}")
+
+        if not (is_uploader or is_project_creator or is_project_member or is_system_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="无权删除此文件。只有文件上传者、项目创建者、项目成员或系统管理员可以删除。")
+
+        # 4. 删除数据库记录
+        # ProjectFile 模型的 'before_delete' 事件监听器会自动处理OSS文件的删除
+        db.delete(db_project_file)
+        db.commit()
+
+        # 5. 可选：更新项目的 combined_text 和 embedding
+        # 因为文件被删除，项目的描述性文本可能改变，需要重新生成 embedding
+        # 重新加载 db_project，确保它反映了文件删除后的最新状态
+        db.refresh(db_project)  # refresh db_project to get updated project_files relationship
+
+        _required_skills_text = ""
+        if db_project.required_skills:
+            if isinstance(db_project.required_skills, str):
+                try:
+                    db_project.required_skills = json.loads(db_project.required_skills)
+                except json.JSONDecodeError:
+                    db_project.required_skills = []
+            if isinstance(db_project.required_skills, list):
+                _required_skills_text = ", ".join(
+                    [s.get("name", "") for s in db_project.required_skills if isinstance(s, dict) and s.get("name")])
+
+        _required_roles_text = ""
+        if db_project.required_roles:
+            if isinstance(db_project.required_roles, str):
+                try:
+                    db_project.required_roles = json.loads(db_project.required_roles)
+                except json.JSONDecodeError:
+                    db_project.required_roles = []
+            if isinstance(db_project.required_roles, list):
+                _required_roles_text = "、".join(db_project.required_roles)
+
+        # Re-fetch ProjectFiles from the session to get the latest list AFTER deletion.
+        # This is direct query, ensuring up-to-date relationships.
+        current_attached_files = db.query(ProjectFile).filter(ProjectFile.project_id == project_id).all()
+        attachments_text = ""
+        if current_attached_files:
+            attachment_snippets = []
+            for pf in current_attached_files:
+                snippet = f"{pf.file_name}"
+                if pf.description:
+                    snippet += f" ({pf.description})"
+                attachment_snippets.append(snippet)
+            attachments_text = "。附件列表：" + "。".join(attachment_snippets)
+
+        db_project.combined_text = ". ".join(filter(None, [
+            _get_text_part(db_project.title),
+            _get_text_part(db_project.description),
+            _get_text_part(_required_skills_text),
+            _get_text_part(_required_roles_text),
+            _get_text_part(db_project.keywords),
+            _get_text_part(db_project.project_type),
+            _get_text_part(db_project.expected_deliverables),
+            _get_text_part(db_project.learning_outcomes),
+            _get_text_part(db_project.team_size_preference),
+            _get_text_part(db_project.project_status),
+            _get_text_part(db_project.start_date),
+            _get_text_part(db_project.end_date),
+            _get_text_part(db_project.estimated_weekly_hours),
+            _get_text_part(db_project.location),
+            _get_text_part(db_project.cover_image_original_filename),
+            _get_text_part(db_project.cover_image_type),
+            attachments_text  # Re-include current attachments after deletion
+        ])).strip()
+
+        # Determine LLM API key for embedding generation (using project creator's config)
+        project_creator_llm_api_key = None
+        project_creator = db.query(Student).filter(Student.id == db_project.creator_id).first()
+        if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
+            try:
+                project_creator_llm_api_key = ai_core.decrypt_key(project_creator.llm_api_key_encrypted)
+            except Exception:
+                project_creator_llm_api_key = None  # Decryption failed
+
+        project_creator_llm_type = project_creator.llm_api_type if project_creator else None
+        project_creator_llm_base_url = project_creator.llm_api_base_url if project_creator else None
+        project_creator_llm_model_id = project_creator.llm_model_id if project_creator else None
+
+        embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        if db_project.combined_text:
+            try:
+                new_embedding = await ai_core.get_embeddings_from_api(
+                    [db_project.combined_text],
+                    api_key=project_creator_llm_api_key,
+                    llm_type=project_creator_llm_type,
+                    llm_base_url=project_creator_llm_base_url,
+                    llm_model_id=project_creator_llm_model_id
+                )
+                if new_embedding:
+                    db_project.embedding = new_embedding[0]
+                else:
+                    db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+                print(f"DEBUG_DELETE_PROJECT_FILE: 项目 {project_id} 嵌入向量已更新。")
+            except Exception as e:
+                print(f"ERROR_DELETE_PROJECT_FILE: 更新项目 {project_id} 嵌入向量失败: {e}. 嵌入向量设为零。")
+                db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+        else:
+            db_project.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
+
+        db.add(db_project)  # Mark the project for re-saving with updated embedding
+        db.commit()  # Commit the project embedding update
+
+        print(f"DEBUG_DELETE_PROJECT_FILE: 项目文件 ID: {file_id} 已成功删除。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DELETE_PROJECT_FILE_GLOBAL: 删除项目文件 {file_id} 过程中发生未知错误，事务已回滚: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"删除项目文件失败: {e}")
+
+
+# --- Project File Management Interfaces ---
+@app.post("/projects/{project_id}/files/", response_model=schemas.ProjectFileResponse,
+          status_code=status.HTTP_201_CREATED, summary="为指定项目上传文件")
+async def upload_project_file(
+        project_id: int,
+        file: UploadFile = File(..., description="要上传的项目文件（文档、代码文件等）"),
+        file_data: schemas.ProjectFileCreate = Depends(), # 使用 Depends() 来解析表单中的JSON数据
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    为指定项目上传一个新文件（支持文本、文档、代码等多种文件类型）。
+    只有项目的创建者或项目成员可以上传文件。
+    上传时可以指定文件描述和访问权限（仅成员可见或公开）。
+    """
+    print(f"DEBUG_PROJECT_FILE: 用户 {current_user_id} 尝试为项目 {project_id} 上传文件 '{file.filename}'。")
+
+    # 1. 验证项目是否存在
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+    # 2. 权限检查：只有项目创建者或项目成员可以上传文件
+    is_project_creator = (db_project.creator_id == current_user_id)
+    is_project_member = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.student_id == current_user_id,
+        ProjectMember.status == "active"
+    ).first() is not None
+
+    if not (is_project_creator or is_project_member):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权为该项目上传文件。只有项目创建者或成员可以上传。")
+
+    # 3. 验证文件类型：允许常见的文档、代码、文本文件
+    # 允许的文件 MIME 类型（可根据需要扩展）
+    allowed_mime_types = [
+        "text/plain",  # .txt, .log
+        "text/markdown",  # .md
+        "application/pdf",  # .pdf
+        "application/msword", # .doc
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+        "application/vnd.ms-excel",  # .xls
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+        "application/vnd.ms-powerpoint",  # .ppt
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+        "application/json", # .json
+        "application/xml", # .xml
+        "text/html",  # .html
+        "text/css", # .css
+        "text/javascript", # .js
+        "application/x-python-code", # .pyc
+        "text/x-python", # .py
+        "application/x-sh", # .sh
+        # ... 更多可以添加
+    ]
+    # 检查是否是图片，如果不是则通过
+    if file.content_type.startswith('image/'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目文件不支持直接上传图片。请通过项目封面上传图片，或上传图片到其他模块。")
+    if file.content_type not in allowed_mime_types:
+        print(f"WARNING_PROJECT_FILE: 不支持的文件类型 '{file.content_type}'。")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"不支持的文件类型: {file.content_type}。仅支持常见文档（如PDF, DOCX, XLSX）、文本和代码文件。")
+
+    # 用于在OSS上传失败或DB事务回滚时删除OSS中已文件的变量
+    oss_object_name_for_rollback = None
+    try:
+        # 4. 将文件上传到OSS
+        file_bytes = await file.read()  # 读取文件所有字节
+        file_extension = os.path.splitext(file.filename)[1]  # 获取文件扩展名
+
+        # OSS上的文件存储路径：project_files/{project_id}/UUID.ext
+        oss_path_prefix = f"project_files/{project_id}"
+        current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
+        oss_object_name_for_rollback = current_oss_object_name
+
+        file_url = await oss_utils.upload_file_to_oss(
+            file_bytes=file_bytes,
+            object_name=current_oss_object_name,
+            content_type=file.content_type
+        )
+        print(f"DEBUG_PROJECT_FILE: 文件 '{file.filename}' (类型: {file.content_type}) 上传到OSS成功，URL: {file_url}")
+
+        # 5. 在数据库中创建 ProjectFile 记录
+        db_project_file = ProjectFile(
+            project_id=project_id,
+            upload_by_id=current_user_id,
+            file_name=file.filename,
+            oss_object_name=current_oss_object_name,
+            file_path=file_url,
+            file_type=file.content_type,
+            size_bytes=file.size,
+            description=file_data.description, # 从表单数据中获取描述
+            access_type=file_data.access_type  # 从表单数据中获取访问权限
+        )
+        db.add(db_project_file)
+        db.commit()
+        db.refresh(db_project_file)
+
+        # 填充上传者姓名
+        uploader_student = db.query(Student).filter(Student.id == current_user_id).first()
+        db_project_file._uploader_name = uploader_student.name if uploader_student else "未知用户"
+
+        print(f"DEBUG_PROJECT_FILE: 项目 {project_id} 文件 '{db_project_file.file_name}' (ID: {db_project_file.id}) 上传成功，状态码 201。")
+        return db_project_file
+
+    except HTTPException as e:
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG_PROJECT_FILE: HTTP Exception raised, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        raise e
+    except Exception as e:
+        db.rollback()
+        if oss_object_name_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
+            print(f"DEBUG_PROJECT_FILE: Unknown error during project file upload, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        print(f"ERROR_PROJECT_FILE: 上传项目文件失败：{e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传项目文件失败: {e}")
+
+
 
 
 # --- AI匹配接口 ---
@@ -5381,6 +6453,7 @@ def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]
     """
     清理从表单接收到的可选JSON字符串参数。
     将 None, 空字符串, 或'string'字面量（通常来自Swagger UI默认值）转换为 None。
+
     """
     if input_str is None:
         return None
@@ -9031,6 +10104,44 @@ async def _get_forum_topics_with_details(query, current_user_id: int, db: Sessio
     return topics
 
 
+
+# --- 辅助函数：获取项目列表并填充动态信息 ---
+async def _get_projects_with_details(query, current_user_id: int, db: Session):
+    projects = query.all()
+    for project in projects:
+        # 填充 creator_name
+        creator_obj = db.query(Student).filter(Student.id == project.creator_id).first()
+        # 直接为 ORM 对象设置一个私有属性，Pydantic 的 @property 会读取它
+        project._creator_name = creator_obj.name if creator_obj else "未知用户"
+
+        # 填充 is_liked_by_current_user
+        project.is_liked_by_current_user = False
+        if current_user_id: # 只有登录用户才检查是否点赞
+            like = db.query(ProjectLike).filter(
+                ProjectLike.owner_id == current_user_id,
+                ProjectLike.project_id == project.id
+            ).first()
+            if like:
+                project.is_liked_by_current_user = True
+    return projects
+
+
+# --- 辅助函数：获取课程列表并填充动态信息 ---
+async def _get_courses_with_details(query, current_user_id: int, db: Session):
+    courses = query.all()
+    for course in courses:
+        # 填充 is_liked_by_current_user
+        course.is_liked_by_current_user = False
+        if current_user_id: # 只有登录用户才检查是否点赞
+            like = db.query(CourseLike).filter(
+                CourseLike.owner_id == current_user_id,
+                CourseLike.course_id == course.id
+            ).first()
+            if like:
+                course.is_liked_by_current_user = True
+    return courses
+
+
 @app.get("/forum/topics/", response_model=List[schemas.ForumTopicResponse], summary="获取论坛话题列表")
 async def get_forum_topics(
         current_user_id: int = Depends(get_current_user_id),  # 用于判断点赞/收藏状态
@@ -9982,6 +11093,211 @@ async def unfollow_user(
     db.commit()
     print(f"DEBUG: 用户 {current_user_id} 取消关注用户 {followed_id} 成功。")
     return {"message": "Unfollowed successfully"}
+
+
+# --- Project Like/Unlike Interfaces ---
+@app.post("/projects/{project_id}/like", response_model=schemas.ProjectLikeResponse, summary="点赞指定项目")
+async def like_project_item(
+        project_id: int,
+        current_user_id: int = Depends(get_current_user_id),  # 点赞者
+        db: Session = Depends(get_db)
+):
+    """
+    点赞一个项目。同一用户不能重复点赞同一项目。\n
+    点赞成功后，为被点赞项目的创建者奖励积分。
+    """
+    print(f"DEBUG_LIKE: 用户 {current_user_id} 尝试点赞项目 ID: {project_id}")
+    try:
+        # 1. 验证项目是否存在
+        db_project = db.query(Project).filter(Project.id == project_id).first()
+        if not db_project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
+
+        # 2. 检查是否已点赞
+        existing_like = db.query(ProjectLike).filter(
+            ProjectLike.owner_id == current_user_id,
+            ProjectLike.project_id == project_id
+        ).first()
+        if existing_like:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已点赞该项目。")
+
+        # 3. 创建点赞记录
+        db_like = ProjectLike(
+            owner_id=current_user_id,
+            project_id=project_id
+        )
+        db.add(db_like)
+
+        # 4. 更新项目点赞计数
+        db_project.likes_count += 1
+        db.add(db_project)
+
+        # 5. 奖励积分和检查成就 (请将 current_user_id 替换为被点赞项目的创建者 ID)
+        project_creator_id = db_project.creator_id
+        if project_creator_id and project_creator_id != current_user_id: # 只有被点赞的不是自己才加分
+            creator_user = db.query(Student).filter(Student.id == project_creator_id).first()
+            if creator_user:
+                like_points = 5
+                await _award_points(
+                    db=db,
+                    user=creator_user,
+                    amount=like_points,
+                    reason=f"项目获得点赞：'{db_project.title}'",
+                    transaction_type="EARN",
+                    related_entity_type="project",
+                    related_entity_id=project_id
+                )
+                await _check_and_award_achievements(db, project_creator_id)
+                print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {project_creator_id} 因项目获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
+
+
+        db.commit() # 统一提交所有操作
+        db.refresh(db_like)
+
+        print(f"DEBUG_LIKE: 用户 {current_user_id} 点赞项目 {project_id} 成功。")
+        return db_like
+
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_LIKE: 项目点赞失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"项目点赞失败: {e}")
+
+
+@app.delete("/projects/{project_id}/unlike", status_code=status.HTTP_204_NO_CONTENT, summary="取消点赞指定项目")
+async def unlike_project_item(
+        project_id: int,
+        current_user_id: int = Depends(get_current_user_id),  # 取消点赞者
+        db: Session = Depends(get_db)
+):
+    """
+    取消点赞一个项目。
+    """
+    print(f"DEBUG_UNLIKE: 用户 {current_user_id} 尝试取消点赞项目 ID: {project_id}")
+    try:
+        # 1. 查找点赞记录
+        db_like = db.query(ProjectLike).filter(
+            ProjectLike.owner_id == current_user_id,
+            ProjectLike.project_id == project_id
+        ).first()
+
+        if not db_like:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到您对该项目的点赞记录。")
+
+        # 2. 更新项目点赞计数
+        db_project = db.query(Project).filter(Project.id == project_id).first()
+        if db_project and db_project.likes_count > 0:
+            db_project.likes_count -= 1
+            db.add(db_project)
+
+        # 3. 删除点赞记录
+        db.delete(db_like)
+        db.commit()
+
+        print(f"DEBUG_UNLIKE: 用户 {current_user_id} 取消点赞项目 {project_id} 成功。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_UNLIKE: 取消项目点赞失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"取消项目点赞失败: {e}")
+
+
+# --- NEW: Course Like/Unlike Interfaces ---
+@app.post("/courses/{course_id}/like", response_model=schemas.CourseLikeResponse, summary="点赞指定课程")
+async def like_course_item(
+        course_id: int,
+        current_user_id: int = Depends(get_current_user_id),  # 点赞者
+        db: Session = Depends(get_db)
+):
+    """
+    点赞一个课程。同一用户不能重复点赞同一课程。\n
+    点赞成功后，为被点赞课程的讲师奖励积分。
+    """
+    print(f"DEBUG_LIKE: 用户 {current_user_id} 尝试点赞课程 ID: {course_id}")
+    try:
+        # 1. 验证课程是否存在
+        db_course = db.query(Course).filter(Course.id == course_id).first()
+        if not db_course:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
+
+        # 2. 检查是否已点赞
+        existing_like = db.query(CourseLike).filter(
+            CourseLike.owner_id == current_user_id,
+            CourseLike.course_id == course_id
+        ).first()
+        if existing_like:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已点赞该课程。")
+
+        # 3. 创建点赞记录
+        db_like = CourseLike(
+            owner_id=current_user_id,
+            course_id=course_id
+        )
+        db.add(db_like)
+
+        # 4. 更新课程点赞计数
+        db_course.likes_count += 1
+        db.add(db_course)
+
+        # 5. 奖励积分和检查成就 (为课程的讲师奖励积分)
+        # 暂时没有讲师的 Student ID，如果讲师不是平台用户，则无法奖励积分。
+        # 如果 Instructor 是平台用户，需要额外逻辑来查找其 ID。
+        # 这里假设 Instructor 只是一个名字，不直接关联到 Student 表。
+        # 如果需要奖励，需要将 Instructor 也关联到 Student 表。
+        # 为了简化，这里先不给课程讲师或创建者加积分，或者仅在讲师是平台注册用户时进行。
+        print(f"DEBUG_POINTS_ACHIEVEMENT: 课程点赞不直接奖励积分给讲师，除非讲师是平台注册用户且有相应逻辑支持。")
+
+        db.commit() # 统一提交所有操作
+        db.refresh(db_like)
+
+        print(f"DEBUG_LIKE: 用户 {current_user_id} 点赞课程 {course_id} 成功。")
+        return db_like
+
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_LIKE: 课程点赞失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"课程点赞失败: {e}")
+
+
+@app.delete("/courses/{course_id}/unlike", status_code=status.HTTP_204_NO_CONTENT, summary="取消点赞指定课程")
+async def unlike_course_item(
+        course_id: int,
+        current_user_id: int = Depends(get_current_user_id),  # 取消点赞者
+        db: Session = Depends(get_db)
+):
+    """
+    取消点赞一个课程。
+    """
+    print(f"DEBUG_UNLIKE: 用户 {current_user_id} 尝试取消点赞课程 ID: {course_id}")
+    try:
+        # 1. 查找点赞记录
+        db_like = db.query(CourseLike).filter(
+            CourseLike.owner_id == current_user_id,
+            CourseLike.course_id == course_id
+        ).first()
+
+        if not db_like:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到您对该课程的点赞记录。")
+
+        # 2. 更新课程点赞计数
+        db_course = db.query(Course).filter(Course.id == course_id).first()
+        if db_course and db_course.likes_count > 0:
+            db_course.likes_count -= 1
+            db.add(db_course)
+
+        # 3. 删除点赞记录
+        db.delete(db_like)
+        db.commit()
+
+        print(f"DEBUG_UNLIKE: 用户 {current_user_id} 取消点赞课程 {course_id} 成功。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_UNLIKE: 取消课程点赞失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"取消课程点赞失败: {e}")
+
+
 
 
 
