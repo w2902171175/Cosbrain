@@ -1313,6 +1313,16 @@ class AIConversationResponse(AIConversationBase):
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
+
+# --- 用于触发AI对话标题重新生成的请求体 ---
+class AIConversationRegenerateTitleRequest(BaseModel):
+    """
+    用于触发AI对话标题（重新）生成的请求体。
+    此请求体不包含任何标题字段，明确告知客户端不能手动提交标题。
+    任何对此PUT接口的调用都被视为要AI自动生成或重生成标题。
+    """
+    pass # 留空表示请求体可以是空的 {}
+
 # --- Semantic Search Schemas ---
 class SemanticSearchRequest(BaseModel):
     query: str

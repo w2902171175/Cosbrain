@@ -5355,10 +5355,6 @@ async def get_document_chunks(
     return chunks
 
 
-# project/main.py
-
-# ... (其他导入保持不变) ...
-
 # 辅助函数：清理可选的 JSON 字符串参数
 def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]:
     """
@@ -5377,9 +5373,6 @@ def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]
     return stripped_str
 
 
-# ... (下面的 FastAPI 应用实例 app = FastAPI(...) 保持不变) ...
-
-
 @app.post("/ai/qa", response_model=schemas.AIQAResponse, summary="AI智能问答 (通用、RAG或工具调用)")
 async def ai_qa(
         query: str = Form(..., description="用户的问题文本"),
@@ -5389,7 +5382,7 @@ async def ai_qa(
         use_tools: Optional[bool] = Form(False, description="是否启用AI智能工具调用"),
         preferred_tools_json: Optional[str] = Form(None,
                                                    description="AI在工具模式下偏好使用的工具类型列表，格式为JSON字符串。例如: '[\"rag\", \"web_search\"]'"),
-        llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),
+        llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),  # <- 这里会从表单接收
         uploaded_file: Optional[Union[UploadFile, str]] = File(None,
                                                                description="可选：上传文件（图片或文档）对AI进行提问"),
         current_user_id: int = Depends(get_current_user_id),
@@ -5410,27 +5403,25 @@ async def ai_qa(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    # ↓↓↓↓↓ 【修改：使用辅助函数清理所有可选的 JSON 字符串参数】 ↓↓↓↓↓
     kb_ids_json = _clean_optional_json_string_input(kb_ids_json)
     note_ids_json = _clean_optional_json_string_input(note_ids_json)
     preferred_tools_json = _clean_optional_json_string_input(preferred_tools_json)
-    llm_model_id = _clean_optional_json_string_input(llm_model_id)  # 也清理这个字段
-    # ↑↑↑↑↑ 【修改：使用辅助函数清理所有可选的 JSON 字符串参数】 ↑↑↑↑↑
+    # --- 新增 --- 对 llm_model_id 进行清理，解决 "string" 的问题
+    llm_model_id = _clean_optional_json_string_input(llm_model_id)
+    # -------------
 
-    # >>> 解析 JSON 字符串参数 <<<
     actual_kb_ids: Optional[List[int]] = None
-    if kb_ids_json:  # 经过上面的清理，现在这里只有非None且非空且非“string”的字符串会进入
+    if kb_ids_json:
         try:
             actual_kb_ids = json.loads(kb_ids_json)
             if not isinstance(actual_kb_ids, list) or not all(isinstance(x, int) for x in actual_kb_ids):
                 raise ValueError("kb_ids 必须是一个整数列表格式的JSON字符串。")
         except (json.JSONDecodeError, ValueError) as e:
-            # 现在这一段错误应该只在用户确实输入了`[1,a]`之类的非法JSON时才会触发，而不是空字符串
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"kb_ids 格式不正确: {e}。应为 JSON 整数列表。")
 
     actual_note_ids: Optional[List[int]] = None
-    if note_ids_json:  # 经过上面的清理，现在这里只有非None且非空且非“string”的字符串会进入
+    if note_ids_json:
         try:
             actual_note_ids = json.loads(note_ids_json)
             if not isinstance(actual_note_ids, list) or not all(isinstance(x, int) for x in actual_note_ids):
@@ -5440,7 +5431,7 @@ async def ai_qa(
                                 detail=f"note_ids 格式不正确: {e}。应为 JSON 整数列表。")
 
     actual_preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
-    if preferred_tools_json:  # 经过上面的清理，现在这里只有非None且非空且非“string”的字符串会进入
+    if preferred_tools_json:
         try:
             parsed_tools = json.loads(preferred_tools_json)
             if not isinstance(parsed_tools, list) or not all(isinstance(x, str) for x in parsed_tools):
@@ -5452,11 +5443,13 @@ async def ai_qa(
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"preferred_tools 格式不正确: {e}。应为 JSON 字符串列表。")
-    # >>> 解析 JSON 字符串参数结束 <<<
 
     # 1. 获取或创建 AI Conversation
     db_conversation: AIConversation
     past_messages_for_llm: List[Dict[str, Any]] = []
+
+    # 标识是否是新创建的对话，用于决定是否在第一轮问答后生成标题
+    is_new_and_first_message_exchange = False
 
     if conversation_id:
         db_conversation = db.query(AIConversation).filter(
@@ -5466,32 +5459,48 @@ async def ai_qa(
         if not db_conversation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定的对话未找到或无权访问。")
 
-        # 加载历史消息作为LLM的上下文
+        # 加载历史消息作为LLM的上下文，并转换为字典格式
         raw_past_messages = db.query(AIConversationMessage).filter(
             AIConversationMessage.conversation_id == db_conversation.id
-        ).order_by(AIConversationMessage.sent_at).limit(10).all()  # 例如，限制为最后10条消息作为上下文
+        ).order_by(AIConversationMessage.sent_at).limit(20).all()  # 限制为最近20条消息
 
-        for msg in raw_past_messages:
-            llm_message = {"role": msg.role, "content": msg.content}
-            if msg.role == "tool_call" and msg.tool_calls_json:
-                llm_message["tool_calls"] = msg.tool_calls_json  # for LLM format
-            elif msg.role == "tool_output" and msg.tool_output_json:
-                llm_message["name"] = "tool_response"  # Default tool name for output
-                llm_message["content"] = json.dumps(msg.tool_output_json, ensure_ascii=False)  # LLM 的工具输出内容
-
-            past_messages_for_llm.append(llm_message)
+        past_messages_for_llm = [msg.to_dict() for msg in raw_past_messages]
 
         print(f"DEBUG_AI_CONV: 加载了 {len(past_messages_for_llm)} 条历史消息作为上下文。")
 
     else:
-        db_conversation = AIConversation(user_id=current_user_id)
+        # 创建新对话时，标题先为 None，表示等待AI生成
+        db_conversation = AIConversation(user_id=current_user_id, title=None)
         db.add(db_conversation)
         db.flush()  # 这里刷新一次以获取新对话的 ID
-        print(f"DEBUG_AI_CONV: 创建了新的对话 session ID: {db_conversation.id}")
+        is_new_and_first_message_exchange = True  # 标记为新对话的首次消息交换
+        print(f"DEBUG_AI_CONV: 创建了新的对话 session ID: {db_conversation.id}，标题待生成。")
 
-    # <<< 文件上传处理逻辑 >>>
+    # --- LLM配置变量的初始化，确保作用域和默认值 ---
+    user_llm_api_type: Optional[str] = None
+    user_llm_api_key: Optional[str] = None
+    user_llm_api_base_url: Optional[str] = None
+    user_llm_model_id_configured: Optional[str] = None
+
+    # 从用户配置中获取LLM信息
+    user_llm_api_type = user.llm_api_type
+    user_llm_api_base_url = user.llm_api_base_url
+    user_llm_model_id_configured = user.llm_model_id  # 用户配置的模型ID
+    llm_model_id_final = llm_model_id or user.llm_model_id  # 优先使用请求中的模型，其次用户默认配置
+
+    if not user_llm_api_type or not user.llm_api_key_encrypted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="User has not configured LLM API type or key. Please configure it in user settings.")
+
+    try:
+        user_llm_api_key = ai_core.decrypt_key(user.llm_api_key_encrypted)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to decrypt LLM API key. Please reconfigure.")
+
+    # 文件上传处理逻辑
     temp_file_ids_for_context: List[int] = []
-    if isinstance(uploaded_file, UploadFile):  # 只有当 uploaded_file 确实是一个 UploadFile 对象时才处理
+    if isinstance(uploaded_file, UploadFile):
         allowed_mime_types = [
             "text/plain", "text/markdown", "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -5504,11 +5513,9 @@ async def ai_qa(
         file_bytes = await uploaded_file.read()
         file_extension = os.path.splitext(uploaded_file.filename)[1]
 
-        # OSS对象名称，确保唯一
         oss_object_name = f"ai_chat_temp_files/{uuid.uuid4().hex}{file_extension}"
 
         try:
-            # 文件上传到OSS
             await oss_utils.upload_file_to_oss(
                 file_bytes=file_bytes,
                 object_name=oss_object_name,
@@ -5516,99 +5523,67 @@ async def ai_qa(
             )
             print(f"DEBUG_AI_QA: 文件 '{uploaded_file.filename}' 上传到OSS成功: {oss_object_name}")
 
-            # 创建 AIConversationTemporaryFile 记录
             temp_file_record = AIConversationTemporaryFile(
                 conversation_id=db_conversation.id,
                 oss_object_name=oss_object_name,
                 original_filename=uploaded_file.filename,
                 file_type=uploaded_file.content_type,
-                status="pending",  # 初始状态为pending
+                status="pending",
                 processing_message="文件已上传，等待处理文本和生成嵌入..."
             )
             db.add(temp_file_record)
-            db.flush()  # 刷新以获取ID
+            db.flush()
 
             temp_file_ids_for_context.append(temp_file_record.id)
 
-            # 异步启动后台文件处理任务
-            from database import SessionLocal  # 确保 SessionLocal 已导入
+            from database import SessionLocal
+            # 创建一个独立的会话用于后台任务，避免与当前请求事务冲突
             background_db_session = SessionLocal()
             asyncio.create_task(
                 ai_core.process_ai_temp_file_in_background(
                     temp_file_record.id,
-                    current_user_id,  # 传递用户ID
+                    current_user_id,
                     oss_object_name,
                     uploaded_file.content_type,
-                    background_db_session  # 传递新的会话
+                    background_db_session
                 )
             )
 
-            # 将文件信息作为用户消息的一部分，提示AI已上传文件
             file_link = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{oss_object_name}"
+            # 将文件信息加入当前查询，提示LLM
             file_prompt = f"\n\n[用户上传了一个文件，名为 '{uploaded_file.filename}' ({uploaded_file.content_type})。链接: {file_link}。请尝试利用其内容。文件内容将通过RAG工具提供。]"
-            query += file_prompt  # 将文件信息加入当前查询，提示LLM
+            query += file_prompt
 
         except Exception as e:
-            db.rollback()  # 文件上传或记录创建失败，回滚
+            db.rollback()
             print(f"ERROR_AI_QA: 处理上传文件失败: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"处理上传文件失败: {e}")
     elif uploaded_file is not None and isinstance(uploaded_file, str) and uploaded_file.strip():
-        # 如果收到了非空字符串，但不是 UploadFile，这意味着客户端发送了错误的数据
-        # 在这里可以日志警告，但不会因此抛出422，而是忽略文件
         print(f"WARNING_AI_QA: 接收到非预期的字符串作为文件内容：'{uploaded_file}'。将忽略此文件上传。")
     else:
-        # uploaded_file 是 None，或者是一个空字符串，按无文件处理
         pass
-    # ↑↑↑↑↑ 【文件上传处理逻辑结束】 ↑↑↑↑↑
-
-    llm_type = user.llm_api_type
-    llm_key_encrypted = user.llm_api_key_encrypted
-    llm_base_url = user.llm_api_base_url
-    llm_model_id_final = llm_model_id or user.llm_model_id  # 优先使用请求中的模型，其次用户默认配置
-
-    if not llm_type or not llm_key_encrypted:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="User has not configured LLM API type or key. Please configure it in user settings.")
-
-    try:
-        llm_key = ai_core.decrypt_key(llm_key_encrypted)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Failed to decrypt LLM API key. Please reconfigure.")
 
     try:
         # 2. 调用 invoke_agent 获取当前轮次的所有消息和最终答案
         agent_raw_response = await ai_core.invoke_agent(
-            db=db,  # 确保传递 db 会话
+            db=db,
             user_id=current_user_id,
-            query=query,  # 这里的 query 可能已经包含了文件上传信息
-            llm_api_type=llm_type,
-            llm_api_key=llm_key,
-            llm_api_base_url=llm_base_url,
+            query=query,
+            llm_api_type=user_llm_api_type,
+            llm_api_key=user_llm_api_key,
+            llm_api_base_url=user_llm_api_base_url,
             llm_model_id=llm_model_id_final,
-            # 使用经过清理和解析后的实际列表。现在这些应该不会是空字符串了
             kb_ids=actual_kb_ids,
             note_ids=actual_note_ids,
             preferred_tools=actual_preferred_tools,
             past_messages=past_messages_for_llm,
-            # <<< 传递临时文件ID到 invoke_agent，以便 RAG 阶段考虑这些文件 >>>
             temp_file_ids=temp_file_ids_for_context,
-            # 为了 execute_tool 中的临时文件查询，也传递 conversation_id
             conversation_id_for_temp_files=db_conversation.id,
             enable_tool_use=use_tools
         )
 
-        response_to_client = schemas.AIQAResponse(
-            answer=agent_raw_response["answer"],
-            answer_mode=agent_raw_response["answer_mode"],
-            llm_type_used=agent_raw_response.get("llm_type_used"),
-            llm_model_used=agent_raw_response.get("llm_model_used"),
-            conversation_id=db_conversation.id,
-            turn_messages=[]  # 先初始化为空，后面填充
-        )
-
         # 3. 持久化当前轮次的所有消息并立即刷新，以便获取 ID 和时间戳
-        messages_to_refresh_and_validate = []  # 用于暂存 db_message 对象
+        messages_for_db_commit = []
         for msg_data in agent_raw_response.get("turn_messages_to_log", []):
             db_message = AIConversationMessage(
                 conversation_id=db_conversation.id,
@@ -5620,25 +5595,71 @@ async def ai_qa(
                 llm_model_used=msg_data.get("llm_model_used")
             )
             db.add(db_message)
-            messages_to_refresh_and_validate.append(db_message)  # 添加到临时列表
+            messages_for_db_commit.append(db_message)
 
-        db.flush()  # 将所有新消息写入数据库（但不提交）
+        db.flush()
 
-        for db_msg in messages_to_refresh_and_validate:
-            db.refresh(db_msg)  # 从数据库加载 id 和 sent_at
-            response_to_client.turn_messages.append(
+        final_turn_messages_for_response: List = []
+        for db_msg in messages_for_db_commit:
+            db.refresh(db_msg)
+            final_turn_messages_for_response.append(
                 schemas.AIConversationMessageResponse.model_validate(db_msg, from_attributes=True)
             )
+
+        # --- IMPORTANT: AI Title Generation Logic for NEW conversations (在第一轮问答后生成标题) ---
+        # 只有当对话是刚刚新建的 (is_new_and_first_message_exchange 为 True) 并且标题仍然是 None 时才尝试生成
+        if is_new_and_first_message_exchange and db_conversation.title is None:
+            first_exchange_messages_from_db = db.query(AIConversationMessage).filter(
+                AIConversationMessage.conversation_id == db_conversation.id
+            ).order_by(AIConversationMessage.sent_at).limit(2).all()
+
+            if len(first_exchange_messages_from_db) >= 2:
+                print(f"DEBUG_AI_TITLE_AUTO: 新对话 {db_conversation.id} 完成首次问答，尝试自动生成标题。")
+                messages_for_title_generation = [msg.to_dict() for msg in first_exchange_messages_from_db]
+
+                try:
+                    ai_generated_title = await ai_core.generate_conversation_title_from_llm(
+                        messages=messages_for_title_generation,
+                        user_llm_api_type=user_llm_api_type,
+                        user_llm_api_key=user_llm_api_key,
+                        user_llm_api_base_url=user_llm_api_base_url,
+                        user_llm_model_id=user_llm_model_id_configured
+                    )
+                    if ai_generated_title and ai_generated_title != "新对话" and ai_generated_title != "无标题对话":
+                        db_conversation.title = ai_generated_title
+                        db.add(db_conversation)
+                        print(f"DEBUG: AI对话 {db_conversation.id} 标题AI生成为 '{db_conversation.title}'。")
+                    else:
+                        db_conversation.title = "新对话"
+                        db.add(db_conversation)
+                        print(
+                            f"DEBUG: LLM生成的标题不具意义 ('{ai_generated_title}')，对话 {db_conversation.id} 保持默认标题。")
+                except Exception as e:
+                    print(f"ERROR: AI自动生成标题失败: {e}. 对话 {db_conversation.id} 标题保持默认。")
+                    db_conversation.title = "新对话"
+                    db.add(db_conversation)
+            else:
+                db_conversation.title = "新对话"
+                db.add(db_conversation)
+                print(f"DEBUG_AI_TITLE_AUTO: 对话 {db_conversation.id} 消息内容不足，标题保持默认。")
 
         # 4. 更新对话的 last_updated 时间
         db_conversation.last_updated = func.now()
         db.add(db_conversation)
 
-        db.commit()  # 提交所有更改，包括新对话（如果创建了）、消息记录和会话更新
+        db.commit()
 
-        # 如果需要，这里可以进一步处理 source_articles 和 search_results
-        response_to_client.source_articles = agent_raw_response.get("source_articles")
-        response_to_client.search_results = agent_raw_response.get("search_results")
+        # 构造最终 AIQAResponse 对象
+        response_to_client = schemas.AIQAResponse(
+            answer=agent_raw_response["answer"],
+            answer_mode=agent_raw_response["answer_mode"],
+            llm_type_used=agent_raw_response.get("llm_type_used"),
+            llm_model_used=agent_raw_response.get("llm_model_used"),
+            conversation_id=db_conversation.id,
+            turn_messages=final_turn_messages_for_response,
+            source_articles=agent_raw_response.get("source_articles"),
+            search_results=agent_raw_response.get("search_results")
+        )
 
         print(f"DEBUG: 用户 {current_user_id} 在对话 {db_conversation.id} 中成功完成AI问答。")
         return response_to_client
@@ -5646,17 +5667,11 @@ async def ai_qa(
     except Exception as e:
         db.rollback()
         print(f"ERROR: AI问答请求失败: {e}. 详细错误: {traceback.format_exc()}")
-        # 如果是新创建的对话，并且在问答过程中失败，可以考虑删除它
-        if not conversation_id and db_conversation.id:  # 新创建的对话且已经有ID
-            try:  # 尝试清理空对话（如果没消息）
-                if db.query(AIConversationMessage).filter(
-                        AIConversationMessage.conversation_id == db_conversation.id).count() == 0:
-                    db.delete(db_conversation)
-                    db.commit()
-                    print(f"DEBUG_AI_CONV_CLEANUP: 问答失败，已删除空对话 {db_conversation.id}。")
-            except Exception as cleanup_e:
-                print(f"ERROR_AI_CONV_CLEANUP: 问答失败后清理空对话 {db_conversation.id} 失败: {cleanup_e}")
-                db.rollback()  # 再次回滚以防清理也出错
+
+        if not conversation_id and db_conversation.id:  # 只有当是新创建的对话且已经有ID时才考虑
+
+            pass
+
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"AI问答失败: {e}")
 
 
@@ -5897,18 +5912,18 @@ async def get_ai_conversation_messages(
     return messages
 
 
-@app.put("/users/me/ai-conversations/{conversation_id}", response_model=schemas.AIConversationResponse,
-         summary="更新指定AI对话的标题")
-async def update_ai_conversation_title(
+@app.get("/users/me/ai-conversations/{conversation_id}/retitle", response_model=schemas.AIConversationResponse,
+         summary="触发AI重新生成指定AI对话的标题并返回")
+async def get_ai_conversation_retitle(
         conversation_id: int,
-        conversation_data: schemas.AIConversationBase,  # 允许更新标题
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    更新指定AI对话的标题。
+    触发AI大模型根据对话内容重新生成并更新标题，然后返回该对话的详细信息（包含新标题）。
+    此接口不接受用户手动提交的标题，其唯一作用是强制AI重新评估对话并生成新标题。
     """
-    print(f"DEBUG: 用户 {current_user_id} 尝试更新AI对话 {conversation_id}。")
+    print(f"DEBUG: 用户 {current_user_id} 触发AI为对话 {conversation_id} 重新生成标题。")
     db_conversation = db.query(AIConversation).filter(
         AIConversation.id == conversation_id,
         AIConversation.user_id == current_user_id
@@ -5916,15 +5931,100 @@ async def update_ai_conversation_title(
     if not db_conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话未找到或无权访问。")
 
-    update_dict = conversation_data.dict(exclude_unset=True)
-    if "title" in update_dict:
-        db_conversation.title = update_dict["title"]
+    # ----- 核心逻辑：强制走AI生成逻辑 -----
+    print(f"DEBUG: AI将根据对话内容强制生成最新标题。")
+
+    # 获取历史消息作为生成标题的上下文 (取所有消息，不再限制数量，让LLM更全面总结)
+    raw_messages = db.query(AIConversationMessage).filter(
+        AIConversationMessage.conversation_id == db_conversation.id
+    ).order_by(AIConversationMessage.sent_at).all()  # 获取所有消息
+
+    if not raw_messages:
+        # 如果对话中没有任何消息，无法生成有意义的标题
+        # 将标题设置为一个明确的空状态或默认
+        db_conversation.title = "空对话"
+        db.add(db_conversation)  # 标记为更新
+        db.commit()  # 提交更改
+        db.refresh(db_conversation)  # 刷新以获取最新状态
+        print(f"WARNING: AI对话 {conversation_id} 中无消息，标题设置为 '空对话'。")
+
+        # 动态计算总消息数 for response (此处为0)
+        conv_response = schemas.AIConversationResponse.model_validate(db_conversation, from_attributes=True)
+        conv_response.total_messages_count = 0
+        return conv_response
+
+    # 将消息反转，以便 ai_core 函数处理时是正序（从旧到新）
+    past_messages_for_llm = [msg.to_dict() for msg in reversed(raw_messages)]  # to_dict() 确保兼容性
+
+    # 获取用户的LLM配置
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    user_llm_api_type: Optional[str] = None
+    user_llm_api_base_url: Optional[str] = None
+    user_llm_model_id_configured: Optional[str] = None
+    user_llm_api_key: Optional[str] = None
+
+    if not current_user_obj.llm_api_type or not current_user_obj.llm_api_key_encrypted:
+        # 如果用户没有配置LLM，则无法生成标题，返回默认标题
+        db_conversation.title = "新对话"
         db.add(db_conversation)
         db.commit()
         db.refresh(db_conversation)
-        print(f"DEBUG: AI对话 {conversation_id} 标题更新为 '{db_conversation.title}'。")
+        print(f"ERROR: 用户 {current_user_id} 未配置LLM API，无法生成标题，使用默认标题。")
+
+        total_messages_count = db.query(AIConversationMessage).filter(
+            AIConversationMessage.conversation_id == db_conversation.id).count()
+        conv_response = schemas.AIConversationResponse.model_validate(db_conversation, from_attributes=True)
+        conv_response.total_messages_count = total_messages_count
+        return conv_response
+
+    user_llm_api_type = current_user_obj.llm_api_type
+    user_llm_api_base_url = current_user_obj.llm_api_base_url
+    user_llm_model_id_configured = current_user_obj.llm_model_id
+
+    try:
+        user_llm_api_key = ai_core.decrypt_key(current_user_obj.llm_api_key_encrypted)
+        print(f"DEBUG_LLM_TITLE_REGEN: 密钥解密成功，使用用户配置的硅基流动 API 密钥为对话生成标题。")
+    except Exception as e:
+        # 如果密钥解密失败，也视为无法生成标题，返回默认标题
+        db_conversation.title = "新对话"
+        db.add(db_conversation)
+        db.commit()
+        db.refresh(db_conversation)
+        print(f"ERROR_LLM_TITLE_REGEN: 解密用户LLM API密钥失败: {e}. 无法生成标题，使用默认标题。")
+        total_messages_count = db.query(AIConversationMessage).filter(
+            AIConversationMessage.conversation_id == db_conversation.id).count()
+        conv_response = schemas.AIConversationResponse.model_validate(db_conversation, from_attributes=True)
+        conv_response.total_messages_count = total_messages_count
+        return conv_response
+
+    if past_messages_for_llm:  # 确保有消息可以用来生成标题
+        try:
+            ai_generated_title = await ai_core.generate_conversation_title_from_llm(
+                messages=past_messages_for_llm,
+                user_llm_api_type=user_llm_api_type,
+                user_llm_api_key=user_llm_api_key,
+                user_llm_api_base_url=user_llm_api_base_url,
+                user_llm_model_id=user_llm_model_id_configured
+            )
+            # 只有当生成的标题有效且不是默认的“新对话”或“无标题对话”时才更新
+            if ai_generated_title and ai_generated_title != "新对话" and ai_generated_title != "无标题对话":
+                db_conversation.title = ai_generated_title
+                print(f"DEBUG: AI对话 {conversation_id} 标题由AI强制生成为 '{db_conversation.title}'。")
+            else:
+                db_conversation.title = "新对话"  # LLM生成不具意义或空，使用默认
+                print(f"DEBUG: LLM生成的标题不具意义 ('{ai_generated_title}')，对话 {conversation_id} 保持默认标题。")
+        except Exception as e:
+            print(f"ERROR: AI自动生成标题失败: {e}. 将使用默认标题。")
+            db_conversation.title = "新对话"  # 自动生成失败时的默认标题
     else:
-        print(f"DEBUG: AI对话 {conversation_id} 无标题更新内容。")
+        db_conversation.title = "新对话"  # 没有消息时（虽然上面已处理），以防万一
+        print(f"DEBUG: AI对话 {conversation_id} 没有历史消息用于生成标题，使用默认标题 '{db_conversation.title}'。")
+    # ----- 核心修改结束 -----
+
+    db.add(db_conversation)  # 标记为更新
+    db.commit()  # 提交更新
+
+    db.refresh(db_conversation)  # 刷新以获取最新状态
 
     # 动态计算总消息数 for response
     total_messages_count = db.query(AIConversationMessage).filter(
@@ -5933,6 +6033,7 @@ async def update_ai_conversation_title(
     conv_response.total_messages_count = total_messages_count
 
     return conv_response
+
 
 
 @app.delete("/users/me/ai-conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT,

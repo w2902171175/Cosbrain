@@ -1356,6 +1356,78 @@ async def invoke_agent(
     return response_data
 
 
+# --- 新增函数：通过LLM生成对话标题 ---
+async def generate_conversation_title_from_llm(
+        messages: List[Dict[str, Any]],
+        user_llm_api_type: str,
+        user_llm_api_key: str,
+        user_llm_api_base_url: Optional[str] = None,
+        user_llm_model_id: Optional[str] = None
+) -> str:
+    """
+    根据对话消息内容，调用LLM自动生成一个简洁的对话标题。
+    最多取最近的10条消息作为输入。
+    """
+    if not messages:
+        print("WARNING_LLM_TITLE: 对话消息为空，无法生成标题。")
+        return "无题对话"
+
+    # 提取最近的10条消息进行总结，并且只保留 'user' 和 'assistant' 角色，仅保留 'content' 字段
+    # 需要将 tool_call 和 tool_output 类型的消息内容也整合进 'content'，方便LLM理解上下文
+    llm_context_messages = []
+    for msg in messages[-10:]:  # 取最近10条消息
+        if msg["role"] == "user":
+            llm_context_messages.append({"role": "user", "content": msg["content"]})
+        elif msg["role"] == "assistant":
+            llm_context_messages.append({"role": "assistant", "content": msg["content"]})
+        elif msg["role"] == "tool_call":
+            # 将工具调用信息总结为文本
+            tool_info = json.dumps(msg.get("tool_calls_json", msg.get("tool_calls", {})), ensure_ascii=False)[:200]
+            llm_context_messages.append({"role": "assistant", "content": f"（AI决定调用工具: {tool_info}...）"})
+        elif msg["role"] == "tool_output":
+            # 将工具输出信息总结为文本
+            output_info = json.dumps(msg.get("tool_output_json", {}), ensure_ascii=False)[:300]
+            llm_context_messages.append({"role": "assistant", "content": f"（工具结果: {output_info}...）"})
+
+    if not llm_context_messages:
+        print("WARNING_LLM_TITLE: 过滤后没有有效的对话消息作为生成标题的上下文。")
+        return "新对话"
+
+    # 构建发送给LLM的完整消息，要求生成标题
+    system_prompt = """你是一个专业的对话总结助手。请简洁地总结提供的对话内容，生成一个长度为3到15个汉字的对话标题。标题应准确反映对话的核心主题，不要包含任何标点符号。直接给出标题，不要有其他前缀或解释。"""
+
+    # 将对话历史作为用户消息的一部分传递给LLM，并在最后添加一个指令让它生成标题
+    llm_input_messages = [{"role": "system", "content": system_prompt}] + llm_context_messages
+    llm_input_messages.append({"role": "user", "content": "请根据以上对话内容，生成一个简洁的标题。"})
+
+    print(f"DEBUG_LLM_TITLE: 准备调用LLM生成标题，消息数量: {len(llm_input_messages)}")
+
+    try:
+        llm_response = await call_llm_api(
+            messages=llm_input_messages,
+            user_llm_api_type=user_llm_api_type,
+            user_llm_api_key=user_llm_api_key,
+            user_llm_api_base_url=user_llm_api_base_url,
+            user_llm_model_id=user_llm_model_id
+        )
+
+        generated_title = llm_response['choices'][0]['message'].get('content', '').strip()
+
+        # 清理生成的标题，去除标点符号，限制长度
+        clean_title = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9\s]', '', generated_title)  # 仅保留中英文、数字和空格
+        clean_title = clean_title.replace(' ', '')  # 移除空格
+        if len(clean_title) > 15:
+            clean_title = clean_title[:15]
+        if not clean_title:  # 如果清理后变为空，给一个默认标题
+            clean_title = "无标题对话"
+
+        print(f"DEBUG_LLM_TITLE: LLM成功生成标题: '{clean_title}'")
+        return clean_title
+    except Exception as e:
+        print(f"ERROR_LLM_TITLE: 调用LLM生成标题失败: {e}. 返回默认标题。")
+        return "新对话"
+
+
 # --- 辅助函数：将古文优雅度转换为数值权重 ---
 def _get_safe_embedding_np(raw_embedding: Any, entity_type: str, entity_id: Any) -> Optional[np.ndarray]:
     """
