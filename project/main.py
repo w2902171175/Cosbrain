@@ -3169,24 +3169,45 @@ async def get_dashboard_projects(
         db: Session = Depends(get_db),
         status_filter: Optional[str] = None
 ):
-    print(f"DEBUG: 获取用户 {current_user_id} 的仪表板项目列表。")
-    # 假设用户参与的项目可以从 Student.projects 关系获取，或者通过 Project 筛选
-    # 这里简化为获取所有项目，实际应根据学生匹配到的项目来
-    query = db.query(Project)
+    """
+    获取当前用户参与的（作为创建者或成员）项目卡片列表。
+    可选择通过 `status_filter` (例如 "进行中", "已完成") 筛选项目。
+    """
+    print(f"DEBUG: 获取用户 {current_user_id} 参与的仪表板项目列表。")
+
+    # 查询条件：用户是项目的创建者 或者 用户是项目的成员
+    # 移除 ProjectMember.status == "active" 条件，因为 ProjectMember 模型没有 status 字段
+    user_is_creator_condition = Project.creator_id == current_user_id
+    user_is_member_condition = db.query(ProjectMember.id).filter(
+        ProjectMember.project_id == Project.id,
+        ProjectMember.student_id == current_user_id
+    ).exists() # 仅检查是否存在成员记录
+
+    query = db.query(Project).filter(or_(user_is_creator_condition, user_is_member_condition))
+
     if status_filter:
         query = query.filter(Project.project_status == status_filter)
 
-    projects = query.all()
-    # 模拟进度，实际可以记录在 StudentProject 或 ProjectTeam 表中
+    # 排序，例如按创建时间或更新时间
+    projects = query.order_by(Project.created_at.desc()).all()
+
     project_cards = []
     for p in projects:
+        # 这里模拟进度。如果项目状态是“进行中”，可以给一个默认的进行中进度（例如 0.5）。
+        # 如果是“已完成”，则为 1.0 (100%)。其他状态（如“待开始”）为 0.0。
+        progress = 0.0
+        if p.project_status == "进行中":
+            progress = 0.5 # 默认进行中进度
+        elif p.project_status == "已完成":
+            progress = 1.0 # 完成项目进度
+
         project_cards.append(schemas.DashboardProjectCard(
             id=p.id,
             title=p.title,
-            progress=np.random.uniform(0.1, 0.9) if p.project_status == "进行中" else (
-                1.0 if p.project_status == "已完成" else 0.0)  # 模拟进度
+            progress=progress
         ))
 
+    print(f"DEBUG: 获取到用户 {current_user_id} 参与的 {len(project_cards)} 个项目卡片。")
     return project_cards
 
 
