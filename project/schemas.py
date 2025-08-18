@@ -1382,7 +1382,7 @@ class UserLLMConfigUpdate(BaseModel):
 class AIConversationMessageBase(BaseModel):
     role: Literal["user", "assistant", "tool_call", "tool_output"] = Field(..., description="消息角色: user, assistant, tool_call, tool_output")
     content: str = Field(..., description="消息内容（文本）")
-    tool_calls_json: Optional[Dict[str, Any]] = Field(None, description="如果角色是'tool_call'，存储原始工具调用的JSON数据")
+    tool_calls_json: Optional[List[Dict[str, Any]]] = Field(None, description="如果角色是'tool_call'，存储原始工具调用的JSON数据")
     tool_output_json: Optional[Dict[str, Any]] = Field(None, description="如果角色是'tool_output'，存储原始工具输出的JSON数据")
     llm_type_used: Optional[str] = Field(None, description="本次消息使用的LLM类型")
     llm_model_used: Optional[str] = Field(None, description="本次消息使用的LLM模型ID")

@@ -927,19 +927,71 @@ async def execute_tool(
                     })
 
         if temp_file_ids and conversation_id_from_args:
+            print(f"DEBUG_RAG_TOOL: 检查 {len(temp_file_ids)} 个临时文件...")
             temp_files_candidate = db.query(AIConversationTemporaryFile).filter(
                 AIConversationTemporaryFile.id.in_(temp_file_ids),
-                AIConversationTemporaryFile.conversation_id == conversation_id_from_args,
-                AIConversationTemporaryFile.status == "completed"
+                AIConversationTemporaryFile.conversation_id == conversation_id_from_args
             ).all()
+            
+            # 打印所有临时文件的状态
+            processing_files = []
+            failed_files = []
+            
             for temp_file in temp_files_candidate:
-                if temp_file.extracted_text and temp_file.extracted_text.strip():
+                print(f"DEBUG_RAG_TOOL: 临时文件 {temp_file.id} - 状态: {temp_file.status}, 文件名: {temp_file.original_filename}")
+                if temp_file.status == "completed" and temp_file.extracted_text and temp_file.extracted_text.strip():
                     context_docs.append({
                         "content": temp_file.original_filename + "\n" + temp_file.extracted_text,
                         "type": "ai_temp_file",
                         "id": temp_file.id,
                         "title": temp_file.original_filename
                     })
+                    print(f"DEBUG_RAG_TOOL: 临时文件 {temp_file.id} 已添加到上下文")
+                elif temp_file.status == "failed":
+                    failed_files.append(temp_file)
+                    print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 处理失败: {temp_file.processing_message}")
+                elif temp_file.status in ["pending", "processing"]:
+                    processing_files.append(temp_file)
+                    print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 仍在处理中，状态: {temp_file.status}")
+                else:
+                    print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 内容为空或无法使用")
+            
+            # 如果有正在处理的文件，给出提示
+            if processing_files:
+                processing_names = [f.original_filename for f in processing_files]
+                processing_message = f"正在处理文件：{', '.join(processing_names)}。请稍后再试，或者您可以继续提问，我会基于其他可用信息回答。"
+                # 将处理中的文件信息添加到对话中
+                context_docs.append({
+                    "content": processing_message,
+                    "type": "system_message", 
+                    "id": "processing_files",
+                    "title": "文件处理状态"
+                })
+                print(f"DEBUG_RAG_TOOL: 添加了处理中文件的提示信息")
+            
+            # 如果有处理失败的文件，给出提示
+            if failed_files:
+                failed_names = [f"{f.original_filename} ({f.processing_message})" for f in failed_files]
+                failed_message = f"以下文件处理失败：{'; '.join(failed_names)}。我将基于其他可用信息回答您的问题。"
+                context_docs.append({
+                    "content": failed_message,
+                    "type": "system_message",
+                    "id": "failed_files", 
+                    "title": "文件处理错误"
+                })
+                print(f"DEBUG_RAG_TOOL: 添加了处理失败文件的提示信息")
+
+        print(f"DEBUG_RAG_TOOL: Collected {len(context_docs)} candidate documents for RAG prior to reranking.")
+        if context_docs:
+            for i, doc in enumerate(context_docs[:5]):  # 仅打印前5个文档的摘要信息
+                content_snippet = doc['content'][:100] + '...' if doc['content'] else 'None'
+                print(
+                    f"DEBUG_RAG_TOOL_CANDIDATE #{i + 1}: Type: {doc['type']}, Title: {doc.get('title', 'N/A')}, Content snippet: {content_snippet}")
+            if len(context_docs) > 5:
+                print(f"DEBUG_RAG_TOOL: ... {len(context_docs) - 5} more candidate documents.")
+        else:
+            print("INFO_RAG_TOOL: No candidate documents (KB, Notes, Temp Files) found for RAG.")
+
 
         if not context_docs:
             return "知识库、笔记或临时文件中没有找到与问题相关的文档信息。"

@@ -1502,39 +1502,61 @@ async def process_ai_temp_file_in_background(
     print(f"DEBUG_AI_TEMP_FILE_PROCESS: 开始后台处理AI临时文件 ID: {temp_file_id} (OSS: {oss_object_name})")
     loop = asyncio.get_running_loop()
     db_temp_file_record = None # 初始化，防止在try块中它未被赋值而finally块需要用
+    
     try:
+        print(f"DEBUG_AI_TEMP_FILE_PROCESS: 步骤1 - 获取数据库记录...")
         # 获取临时文件记录 (需要在新的会话中获取，因为这是独立的任务)
         db_temp_file_record = db_session.query(AIConversationTemporaryFile).filter(AIConversationTemporaryFile.id == temp_file_id).first()
         if not db_temp_file_record:
             print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 在后台处理中未找到。")
             return
 
+        print(f"DEBUG_AI_TEMP_FILE_PROCESS: 步骤2 - 更新状态为processing...")
         db_temp_file_record.status = "processing"
         db_temp_file_record.processing_message = "正在从云存储下载文件..."
         db_session.add(db_temp_file_record)
         db_session.commit() # 立即提交状态更新，让前端能看到
 
         # 从OSS下载文件内容
-        downloaded_bytes = await oss_utils.download_file_from_oss(oss_object_name)
-        if not downloaded_bytes:
-             db_temp_file_record.status = "failed"
-             db_temp_file_record.processing_message = "从云存储下载文件失败或文件内容为空。"
-             db_session.add(db_temp_file_record)
-             db_session.commit()
-             print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 从OSS下载失败或内容为空。")
-             return
+        print(f"DEBUG_AI_TEMP_FILE_PROCESS: 开始从OSS下载文件: {oss_object_name}")
+        try:
+            downloaded_bytes = await oss_utils.download_file_from_oss(oss_object_name)
+            if not downloaded_bytes:
+                 db_temp_file_record.status = "failed"
+                 db_temp_file_record.processing_message = "从云存储下载文件失败或文件内容为空。"
+                 db_session.add(db_temp_file_record)
+                 db_session.commit()
+                 print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 从OSS下载失败或内容为空。")
+                 return
+            print(f"DEBUG_AI_TEMP_FILE_PROCESS: OSS下载成功，文件大小: {len(downloaded_bytes)} 字节")
+        except Exception as oss_error:
+            db_temp_file_record.status = "failed"
+            db_temp_file_record.processing_message = f"OSS下载失败: {oss_error}"
+            db_session.add(db_temp_file_record)
+            db_session.commit()
+            print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} OSS下载异常: {oss_error}")
+            return
 
         db_temp_file_record.processing_message = "正在提取文本..."
         db_session.add(db_temp_file_record)
         db_session.commit()
 
         # 1. 提取文本 (注意：ai_core.extract_text_from_document 是同步的，需要在线程池中运行)
-        extracted_text = await loop.run_in_executor(
-            None,  # 使用默认的线程池执行器
-            ai_core.extract_text_from_document,  # 要执行的同步函数
-            downloaded_bytes,
-            file_type
-        )
+        try:
+            extracted_text = await loop.run_in_executor(
+                None,  # 使用默认的线程池执行器
+                ai_core.extract_text_from_document,  # 要执行的同步函数
+                downloaded_bytes,
+                file_type
+            )
+            print(f"DEBUG_AI_TEMP_FILE_PROCESS: 文件 {temp_file_id} 文本提取成功，长度: {len(extracted_text) if extracted_text else 0}")
+        except Exception as extract_error:
+            db_temp_file_record.status = "failed"
+            db_temp_file_record.processing_message = f"文本提取失败: {extract_error}"
+            db_session.add(db_temp_file_record)
+            db_session.commit()
+            print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 文本提取异常: {extract_error}")
+            return
 
         if not extracted_text:
             db_temp_file_record.status = "failed"
@@ -1565,13 +1587,22 @@ async def process_ai_temp_file_in_background(
             print(f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 用户 {user_id} 未配置硅基流动 API 类型或密钥，临时文件嵌入将使用零向量或默认行为。")
 
 
-        embeddings_list = await ai_core.get_embeddings_from_api(
-            [extracted_text], # 传入提取的文本
-            api_key=owner_llm_api_key,
-            llm_type=owner_llm_type,
-            llm_base_url=owner_llm_base_url,
-            llm_model_id=owner_llm_model_id
-        )
+        db_temp_file_record.processing_message = "正在生成嵌入向量..."
+        db_session.add(db_temp_file_record)
+        db_session.commit()
+
+        try:
+            embeddings_list = await ai_core.get_embeddings_from_api(
+                [extracted_text], # 传入提取的文本
+                api_key=owner_llm_api_key,
+                llm_type=owner_llm_type,
+                llm_base_url=owner_llm_base_url,
+                llm_model_id=owner_llm_model_id
+            )
+            print(f"DEBUG_AI_TEMP_FILE_PROCESS: 文件 {temp_file_id} 嵌入生成成功")
+        except Exception as embedding_error:
+            print(f"WARNING_AI_TEMP_FILE_PROCESS: 文件 {temp_file_id} 嵌入生成失败: {embedding_error}，使用零向量")
+            embeddings_list = []
 
         final_embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
         if embeddings_list and len(embeddings_list) > 0:
@@ -1586,7 +1617,8 @@ async def process_ai_temp_file_in_background(
         db_temp_file_record.processing_message = "文件处理完成，文本已提取，嵌入已生成。"
         db_session.add(db_temp_file_record)
         db_session.commit()
-        print(f"DEBUG_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 处理完成。")
+        print(f"DEBUG_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 处理完成。提取文本长度: {len(extracted_text)} 字符")
+        print(f"DEBUG_AI_TEMP_FILE_PROCESS: 文本内容预览: {extracted_text[:200]}..." if extracted_text else "DEBUG_AI_TEMP_FILE_PROCESS: 提取的文本为空")
 
     except Exception as e:
         print(f"ERROR_AI_TEMP_FILE_PROCESS: 后台处理AI临时文件 {temp_file_id} 发生未预期错误: {type(e).__name__}: {e}")
@@ -6467,6 +6499,45 @@ def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]
     return stripped_str
 
 
+@app.get("/ai/conversations/{conversation_id}/files/status", summary="查询对话中文件处理状态")
+async def get_conversation_files_status(
+        conversation_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """查询指定对话中所有临时文件的处理状态"""
+    # 验证对话归属
+    conversation = db.query(AIConversation).filter(
+        AIConversation.id == conversation_id,
+        AIConversation.user_id == current_user_id
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话不存在或无权访问")
+    
+    # 获取对话中的所有临时文件
+    temp_files = db.query(AIConversationTemporaryFile).filter(
+        AIConversationTemporaryFile.conversation_id == conversation_id
+    ).all()
+    
+    files_status = []
+    for tf in temp_files:
+        files_status.append({
+            "id": tf.id,
+            "filename": tf.original_filename,
+            "status": tf.status,
+            "processing_message": tf.processing_message,
+            "created_at": tf.created_at.isoformat() if tf.created_at else None,
+            "has_content": bool(tf.extracted_text and tf.extracted_text.strip())
+        })
+    
+    return {
+        "conversation_id": conversation_id,
+        "files_count": len(files_status),
+        "files": files_status
+    }
+
+
 @app.post("/ai/qa", response_model=schemas.AIQAResponse, summary="AI智能问答 (通用、RAG或工具调用)")
 async def ai_qa(
         query: str = Form(..., description="用户的问题文本"),
@@ -6477,8 +6548,8 @@ async def ai_qa(
         preferred_tools_json: Optional[str] = Form(None,
                                                    description="AI在工具模式下偏好使用的工具类型列表，格式为JSON字符串。例如: '[\"rag\", \"web_search\"]'"),
         llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),  # <- 这里会从表单接收
-        uploaded_file: Optional[Union[UploadFile, str]] = File(None,
-                                                               description="可选：上传文件（图片或文档）对AI进行提问"),
+        uploaded_file: Optional[UploadFile] = File(None,
+                                                   description="可选：上传文件（图片或文档）对AI进行提问"),
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
@@ -6491,7 +6562,7 @@ async def ai_qa(
     - `use_tools` 为 `True`：LLM将尝试智能选择并调用工具 (RAG、网络搜索、MCP工具)。
     """
     print(
-        f"DEBUG: 用户 {current_user_id} 提问: {query}，使用工具模式: {use_tools}，偏好工具(json): {preferred_tools_json}，文件: {uploaded_file.filename if isinstance(uploaded_file, UploadFile) else (f'非文件类型值: {uploaded_file}' if uploaded_file else '无')}")
+        f"DEBUG: 用户 {current_user_id} 提问: {query}，使用工具模式: {use_tools}，偏好工具(json): {preferred_tools_json}，文件: {uploaded_file.filename if uploaded_file else '无'}")
 
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
@@ -6594,7 +6665,7 @@ async def ai_qa(
 
     # 文件上传处理逻辑
     temp_file_ids_for_context: List[int] = []
-    if isinstance(uploaded_file, UploadFile):
+    if uploaded_file:
         allowed_mime_types = [
             "text/plain", "text/markdown", "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -6626,15 +6697,20 @@ async def ai_qa(
                 processing_message="文件已上传，等待处理文本和生成嵌入..."
             )
             db.add(temp_file_record)
-            db.flush()
-
+            db.flush()  # 获取ID
+            
+            # 立即提交这条记录，确保后台任务能够看到它
+            db.commit()
+            
             temp_file_ids_for_context.append(temp_file_record.id)
 
             from database import SessionLocal
             # 创建一个独立的会话用于后台任务，避免与当前请求事务冲突
             background_db_session = SessionLocal()
-            asyncio.create_task(
-                ai_core.process_ai_temp_file_in_background(
+            
+            # 立即启动后台任务并添加错误处理
+            task = asyncio.create_task(
+                process_ai_temp_file_in_background(
                     temp_file_record.id,
                     current_user_id,
                     oss_object_name,
@@ -6642,6 +6718,20 @@ async def ai_qa(
                     background_db_session
                 )
             )
+            
+            # 添加任务完成回调来处理异常
+            def task_done_callback(task_result):
+                try:
+                    if task_result.exception():
+                        print(f"ERROR_AI_TEMP_FILE_TASK: 后台任务异常: {task_result.exception()}")
+                    else:
+                        print(f"DEBUG_AI_TEMP_FILE_TASK: 后台任务完成")
+                except Exception as e:
+                    print(f"ERROR_AI_TEMP_FILE_TASK: 任务回调异常: {e}")
+            
+            task.add_done_callback(task_done_callback)
+            
+            print(f"DEBUG_AI_QA: 后台文件处理任务已启动，任务ID: {temp_file_record.id}")
 
             file_link = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{oss_object_name}"
             # 将文件信息加入当前查询，提示LLM
@@ -6652,10 +6742,55 @@ async def ai_qa(
             db.rollback()
             print(f"ERROR_AI_QA: 处理上传文件失败: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"处理上传文件失败: {e}")
-    elif uploaded_file is not None and isinstance(uploaded_file, str) and uploaded_file.strip():
-        print(f"WARNING_AI_QA: 接收到非预期的字符串作为文件内容：'{uploaded_file}'。将忽略此文件上传。")
-    else:
-        pass
+
+    # --- 优化：快速检查文件处理状态，不长时间等待 ---
+    if temp_file_ids_for_context:
+        print(f"DEBUG_AI_QA: 检查 {len(temp_file_ids_for_context)} 个临时文件的初始状态...")
+        
+        # 快速检查一次，不等待
+        completed_files = db.query(AIConversationTemporaryFile).filter(
+            AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
+            AIConversationTemporaryFile.status == "completed"
+        ).all()
+        
+        pending_files = db.query(AIConversationTemporaryFile).filter(
+            AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
+            AIConversationTemporaryFile.status.in_(["pending", "processing"])
+        ).all()
+        
+        failed_files = db.query(AIConversationTemporaryFile).filter(
+            AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
+            AIConversationTemporaryFile.status == "failed"
+        ).all()
+        
+        print(f"DEBUG_AI_QA: 文件状态统计 - 已完成: {len(completed_files)}, 处理中: {len(pending_files)}, 失败: {len(failed_files)}")
+        
+        # 如果有文件正在处理，只等待很短时间（最多5秒）
+        if pending_files:
+            print(f"DEBUG_AI_QA: 有文件正在处理中，等待最多5秒...")
+            wait_count = 0
+            max_quick_wait = 5  # 最多等待5秒
+            
+            while wait_count < max_quick_wait and pending_files:
+                await asyncio.sleep(1)
+                wait_count += 1
+                
+                # 重新检查状态
+                pending_files = db.query(AIConversationTemporaryFile).filter(
+                    AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
+                    AIConversationTemporaryFile.status.in_(["pending", "processing"])
+                ).all()
+                
+                if not pending_files:
+                    print(f"DEBUG_AI_QA: 所有文件处理完成，用时 {wait_count} 秒")
+                    break
+            
+            if pending_files:
+                print(f"DEBUG_AI_QA: 快速等待结束，仍有 {len(pending_files)} 个文件在处理中，继续AI查询")
+        
+        # 刷新数据库会话
+        db.expire_all()
+        db.commit()
 
     try:
         # 2. 调用 invoke_agent 获取当前轮次的所有消息和最终答案
