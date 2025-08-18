@@ -89,7 +89,8 @@ class Student(Base):
     llm_api_type = Column(String, nullable=True)
     llm_api_key_encrypted = Column(Text, nullable=True)
     llm_api_base_url = Column(String, nullable=True)
-    llm_model_id = Column(String, nullable=True)
+    llm_model_id = Column(String, nullable=True)  # 保留原字段以兼容性
+    llm_model_ids = Column(Text, nullable=True)  # 新字段：JSON格式存储多个模型ID
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
