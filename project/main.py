@@ -1,7 +1,8 @@
 # project/main.py
 from fastapi.responses import PlainTextResponse, Response
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, Response, Form
-from fastapi.security import OAuth2PasswordBearer,HTTPBearer, HTTPAuthorizationCredentials,OAuth2PasswordRequestForm
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, \
+    Response, Form
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
@@ -13,18 +14,28 @@ from sqlalchemy import and_, or_, ForeignKey
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer
 from dotenv import load_dotenv
-import requests, schemas, secrets, json, os, uuid, asyncio, httpx, re, traceback
+import requests, secrets, json, os, uuid, asyncio, httpx, re, traceback, time
+
 load_dotenv()
 # 密码哈希
 from passlib.context import CryptContext
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, DailyRecord, Folder, CollectedContent,ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow,UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk,ChatRoomMember, ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, AIConversationMessage, ProjectApplication, ProjectMember, KnowledgeBaseFolder,AIConversationTemporaryFile, CourseLike, ProjectLike, ProjectFile
+from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, \
+    DailyRecord, Folder, CollectedContent, ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow, \
+    UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk, ChatRoomMember, \
+    ChatRoomJoinRequest, UserTTSConfig, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, \
+    AIConversationMessage, ProjectApplication, ProjectMember, KnowledgeBaseFolder, AIConversationTemporaryFile, \
+    CourseLike, ProjectLike, ProjectFile
 from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
-from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, AIConversationMessageResponse, CollectedContentSharedItemAddRequest,ProjectApplicationResponse, ProjectApplicationProcess, ProjectMemberResponse
+from schemas import UserTTSConfigBase, UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse, AchievementBase, \
+    AchievementCreate, AchievementUpdate, AchievementResponse, UserAchievementResponse, PointTransactionResponse, \
+    PointsRewardRequest, CountResponse, AIQARequest, AIQAResponse, AIConversationResponse, \
+    AIConversationMessageResponse, CollectedContentSharedItemAddRequest, ProjectApplicationResponse, \
+    ProjectApplicationProcess, ProjectMemberResponse
 
-import ai_core,oss_utils
+import ai_core, oss_utils, schemas
 
 # --- FastAPI 应用实例 ---
 app = FastAPI(
@@ -33,11 +44,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-
 # 令牌认证方案
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # 指向登录接口的URL
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")  # 指向登录接口的URL
 bearer_scheme = HTTPBearer(auto_error=False)
-
 
 # --- 密码哈希上下文 ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -109,12 +118,12 @@ async def is_admin_user(current_user_id: int = Depends(get_current_user_id), db:
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user or not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权操作，此功能仅限系统管理员。")
-    return user # 返回整个用户对象，方便需要用户详情的接口
+    return user  # 返回整个用户对象，方便需要用户详情的接口
 
 
 async def get_active_tts_config(
-    current_user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ) -> Optional[UserTTSConfig]:
     """获取当前用户激活的TTS配置"""
     return db.query(UserTTSConfig).filter(
@@ -155,7 +164,8 @@ async def _award_points(
     )
     db.add(transaction)
 
-    print(f"DEBUG_POINTS_PENDING: 用户 {user.id} 积分变动：{amount}，当前总积分（提交前）：{user.total_points}，原因：{reason}。")
+    print(
+        f"DEBUG_POINTS_PENDING: 用户 {user.id} 积分变动：{amount}，当前总积分（提交前）：{user.total_points}，原因：{reason}。")
 
 
 async def _check_and_award_achievements(db: Session, user_id: int):
@@ -298,9 +308,10 @@ class ConnectionManager:
     def disconnect(self, room_id: int, user_id: int):
         if room_id in self.active_connections and user_id in self.active_connections[room_id]:
             del self.active_connections[room_id][user_id]
-            if not self.active_connections[room_id]: # 如果房间空了，移除房间入口
+            if not self.active_connections[room_id]:  # 如果房间空了，移除房间入口
                 del self.active_connections[room_id]
-            print(f"DEBUG_WS: 用户 {user_id} 离开房间 {room_id}。当前房间连接数: {len(self.active_connections.get(room_id, {}))}")
+            print(
+                f"DEBUG_WS: 用户 {user_id} 离开房间 {room_id}。当前房间连接数: {len(self.active_connections.get(room_id, {}))}")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
@@ -315,7 +326,9 @@ class ConnectionManager:
                 except Exception as e:
                     print(f"ERROR_WS: 广播消息时发生未知错误: {e}")
 
-manager = ConnectionManager() # 创建一个全局的连接管理器实例
+
+manager = ConnectionManager()  # 创建一个全局的连接管理器实例
+
 
 # --- 辅助函数：创建 JWT 访问令牌 ---
 def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None):
@@ -324,11 +337,11 @@ def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None):
     """
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta # 使用 UTC 时间，更严谨
+        expire = datetime.now(timezone.utc) + expires_delta  # 使用 UTC 时间，更严谨
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire}) # 将过期时间添加到payload
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM) # 使用定义的秘密密钥和算法编码
+    to_encode.update({"exp": expire})  # 将过期时间添加到payload
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)  # 使用定义的秘密密钥和算法编码
     return encoded_jwt
 
 
@@ -443,21 +456,21 @@ async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
             print(f"ERROR_MCP: 连接MCP服务失败 (HTTP {status_code}): {e}")
             return schemas.McpStatusResponse(
                 status="failure",
-                message=f"连接MCP服务失败 (HTTP {status_code}): {e.response.text}",
+                message=f"连接MCP服务失败 (HTTP {status_code})",
                 timestamp=datetime.now()
             )
         except httpx.RequestError as e:
             print(f"ERROR_MCP: 连接MCP服务请求错误: {e}")
             return schemas.McpStatusResponse(
                 status="failure",
-                message=f"连接MCP服务请求错误: {e}",
+                message=f"连接MCP服务请求错误",
                 timestamp=datetime.now()
             )
         except Exception as e:
             print(f"ERROR_MCP: 检查MCP服务时发生未知错误: {e}")
             return schemas.McpStatusResponse(
                 status="failure",
-                message=f"内部错误，无法检查MCP服务：{e}",
+                message=f"内部错误，无法检查MCP服务",
                 timestamp=datetime.now()
             )
 
@@ -471,10 +484,10 @@ def _get_text_part(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d") # 格式化日期，只保留年月日
+        return value.strftime("%Y-%m-%d")  # 格式化日期，只保留年月日
     if isinstance(value, (int, float)):
         # 为小时数添加单位，或根据需要返回原始字符串表示
-        return str(value) + "" # 此处不需要加“小时”，因为这只是一个通用函数
+        return str(value) + ""  # 此处不需要加“小时”，因为这只是一个通用函数
     return str(value).strip() if str(value).strip() else ""
 
 
@@ -625,11 +638,11 @@ async def _create_collected_content_item_internal(
             if content_data.shared_item_type == "chat_message" and final_url:
                 if "image/" in (getattr(source_item, 'message_type', '') or getattr(source_item, 'media_url',
                                                                                     '') or '').lower() or re.match(
-                        r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))", final_url, re.IGNORECASE):
+                    r"(https?://.*\.(?:png|jpg|jpeg|gif|webp|bmp))", final_url, re.IGNORECASE):
                     final_type = "image"
                 elif "video/" in (getattr(source_item, 'message_type', '') or getattr(source_item, 'media_url',
                                                                                       '') or '').lower() or re.match(
-                        r"(https?://.*\.(?:mp4|avi|mov|mkv))", final_url, re.IGNORECASE):
+                    r"(https?://.*\.(?:mp4|avi|mov|mkv))", final_url, re.IGNORECASE):
                     final_type = "video"
                 elif final_url.lower().endswith(('.pdf', '.doc', '.docx', '.txt')):  # 常见文档格式
                     final_type = "document"  # Use 'document' for general files
@@ -648,7 +661,7 @@ async def _create_collected_content_item_internal(
                     final_type = "video"
                 elif (hasattr(source_item,
                               'file_type') and source_item.file_type and not source_item.file_type.startswith(
-                        'text/plain')) or \
+                    'text/plain')) or \
                         (hasattr(source_item, 'type') and source_item.type == 'file'):
                     final_type = "file"  # Fallback to generic_file or document
                 elif (hasattr(source_item, 'type') and source_item.type == 'link'):
@@ -709,7 +722,12 @@ async def _create_collected_content_item_internal(
             user_llm_api_key = ai_core.decrypt_key(current_user_obj.llm_api_key_encrypted)
             user_llm_type = current_user_obj.llm_api_type
             user_llm_base_url = current_user_obj.llm_api_base_url
-            user_llm_model_id = current_user_obj.llm_model_id
+            # 优先使用新的多模型配置，fallback到原模型ID
+            user_llm_model_id = ai_core.get_user_model_for_provider(
+                current_user_obj.llm_model_ids,
+                current_user_obj.llm_api_type,
+                current_user_obj.llm_model_id
+            )
             print(f"DEBUG_EMBEDDING_KEY: 使用收藏创建者配置的硅基流动 API 密钥为收藏内容生成嵌入。")
         except Exception as e:
             print(
@@ -825,6 +843,7 @@ async def check_search_engine_connectivity(engine_type: str, api_key: str,
             message=f"无法检查 {engine_type} 搜索引擎连通性: {e}",
             timestamp=datetime.now()
         )
+
 
 # --- 辅助函数：安全地获取文本部分 ---
 def _get_text_part(value: Any) -> str:
@@ -1123,7 +1142,8 @@ async def create_user_tts_config(
         UserTTSConfig.name == tts_config_data.name
     ).first()
     if existing_config:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"已存在同名TTS配置: '{tts_config_data.name}'。")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"已存在同名TTS配置: '{tts_config_data.name}'。")
 
     # 检查是否有其他配置被意外设置为 active (防止前端逻辑错误，这里再确认一次)
     # 理论上数据库约束会处理，但在此业务逻辑层再做一遍，保证数据一致性
@@ -1133,7 +1153,7 @@ async def create_user_tts_config(
             UserTTSConfig.is_active == True
         ).first()
         if active_config_for_user:
-            active_config_for_user.is_active = False # 将旧的激活配置设为非激活
+            active_config_for_user.is_active = False  # 将旧的激活配置设为非激活
             db.add(active_config_for_user)
             print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{active_config_for_user.name}' 置为非激活。")
 
@@ -1153,7 +1173,7 @@ async def create_user_tts_config(
         base_url=tts_config_data.base_url,
         model_id=tts_config_data.model_id,
         voice_name=tts_config_data.voice_name,
-        is_active=tts_config_data.is_active # 如果创建时就设为激活，则激活
+        is_active=tts_config_data.is_active  # 如果创建时就设为激活，则激活
     )
 
     db.add(new_tts_config)
@@ -1163,12 +1183,14 @@ async def create_user_tts_config(
         db.rollback()
         print(f"ERROR_DB: 创建TTS配置发生完整性约束错误: {e}")
         # 捕获数据库层面的活跃配置唯一性冲突
-        if "_owner_id_active_tts_config_uc" in str(e): # 根据models.py中的唯一约束名称判断
-             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="每个用户只能有一个激活的TTS配置。请先设置现有配置为非激活，或更新现有激活配置。")
+        if "_owner_id_active_tts_config_uc" in str(e):  # 根据models.py中的唯一约束名称判断
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="每个用户只能有一个激活的TTS配置。请先设置现有配置为非激活，或更新现有激活配置。")
         elif "_owner_id_tts_config_name_uc" in str(e):
-             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="TTS配置名称已存在。")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="TTS配置名称已存在。")
         else:
-             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="创建TTS配置失败，请检查输入或联系管理员。")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="创建TTS配置失败，请检查输入或联系管理员。")
 
     db.refresh(new_tts_config)
     print(f"DEBUG: 用户 {current_user_id} 成功创建TTS配置: {new_tts_config.name} (ID: {new_tts_config.id})")
@@ -1226,7 +1248,8 @@ async def update_user_tts_config(
             UserTTSConfig.id != config_id
         ).first()
         if existing_name_config:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"TTS配置名称 '{update_data['name']}' 已被使用。")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"TTS配置名称 '{update_data['name']}' 已被使用。")
 
     # 特殊处理 is_active 字段的逻辑：确保只有一个配置为 active
     if "is_active" in update_data and update_data["is_active"] is True:
@@ -1246,7 +1269,7 @@ async def update_user_tts_config(
     if "api_key" in update_data and update_data["api_key"] is not None:
         try:
             db_tts_config.api_key_encrypted = ai_core.encrypt_key(update_data["api_key"])
-            del update_data["api_key"] # 从 update_data 中移除，防止通用循环再次处理
+            del update_data["api_key"]  # 从 update_data 中移除，防止通用循环再次处理
         except Exception as e:
             print(f"ERROR: 加密TTS API密钥失败: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加密API密钥失败。")
@@ -1262,7 +1285,7 @@ async def update_user_tts_config(
         print(f"ERROR_DB: 更新TTS配置发生完整性约束错误: {e}")
         # 根据 models.py 中的唯一约束名称判断
         if "_owner_id_active_tts_config_uc" in str(e):
-             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="每个用户只能有一个激活的TTS配置。")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="每个用户只能有一个激活的TTS配置。")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新TTS配置失败。")
 
     db.refresh(db_tts_config)
@@ -1290,7 +1313,8 @@ async def delete_user_tts_config(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.put("/users/me/tts_configs/{config_id}/set_active", response_model=UserTTSConfigResponse, summary="设置指定TTS配置为激活状态")
+@app.put("/users/me/tts_configs/{config_id}/set_active", response_model=UserTTSConfigResponse,
+         summary="设置指定TTS配置为激活状态")
 async def set_active_user_tts_config(
         config_id: int,
         current_user_id: int = Depends(get_current_user_id),
@@ -1359,7 +1383,7 @@ async def process_document_in_background(
     """
     print(f"DEBUG_DOC_PROCESS: 开始后台处理文档 ID: {document_id}")
     loop = asyncio.get_running_loop()
-    db_document = None # 初始化 db_document, 防止在try块中它未被赋值而finally块需要用
+    db_document = None  # 初始化 db_document, 防止在try块中它未被赋值而finally块需要用
     try:
         # 获取文档对象 (需要在新的会话中获取，因为这是独立的任务)
         db_document = db_session.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
@@ -1374,13 +1398,13 @@ async def process_document_in_background(
 
         # 从OSS下载文件内容
         downloaded_bytes = await oss_utils.download_file_from_oss(oss_object_name)
-        if not downloaded_bytes: # 如果下载失败或文件内容为空
-             db_document.status = "failed"
-             db_document.processing_message = "从云存储下载文件失败或文件内容为空。"
-             db_session.add(db_document)
-             db_session.commit()
-             print(f"ERROR_DOC_PROCESS: 文档 {document_id} 从OSS下载失败或内容为空。")
-             return
+        if not downloaded_bytes:  # 如果下载失败或文件内容为空
+            db_document.status = "failed"
+            db_document.processing_message = "从云存储下载文件失败或文件内容为空。"
+            db_session.add(db_document)
+            db_session.commit()
+            print(f"ERROR_DOC_PROCESS: 文档 {document_id} 从OSS下载失败或内容为空。")
+            return
 
         db_document.processing_message = "正在提取文本..."
         db_session.add(db_document)
@@ -1391,7 +1415,7 @@ async def process_document_in_background(
         extracted_text = await loop.run_in_executor(
             None,  # 使用默认的线程池执行器
             ai_core.extract_text_from_document,  # 要执行的同步函数
-            downloaded_bytes, # 传递字节流
+            downloaded_bytes,  # 传递字节流
             file_type  # 传递给函数的第二个参数
         )
 
@@ -1430,7 +1454,12 @@ async def process_document_in_background(
                 owner_llm_api_key = ai_core.decrypt_key(document_owner.llm_api_key_encrypted)
                 owner_llm_type = document_owner.llm_api_type
                 owner_llm_base_url = document_owner.llm_api_base_url
-                owner_llm_model_id = document_owner.llm_model_id
+                # 优先使用新的多模型配置，fallback到原模型ID
+                owner_llm_model_id = ai_core.get_user_model_for_provider(
+                    document_owner.llm_model_ids,
+                    document_owner.llm_api_type,
+                    document_owner.llm_model_id
+                )
                 print(f"DEBUG_EMBEDDING_KEY_DOC: 使用文档拥有者配置的硅基流动 API 密钥为文档生成嵌入。")
             except Exception as e:
                 print(f"ERROR_EMBEDDING_KEY_DOC: 解密文档拥有者硅基流动 API 密钥失败: {e}。文档嵌入将使用零向量。")
@@ -1477,7 +1506,7 @@ async def process_document_in_background(
     except Exception as e:
         print(f"ERROR_DOC_PROCESS: 后台处理文档 {document_id} 发生未预期错误: {type(e).__name__}: {e}")
         # 尝试更新文档状态为失败
-        if db_document: # 仅当 db_document 已经被正确赋值后才尝试更新其状态
+        if db_document:  # 仅当 db_document 已经被正确赋值后才尝试更新其状态
             try:
                 db_document.status = "failed"
                 db_document.processing_message = f"处理失败: {e}"
@@ -1491,22 +1520,23 @@ async def process_document_in_background(
 
 async def process_ai_temp_file_in_background(
         temp_file_id: int,
-        user_id: int, # 需要用户ID来获取其LLM配置
+        user_id: int,  # 需要用户ID来获取其LLM配置
         oss_object_name: str,
         file_type: str,
-        db_session: Session # 传入会话
+        db_session: Session  # 传入会话
 ):
     """
     在后台处理AI对话的临时上传文件：从OSS下载、提取文本、生成嵌入并更新记录。
     """
     print(f"DEBUG_AI_TEMP_FILE_PROCESS: 开始后台处理AI临时文件 ID: {temp_file_id} (OSS: {oss_object_name})")
     loop = asyncio.get_running_loop()
-    db_temp_file_record = None # 初始化，防止在try块中它未被赋值而finally块需要用
-    
+    db_temp_file_record = None  # 初始化，防止在try块中它未被赋值而finally块需要用
+
     try:
         print(f"DEBUG_AI_TEMP_FILE_PROCESS: 步骤1 - 获取数据库记录...")
         # 获取临时文件记录 (需要在新的会话中获取，因为这是独立的任务)
-        db_temp_file_record = db_session.query(AIConversationTemporaryFile).filter(AIConversationTemporaryFile.id == temp_file_id).first()
+        db_temp_file_record = db_session.query(AIConversationTemporaryFile).filter(
+            AIConversationTemporaryFile.id == temp_file_id).first()
         if not db_temp_file_record:
             print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 在后台处理中未找到。")
             return
@@ -1515,19 +1545,19 @@ async def process_ai_temp_file_in_background(
         db_temp_file_record.status = "processing"
         db_temp_file_record.processing_message = "正在从云存储下载文件..."
         db_session.add(db_temp_file_record)
-        db_session.commit() # 立即提交状态更新，让前端能看到
+        db_session.commit()  # 立即提交状态更新，让前端能看到
 
         # 从OSS下载文件内容
         print(f"DEBUG_AI_TEMP_FILE_PROCESS: 开始从OSS下载文件: {oss_object_name}")
         try:
             downloaded_bytes = await oss_utils.download_file_from_oss(oss_object_name)
             if not downloaded_bytes:
-                 db_temp_file_record.status = "failed"
-                 db_temp_file_record.processing_message = "从云存储下载文件失败或文件内容为空。"
-                 db_session.add(db_temp_file_record)
-                 db_session.commit()
-                 print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 从OSS下载失败或内容为空。")
-                 return
+                db_temp_file_record.status = "failed"
+                db_temp_file_record.processing_message = "从云存储下载文件失败或文件内容为空。"
+                db_session.add(db_temp_file_record)
+                db_session.commit()
+                print(f"ERROR_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 从OSS下载失败或内容为空。")
+                return
             print(f"DEBUG_AI_TEMP_FILE_PROCESS: OSS下载成功，文件大小: {len(downloaded_bytes)} 字节")
         except Exception as oss_error:
             db_temp_file_record.status = "failed"
@@ -1549,7 +1579,8 @@ async def process_ai_temp_file_in_background(
                 downloaded_bytes,
                 file_type
             )
-            print(f"DEBUG_AI_TEMP_FILE_PROCESS: 文件 {temp_file_id} 文本提取成功，长度: {len(extracted_text) if extracted_text else 0}")
+            print(
+                f"DEBUG_AI_TEMP_FILE_PROCESS: 文件 {temp_file_id} 文本提取成功，长度: {len(extracted_text) if extracted_text else 0}")
         except Exception as extract_error:
             db_temp_file_record.status = "failed"
             db_temp_file_record.processing_message = f"文本提取失败: {extract_error}"
@@ -1578,14 +1609,21 @@ async def process_ai_temp_file_in_background(
                 owner_llm_api_key = ai_core.decrypt_key(user_obj.llm_api_key_encrypted)
                 owner_llm_type = user_obj.llm_api_type
                 owner_llm_base_url = user_obj.llm_api_base_url
-                owner_llm_model_id = user_obj.llm_model_id
-                print(f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 使用用户 {user_id} 配置的硅基流动 API 密钥为临时文件生成嵌入。")
+                # 优先使用新的多模型配置，fallback到原模型ID
+                owner_llm_model_id = ai_core.get_user_model_for_provider(
+                    user_obj.llm_model_ids,
+                    user_obj.llm_api_type,
+                    user_obj.llm_model_id
+                )
+                print(
+                    f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 使用用户 {user_id} 配置的硅基流动 API 密钥为临时文件生成嵌入。")
             except Exception as e:
-                print(f"ERROR_AI_TEMP_FILE_EMBEDDING_KEY: 解密用户 {user_id} 硅基流动 API 密钥失败: {e}。临时文件嵌入将使用零向量或默认行为。")
+                print(
+                    f"ERROR_AI_TEMP_FILE_EMBEDDING_KEY: 解密用户 {user_id} 硅基流动 API 密钥失败: {e}。临时文件嵌入将使用零向量或默认行为。")
                 # 即使解密失败，也跳过，使用默认的零向量
         else:
-            print(f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 用户 {user_id} 未配置硅基流动 API 类型或密钥，临时文件嵌入将使用零向量或默认行为。")
-
+            print(
+                f"DEBUG_AI_TEMP_FILE_EMBEDDING_KEY: 用户 {user_id} 未配置硅基流动 API 类型或密钥，临时文件嵌入将使用零向量或默认行为。")
 
         db_temp_file_record.processing_message = "正在生成嵌入向量..."
         db_session.add(db_temp_file_record)
@@ -1593,7 +1631,7 @@ async def process_ai_temp_file_in_background(
 
         try:
             embeddings_list = await ai_core.get_embeddings_from_api(
-                [extracted_text], # 传入提取的文本
+                [extracted_text],  # 传入提取的文本
                 api_key=owner_llm_api_key,
                 llm_type=owner_llm_type,
                 llm_base_url=owner_llm_base_url,
@@ -1617,8 +1655,10 @@ async def process_ai_temp_file_in_background(
         db_temp_file_record.processing_message = "文件处理完成，文本已提取，嵌入已生成。"
         db_session.add(db_temp_file_record)
         db_session.commit()
-        print(f"DEBUG_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 处理完成。提取文本长度: {len(extracted_text)} 字符")
-        print(f"DEBUG_AI_TEMP_FILE_PROCESS: 文本内容预览: {extracted_text[:200]}..." if extracted_text else "DEBUG_AI_TEMP_FILE_PROCESS: 提取的文本为空")
+        print(
+            f"DEBUG_AI_TEMP_FILE_PROCESS: AI临时文件 {temp_file_id} 处理完成。提取文本长度: {len(extracted_text)} 字符")
+        print(
+            f"DEBUG_AI_TEMP_FILE_PROCESS: 文本内容预览: {extracted_text[:200]}..." if extracted_text else "DEBUG_AI_TEMP_FILE_PROCESS: 提取的文本为空")
 
     except Exception as e:
         print(f"ERROR_AI_TEMP_FILE_PROCESS: 后台处理AI临时文件 {temp_file_id} 发生未预期错误: {type(e).__name__}: {e}")
@@ -1632,7 +1672,7 @@ async def process_ai_temp_file_in_background(
             except Exception as update_e:
                 print(f"CRITICAL_ERROR: 无法更新AI临时文件 {temp_file_id} 的失败状态: {update_e}")
     finally:
-        db_session.close() # 确保会话关闭
+        db_session.close()  # 确保会话关闭
 
 
 # --- 用户认证与管理接口 ---
@@ -1687,7 +1727,8 @@ async def register_user(
 
     user_skills_text = ""
     if skills_list_for_db:
-        user_skills_text = ", ".join([s.get("name", "") for s in skills_list_for_db if isinstance(s, dict) and s.get("name")])
+        user_skills_text = ", ".join(
+            [s.get("name", "") for s in skills_list_for_db if isinstance(s, dict) and s.get("name")])
 
     combined_text_content = ". ".join(filter(None, [
         _get_text_part(user_data.name),
@@ -2026,7 +2067,7 @@ async def update_users_me(
             print(f"DEBUG_EMBEDDING_KEY: 使用用户配置的硅基流动 API 密钥进行嵌入生成。")
         except Exception as e:
             print(f"ERROR_EMBEDDING_KEY: 解密用户硅基流动 API 密钥失败: {e}。将跳过嵌入生成。")
-            siliconflow_api_key_for_embedding = None # 解密失败，不要使用
+            siliconflow_api_key_for_embedding = None  # 解密失败，不要使用
     else:
         print(f"DEBUG_EMBEDDING_KEY: 用户未配置硅基流动 API 类型或密钥，使用默认占位符。")
 
@@ -2034,7 +2075,12 @@ async def update_users_me(
     # 确定用于嵌入的API密钥和LLM配置
     user_llm_api_type_for_embedding = db_student.llm_api_type
     user_llm_api_base_url_for_embedding = db_student.llm_api_base_url
-    user_llm_model_id_for_embedding = db_student.llm_model_id
+    # 优先使用新的多模型配置，fallback到原模型ID
+    user_llm_model_id_for_embedding = ai_core.get_user_model_for_provider(
+        db_student.llm_model_ids,
+        db_student.llm_api_type,
+        db_student.llm_model_id
+    )
     user_api_key_for_embedding = None
 
     if db_student.llm_api_key_encrypted:
@@ -2116,6 +2162,15 @@ async def update_llm_config(
     if "llm_model_id" in update_data:
         db_student.llm_model_id = update_data["llm_model_id"]
 
+    # 处理新的多模型ID配置
+    if "llm_model_ids" in update_data and update_data["llm_model_ids"]:
+        try:
+            # 序列化多模型配置为JSON字符串
+            db_student.llm_model_ids = ai_core.serialize_llm_model_ids(update_data["llm_model_ids"])
+            print(f"DEBUG: 用户 {current_user_id} 的多模型ID配置已更新。")
+        except Exception as e:
+            print(f"ERROR: 序列化多模型ID配置失败: {e}。将保持原有配置。")
+
     # 处理 API 密钥的更新：加密或清空
     decrypted_new_key: Optional[str] = None  # 用于后面嵌入重计算
     if "llm_api_key" in update_data and update_data["llm_api_key"]:
@@ -2147,7 +2202,12 @@ async def update_llm_config(
         # 从 db_student 获取最新的 LLM 配置字段，确保是更新后的值
         effective_llm_api_type = db_student.llm_api_type
         effective_llm_api_base_url = db_student.llm_api_base_url
-        effective_llm_model_id = db_student.llm_model_id
+        # 优先使用新的多模型配置，fallback到原模型ID
+        effective_llm_model_id = ai_core.get_user_model_for_provider(
+            db_student.llm_model_ids,
+            db_student.llm_api_type,
+            db_student.llm_model_id
+        )
 
         if decrypted_new_key:  # 如果本次更新显式提供了新的明文密钥
             key_for_embedding_recalc = decrypted_new_key
@@ -2184,11 +2244,137 @@ async def update_llm_config(
         if db_student.embedding is None:
             db_student.embedding = ai_core.GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
-
     db.commit()  # 提交所有更改，包括LLM配置更新和新的嵌入向量
     db.refresh(db_student)
     print(f"DEBUG: 用户 {current_user_id} LLM配置及嵌入更新成功。")
     return db_student
+
+
+@app.get("/llm/available-configs", summary="获取可用的LLM服务商配置信息")
+async def get_available_llm_configs():
+    """
+    获取所有可用的LLM服务商配置信息，包括默认模型和可用模型列表。
+    用于前端展示给用户选择。
+    """
+    configs = ai_core.get_available_llm_configs()
+    return {
+        "available_providers": configs,
+        "description": "每个服务商的可用模型列表，用户可以为每个服务商配置多个模型ID"
+    }
+
+
+@app.get("/users/me/llm-model-ids", summary="获取当前用户的多模型ID配置")
+async def get_user_llm_model_ids(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取当前用户为不同LLM服务商配置的模型ID列表。
+    """
+    db_student = db.query(Student).filter(Student.id == current_user_id).first()
+    if not db_student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    model_ids_dict = ai_core.parse_llm_model_ids(db_student.llm_model_ids)
+
+    return {
+        "llm_model_ids": model_ids_dict,
+        "current_provider": db_student.llm_api_type,
+        "fallback_model_id": db_student.llm_model_id,  # 兼容性字段
+        "available_providers": ai_core.get_available_llm_configs()
+    }
+
+
+@app.get("/users/me/current-provider-models", summary="获取当前用户LLM服务商的可用模型")
+async def get_current_provider_models(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取用户当前LLM服务商配置的模型ID列表，用于在聊天界面显示可选模型。
+    """
+    db_student = db.query(Student).filter(Student.id == current_user_id).first()
+    if not db_student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not db_student.llm_api_type:
+        return {
+            "current_provider": None,
+            "user_configured_models": [],
+            "system_available_models": [],
+            "recommended_model": None,
+            "message": "用户未配置LLM服务商"
+        }
+
+    # 获取用户为当前服务商配置的模型
+    model_ids_dict = ai_core.parse_llm_model_ids(db_student.llm_model_ids)
+    user_models = model_ids_dict.get(db_student.llm_api_type, [])
+
+    # 获取系统为该服务商提供的默认模型列表
+    available_configs = ai_core.get_available_llm_configs()
+    provider_config = available_configs.get(db_student.llm_api_type, {})
+    system_models = provider_config.get("available_models", [])
+
+    # 推荐模型：用户配置的第一个，或系统默认模型
+    recommended_model = None
+    if user_models:
+        recommended_model = user_models[0]
+    elif provider_config.get("default_model"):
+        recommended_model = provider_config["default_model"]
+
+    return {
+        "current_provider": db_student.llm_api_type,
+        "user_configured_models": user_models,
+        "system_available_models": system_models,
+        "recommended_model": recommended_model,
+        "fallback_model": db_student.llm_model_id  # 兼容性字段
+    }
+
+
+@app.put("/users/me/llm-model-ids", summary="更新当前用户的多模型ID配置")
+async def update_user_llm_model_ids(
+        model_ids_update: Dict[str, List[str]],
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    更新当前用户为不同LLM服务商配置的模型ID列表。
+    请求体格式：{"openai": ["gpt-4", "gpt-3.5-turbo"], "zhipu": ["glm-4.5v"]}
+    """
+    db_student = db.query(Student).filter(Student.id == current_user_id).first()
+    if not db_student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    try:
+        # 验证输入格式
+        if not isinstance(model_ids_update, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid format: expected object")
+
+        for provider, models in model_ids_update.items():
+            if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid format for provider '{provider}': expected list of strings"
+                )
+
+        # 序列化并保存
+        db_student.llm_model_ids = ai_core.serialize_llm_model_ids(model_ids_update)
+        db.add(db_student)
+        db.commit()
+        db.refresh(db_student)
+
+        print(f"DEBUG: 用户 {current_user_id} 的多模型ID配置已更新。")
+
+        # 返回更新后的配置
+        updated_model_ids = ai_core.parse_llm_model_ids(db_student.llm_model_ids)
+        return {
+            "message": "模型ID配置更新成功",
+            "llm_model_ids": updated_model_ids
+        }
+
+    except Exception as e:
+        print(f"ERROR: 更新用户 {current_user_id} 多模型ID配置失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新配置失败")
 
 
 # --- 获取可用LLM模型配置接口 ---
@@ -2227,7 +2413,6 @@ async def get_all_projects(current_user_id: int = Depends(get_current_user_id), 
     return projects
 
 
-
 @app.get("/projects/{project_id}", response_model=schemas.ProjectResponse, summary="获取指定项目详情")
 async def get_project_by_id(project_id: int, current_user_id: int = Depends(get_current_user_id),
                             db: Session = Depends(get_db)):
@@ -2238,7 +2423,7 @@ async def get_project_by_id(project_id: int, current_user_id: int = Depends(get_
     print(f"DEBUG: 获取项目 ID: {project_id} 的详情。用户 {current_user_id}。")
     # 使用 joinedload 预加载 project_files 及其 uploader，以及 creator 和 likes，避免N+1查询
     project = db.query(Project).options(
-        joinedload(Project.project_files).joinedload(ProjectFile.uploader), # 确保上传者信息被预加载
+        joinedload(Project.project_files).joinedload(ProjectFile.uploader),  # 确保上传者信息被预加载
         joinedload(Project.creator),
         joinedload(Project.likes)
     ).filter(Project.id == project_id).first()
@@ -2287,10 +2472,6 @@ async def get_project_by_id(project_id: int, current_user_id: int = Depends(get_
 
     print(f"DEBUG: 项目 {project_id} 详情查询完成。可见文件数: {len(visible_project_files)}。")
     return project
-
-
-
-
 
 
 @app.post("/projects/{project_id}/apply", response_model=schemas.ProjectApplicationResponse, summary="学生申请加入项目")
@@ -2376,16 +2557,15 @@ async def apply_to_project(
 # --- Configuration for Frontend URLs (placeholders for now) ---
 # 假设这些是前端应用中显示具体项目、课程、论坛话题详情的路由。
 # 这里的路径是API返回给前端的“软链接”路径，前端需要自行拼接 BASE_URL。
-FRONTEND_PROJECT_DETAIL_URL_PREFIX = "/projects/" # 例如，将形成 /projects/123
-FRONTEND_COURSE_DETAIL_URL_PREFIX = "/courses/"   # 例如，将形成 /courses/456
-FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX = "/forum/topics/" # 例如，将形成 /forum/topics/789
-
+FRONTEND_PROJECT_DETAIL_URL_PREFIX = "/projects/"  # 例如，将形成 /projects/123
+FRONTEND_COURSE_DETAIL_URL_PREFIX = "/courses/"  # 例如，将形成 /courses/456
+FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX = "/forum/topics/"  # 例如，将形成 /forum/topics/789
 
 
 @app.post("/projects/{project_id}/collect", response_model=schemas.CollectedContentResponse, summary="收藏指定项目")
 async def collect_project(
         project_id: int,
-        collect_data: schemas.CollectItemRequestBase, # 使用新的通用请求体
+        collect_data: schemas.CollectItemRequestBase,  # 使用新的通用请求体
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
@@ -2402,19 +2582,19 @@ async def collect_project(
 
     # 构造 CollectedContentBase payload，并填充项目特有的信息
     collected_content_data = schemas.CollectedContentBase(
-        title=collect_data.title or db_project.title, # 优先使用用户自定义标题，否则使用项目标题
-        type="project", # 显式设置为“project”类型
-        url=f"{FRONTEND_PROJECT_DETAIL_URL_PREFIX}{project_id}", # 收藏的URL是前端项目详情页URL
-        content=db_project.description, # 将项目描述作为收藏内容
-        tags=db_project.keywords, # 将项目关键词作为标签
-        priority=collect_data.priority, # 沿用请求中提供的优先级
-        notes=collect_data.notes, # 沿用请求中提供的备注
-        is_starred=collect_data.is_starred, # 沿用请求中提供的星标状态
-        thumbnail=None, # 项目Schema中没有直接的缩略图，可根据实际情况填充
-        author=db_project.creator.name if db_project.creator else None, # 获取项目创建者姓名
-        shared_item_type="project", # 标记为收藏的内部类型
-        shared_item_id=project_id, # 标记为收藏的内部ID
-        folder_id=collect_data.folder_id # 文件夹ID将由 _create_collected_content_item_internal 处理
+        title=collect_data.title or db_project.title,  # 优先使用用户自定义标题，否则使用项目标题
+        type="project",  # 显式设置为“project”类型
+        url=f"{FRONTEND_PROJECT_DETAIL_URL_PREFIX}{project_id}",  # 收藏的URL是前端项目详情页URL
+        content=db_project.description,  # 将项目描述作为收藏内容
+        tags=db_project.keywords,  # 将项目关键词作为标签
+        priority=collect_data.priority,  # 沿用请求中提供的优先级
+        notes=collect_data.notes,  # 沿用请求中提供的备注
+        is_starred=collect_data.is_starred,  # 沿用请求中提供的星标状态
+        thumbnail=None,  # 项目Schema中没有直接的缩略图，可根据实际情况填充
+        author=db_project.creator.name if db_project.creator else None,  # 获取项目创建者姓名
+        shared_item_type="project",  # 标记为收藏的内部类型
+        shared_item_id=project_id,  # 标记为收藏的内部ID
+        folder_id=collect_data.folder_id  # 文件夹ID将由 _create_collected_content_item_internal 处理
     )
 
     # 调用核心辅助函数来创建 CollectedContent 记录
@@ -2439,41 +2619,43 @@ async def collect_course(
     if not db_course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="课程未找到。")
 
-
     # 重新解析或处理课程的 skills，因为它们在数据库中是 JSONB 格式
     course_required_skills_text = ""
     if db_course.required_skills:
         try:
             # 尝试从JSON字符串解析，如果已经是列表则直接使用
-            parsed_skills = json.loads(db_course.required_skills) if isinstance(db_course.required_skills, str) else db_course.required_skills
+            parsed_skills = json.loads(db_course.required_skills) if isinstance(db_course.required_skills,
+                                                                                str) else db_course.required_skills
             if isinstance(parsed_skills, list):
-                course_required_skills_text = ", ".join([skill.get("name", "") for skill in parsed_skills if isinstance(skill, dict) and skill.get("name")])
+                course_required_skills_text = ", ".join(
+                    [skill.get("name", "") for skill in parsed_skills if isinstance(skill, dict) and skill.get("name")])
         except (json.JSONDecodeError, AttributeError):
-            course_required_skills_text = "" # 解析失败时回退
+            course_required_skills_text = ""  # 解析失败时回退
 
     # 构造 CollectedContentBase payload，并填充课程特有的信息
     collected_content_data = schemas.CollectedContentBase(
-        title=collect_data.title or db_course.title, # 优先使用用户自定义标题，否则使用课程标题
-        type="course", # 显式设置为“course”类型
-        url=f"{FRONTEND_COURSE_DETAIL_URL_PREFIX}{course_id}", # 收藏的URL是前端课程详情页URL
-        content=db_course.description + (f" 所需技能: {course_required_skills_text}" if course_required_skills_text else ""), # 将课程描述和技能作为收藏内容
-        tags=db_course.category, # 将课程分类作为标签
-        priority=collect_data.priority, # 沿用请求中提供的优先级
-        notes=collect_data.notes, # 沿用请求中提供的备注
-        is_starred=collect_data.is_starred, # 沿用请求中提供的星标状态
-        thumbnail=db_course.cover_image_url, # 使用课程封面图片作为缩略图
-        author=db_course.instructor, # 使用讲师作为作者
-        shared_item_type="course", # 标记为收藏的内部类型
-        shared_item_id=course_id, # 标记为收藏的内部ID
-        folder_id=collect_data.folder_id # 文件夹ID将由 _create_collected_content_item_internal 处理
+        title=collect_data.title or db_course.title,  # 优先使用用户自定义标题，否则使用课程标题
+        type="course",  # 显式设置为“course”类型
+        url=f"{FRONTEND_COURSE_DETAIL_URL_PREFIX}{course_id}",  # 收藏的URL是前端课程详情页URL
+        content=db_course.description + (
+            f" 所需技能: {course_required_skills_text}" if course_required_skills_text else ""),  # 将课程描述和技能作为收藏内容
+        tags=db_course.category,  # 将课程分类作为标签
+        priority=collect_data.priority,  # 沿用请求中提供的优先级
+        notes=collect_data.notes,  # 沿用请求中提供的备注
+        is_starred=collect_data.is_starred,  # 沿用请求中提供的星标状态
+        thumbnail=db_course.cover_image_url,  # 使用课程封面图片作为缩略图
+        author=db_course.instructor,  # 使用讲师作为作者
+        shared_item_type="course",  # 标记为收藏的内部类型
+        shared_item_id=course_id,  # 标记为收藏的内部ID
+        folder_id=collect_data.folder_id  # 文件夹ID将由 _create_collected_content_item_internal 处理
     )
 
     # 调用核心辅助函数来创建 CollectedContent 记录
     return await _create_collected_content_item_internal(db, current_user_id, collected_content_data)
 
 
-
-@app.post("/forum/topics/{topic_id}/collect", response_model=schemas.CollectedContentResponse, summary="收藏指定论坛话题")
+@app.post("/forum/topics/{topic_id}/collect", response_model=schemas.CollectedContentResponse,
+          summary="收藏指定论坛话题")
 async def collect_forum_topic(
         topic_id: int,
         collect_data: schemas.CollectItemRequestBase,
@@ -2491,22 +2673,21 @@ async def collect_forum_topic(
     if not db_topic:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="论坛话题未找到。")
 
-
     # 构造 CollectedContentBase payload，并填充话题特有的信息
     collected_content_data = schemas.CollectedContentBase(
-        title=collect_data.title or db_topic.title, # 优先使用用户自定义标题，否则使用话题标题
-        type="forum_topic", # 显式设置为“forum_topic”类型
-        url=f"{FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX}{topic_id}", # 收藏的URL是前端话题详情页URL
-        content=db_topic.content, # 将话题内容作为收藏内容
-        tags=db_topic.tags, # 将话题标签作为标签
-        priority=collect_data.priority, # 沿用请求中提供的优先级
-        notes=collect_data.notes, # 沿用请求中提供的备注
-        is_starred=collect_data.is_starred, # 沿用请求中提供的星标状态
-        thumbnail=db_topic.media_url if db_topic.media_type == "image" else None, # 如果话题是图片则使用其URL作为缩略图
-        author=db_topic.owner.name if db_topic.owner else None, # 获取话题发布者姓名
-        shared_item_type="forum_topic", # 标记为收藏的内部类型
-        shared_item_id=topic_id, # 标记为收藏的内部ID
-        folder_id=collect_data.folder_id # 文件夹ID将由 _create_collected_content_item_internal 处理
+        title=collect_data.title or db_topic.title,  # 优先使用用户自定义标题，否则使用话题标题
+        type="forum_topic",  # 显式设置为“forum_topic”类型
+        url=f"{FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX}{topic_id}",  # 收藏的URL是前端话题详情页URL
+        content=db_topic.content,  # 将话题内容作为收藏内容
+        tags=db_topic.tags,  # 将话题标签作为标签
+        priority=collect_data.priority,  # 沿用请求中提供的优先级
+        notes=collect_data.notes,  # 沿用请求中提供的备注
+        is_starred=collect_data.is_starred,  # 沿用请求中提供的星标状态
+        thumbnail=db_topic.media_url if db_topic.media_type == "image" else None,  # 如果话题是图片则使用其URL作为缩略图
+        author=db_topic.owner.name if db_topic.owner else None,  # 获取话题发布者姓名
+        shared_item_type="forum_topic",  # 标记为收藏的内部类型
+        shared_item_id=topic_id,  # 标记为收藏的内部ID
+        folder_id=collect_data.folder_id  # 文件夹ID将由 _create_collected_content_item_internal 处理
     )
 
     # 调用核心辅助函数来创建 CollectedContent 记录
@@ -2677,7 +2858,6 @@ async def get_project_members(
     if not db_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
 
-
     # 2. 查询成员列表，并预加载成员信息
     # 使用 joinedload 避免 N+1 查询问题
     query = db.query(ProjectMember).options(joinedload(ProjectMember.member)).filter(
@@ -2704,7 +2884,7 @@ async def create_course(
         course_data: schemas.CourseBase,
         # 接收 CourseBase 数据 (包含 cover_image_url 和 required_skills)
         # current_user_id: str = Depends(get_current_user_id), # 暂时不需要普通用户ID
-        current_admin_user: Student = Depends(is_admin_user), # 只有管理员能创建课程
+        current_admin_user: Student = Depends(is_admin_user),  # 只有管理员能创建课程
         db: Session = Depends(get_db)
 ):
     print(f"DEBUG: 管理员 {current_admin_user.id} 尝试创建课程: {course_data.title}")
@@ -2725,7 +2905,7 @@ async def create_course(
         _get_text_part(course_data.description),
         _get_text_part(course_data.instructor),
         _get_text_part(course_data.category),
-        _get_text_part(skills_text), # 新增
+        _get_text_part(skills_text),  # 新增
         _get_text_part(course_data.total_lessons),
         _get_text_part(course_data.avg_rating)
     ])).strip()
@@ -2801,13 +2981,14 @@ async def create_course(
 
 
 @app.get("/courses/", response_model=List[schemas.CourseResponse], summary="获取所有课程列表")
-async def get_all_courses(current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)): # 添加 current_user_id 依赖
+async def get_all_courses(current_user_id: int = Depends(get_current_user_id),
+                          db: Session = Depends(get_db)):  # 添加 current_user_id 依赖
     """
     获取平台上所有课程的概要列表。
     """
     query = db.query(Course)
     # 调用新的辅助函数来填充 is_liked_by_current_user
-    courses = await _get_courses_with_details(query, current_user_id, db) # 修改这里
+    courses = await _get_courses_with_details(query, current_user_id, db)  # 修改这里
 
     print(f"DEBUG: 获取所有课程列表，共 {len(courses)} 个。")
 
@@ -2823,9 +3004,9 @@ async def get_all_courses(current_user_id: int = Depends(get_current_user_id), d
     return courses
 
 
-
 @app.get("/courses/{course_id}", response_model=schemas.CourseResponse, summary="获取指定课程详情")
-async def get_course_by_id(course_id: int, current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)): # 添加 current_user_id 依赖
+async def get_course_by_id(course_id: int, current_user_id: int = Depends(get_current_user_id),
+                           db: Session = Depends(get_db)):  # 添加 current_user_id 依赖
     """
     获取指定ID的课程详情。
     """
@@ -2987,7 +3168,6 @@ async def recommend_courses_for_student(
     except Exception as e:
         print(f"ERROR_AI: 推荐课程失败: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"课程推荐失败: {e}")
-
 
 
 @app.post("/projects/", response_model=schemas.ProjectResponse, summary="创建新项目")
@@ -3643,7 +3823,6 @@ async def update_project(
                 db.add(new_project_file)
                 print(f"DEBUG_PROJECT_FILE: 新项目附件文件 '{file_obj.filename}' 已上传并标记添加。")
 
-
         db.flush()  # Ensure all additions/deletions on ProjectFile are reflected in the session before querying relationships
 
         # Populate required_skills and required_roles as needed for text generation
@@ -3813,7 +3992,8 @@ async def update_project(
         )
 
 
-@app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除指定项目（仅限项目创建者或系统管理员）")
+@app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定项目（仅限项目创建者或系统管理员）")
 async def delete_project(
         project_id: int,  # 要删除的项目ID
         current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
@@ -3838,7 +4018,7 @@ async def delete_project(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
 
         current_user = db.query(Student).filter(Student.id == current_user_id).first()
-        if not current_user: # 理论上不会发生，因为 get_current_user_id 已经验证
+        if not current_user:  # 理论上不会发生，因为 get_current_user_id 已经验证
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
         # 2. 权限检查：只有项目创建者或系统管理员可以删除
@@ -3874,16 +4054,16 @@ async def delete_project(
         # 关系设置了 cascade="all, delete-orphan"，所有关联记录将随项目一并删除。
         # ProjectFile 的 before_delete 事件会处理其对应的OSS文件删除。
         db.delete(db_project)
-        db.commit() # 提交删除操作
+        db.commit()  # 提交删除操作
 
         print(f"DEBUG_DELETE_PROJECT: 项目 {project_id} 及其所有关联数据已成功删除。")
-        return Response(status_code=status.HTTP_204_NO_CONTENT) # 返回 204 No Content 表示成功且无响应体
+        return Response(status_code=status.HTTP_204_NO_CONTENT)  # 返回 204 No Content 表示成功且无响应体
 
     except HTTPException as e:
-        db.rollback() # 遇到 HTTPException 也回滚，确保数据库状态一致
+        db.rollback()  # 遇到 HTTPException 也回滚，确保数据库状态一致
         raise e
     except Exception as e:
-        db.rollback() # 捕获其他所有异常并回滚
+        db.rollback()  # 捕获其他所有异常并回滚
         print(f"ERROR_DELETE_PROJECT_GLOBAL: 删除项目 {project_id} 过程中发生未知错误，事务已回滚: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"删除项目失败: {e}")
 
@@ -4061,7 +4241,7 @@ async def delete_project_file(
 async def upload_project_file(
         project_id: int,
         file: UploadFile = File(..., description="要上传的项目文件（文档、代码文件等）"),
-        file_data: schemas.ProjectFileCreate = Depends(), # 使用 Depends() 来解析表单中的JSON数据
+        file_data: schemas.ProjectFileCreate = Depends(),  # 使用 Depends() 来解析表单中的JSON数据
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
@@ -4086,7 +4266,8 @@ async def upload_project_file(
     ).first() is not None
 
     if not (is_project_creator or is_project_member):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权为该项目上传文件。只有项目创建者或成员可以上传。")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="无权为该项目上传文件。只有项目创建者或成员可以上传。")
 
     # 3. 验证文件类型：允许常见的文档、代码、文本文件
     # 允许的文件 MIME 类型（可根据需要扩展）
@@ -4094,25 +4275,26 @@ async def upload_project_file(
         "text/plain",  # .txt, .log
         "text/markdown",  # .md
         "application/pdf",  # .pdf
-        "application/msword", # .doc
+        "application/msword",  # .doc
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
         "application/vnd.ms-excel",  # .xls
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
         "application/vnd.ms-powerpoint",  # .ppt
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
-        "application/json", # .json
-        "application/xml", # .xml
+        "application/json",  # .json
+        "application/xml",  # .xml
         "text/html",  # .html
-        "text/css", # .css
-        "text/javascript", # .js
-        "application/x-python-code", # .pyc
-        "text/x-python", # .py
-        "application/x-sh", # .sh
+        "text/css",  # .css
+        "text/javascript",  # .js
+        "application/x-python-code",  # .pyc
+        "text/x-python",  # .py
+        "application/x-sh",  # .sh
         # ... 更多可以添加
     ]
     # 检查是否是图片，如果不是则通过
     if file.content_type.startswith('image/'):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目文件不支持直接上传图片。请通过项目封面上传图片，或上传图片到其他模块。")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="项目文件不支持直接上传图片。请通过项目封面上传图片，或上传图片到其他模块。")
     if file.content_type not in allowed_mime_types:
         print(f"WARNING_PROJECT_FILE: 不支持的文件类型 '{file.content_type}'。")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -4146,7 +4328,7 @@ async def upload_project_file(
             file_path=file_url,
             file_type=file.content_type,
             size_bytes=file.size,
-            description=file_data.description, # 从表单数据中获取描述
+            description=file_data.description,  # 从表单数据中获取描述
             access_type=file_data.access_type  # 从表单数据中获取访问权限
         )
         db.add(db_project_file)
@@ -4157,24 +4339,25 @@ async def upload_project_file(
         uploader_student = db.query(Student).filter(Student.id == current_user_id).first()
         db_project_file._uploader_name = uploader_student.name if uploader_student else "未知用户"
 
-        print(f"DEBUG_PROJECT_FILE: 项目 {project_id} 文件 '{db_project_file.file_name}' (ID: {db_project_file.id}) 上传成功，状态码 201。")
+        print(
+            f"DEBUG_PROJECT_FILE: 项目 {project_id} 文件 '{db_project_file.file_name}' (ID: {db_project_file.id}) 上传成功，状态码 201。")
         return db_project_file
 
     except HTTPException as e:
         db.rollback()
         if oss_object_name_for_rollback:
             asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
-            print(f"DEBUG_PROJECT_FILE: HTTP Exception raised, attempting to delete OSS file: {oss_object_name_for_rollback}")
+            print(
+                f"DEBUG_PROJECT_FILE: HTTP Exception raised, attempting to delete OSS file: {oss_object_name_for_rollback}")
         raise e
     except Exception as e:
         db.rollback()
         if oss_object_name_for_rollback:
             asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
-            print(f"DEBUG_PROJECT_FILE: Unknown error during project file upload, attempting to delete OSS file: {oss_object_name_for_rollback}")
+            print(
+                f"DEBUG_PROJECT_FILE: Unknown error during project file upload, attempting to delete OSS file: {oss_object_name_for_rollback}")
         print(f"ERROR_PROJECT_FILE: 上传项目文件失败：{e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传项目文件失败: {e}")
-
-
 
 
 # --- AI匹配接口 ---
@@ -4285,7 +4468,7 @@ async def get_dashboard_projects(
     user_is_member_condition = db.query(ProjectMember.id).filter(
         ProjectMember.project_id == Project.id,
         ProjectMember.student_id == current_user_id
-    ).exists() # 仅检查是否存在成员记录
+    ).exists()  # 仅检查是否存在成员记录
 
     query = db.query(Project).filter(or_(user_is_creator_condition, user_is_member_condition))
 
@@ -4301,9 +4484,9 @@ async def get_dashboard_projects(
         # 如果是“已完成”，则为 1.0 (100%)。其他状态（如“待开始”）为 0.0。
         progress = 0.0
         if p.project_status == "进行中":
-            progress = 0.5 # 默认进行中进度
+            progress = 0.5  # 默认进行中进度
         elif p.project_status == "已完成":
-            progress = 1.0 # 完成项目进度
+            progress = 1.0  # 完成项目进度
 
         project_cards.append(schemas.DashboardProjectCard(
             id=p.id,
@@ -4718,7 +4901,7 @@ async def update_note(
 
         # Re-apply mutual exclusivity validation for course/chapter vs folder
         is_course_note_candidate = (new_course_id is not None) or (
-                    new_chapter is not None and new_chapter.strip() != "")
+                new_chapter is not None and new_chapter.strip() != "")
         is_folder_note_candidate = (new_folder_id is not None)
 
         if is_course_note_candidate and is_folder_note_candidate:
@@ -4954,7 +5137,8 @@ async def delete_note(
     if db_note.media_type in ["image", "video", "file"] and db_note.media_url:
         oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
-        object_name = db_note.media_url.replace(oss_base_url_parsed, '', 1) if db_note.media_url.startswith(oss_base_url_parsed) else None
+        object_name = db_note.media_url.replace(oss_base_url_parsed, '', 1) if db_note.media_url.startswith(
+            oss_base_url_parsed) else None
 
         if object_name:
             try:
@@ -5288,7 +5472,7 @@ async def get_knowledge_base_folders(
                 ).all()
                 folder.item_count = len(linked_notes)
                 folder.linked_object_names_for_response = [n.title or n.content[:30] if n.content else n.media_url for
-                                                            n in linked_notes]  # 填充笔记标题或内容片段
+                                                           n in linked_notes]  # 填充笔记标题或内容片段
             elif folder.linked_folder_type == "collected_content_folder":
                 linked_contents = db.query(CollectedContent).filter(
                     CollectedContent.owner_id == current_user_id,
@@ -5296,7 +5480,7 @@ async def get_knowledge_base_folders(
                 ).all()
                 folder.item_count = len(linked_contents)
                 folder.linked_object_names_for_response = [c.title or c.content or c.url for c in
-                                                            linked_contents]  # 填充收藏内容标题、文本或URL
+                                                           linked_contents]  # 填充收藏内容标题、文本或URL
             else:  # Should not happen if schema validation is correct
                 folder.item_count = 0
                 folder.linked_object_names_for_response = []
@@ -5365,7 +5549,7 @@ async def get_knowledge_base_folder_by_id(
             ).all()
             folder.item_count = len(linked_notes)
             folder.linked_object_names_for_response = [n.title or n.content[:30] if n.content else n.media_url for n in
-                                                        linked_notes]
+                                                       linked_notes]
 
             if include_contents:  # 如果请求包含实际内容
                 for note in linked_notes:
@@ -5387,7 +5571,7 @@ async def get_knowledge_base_folder_by_id(
             ).all()
             folder.item_count = len(linked_contents_from_collection)
             folder.linked_object_names_for_response = [c.title or c.content or c.url for c in
-                                                        linked_contents_from_collection]
+                                                       linked_contents_from_collection]
 
             if include_contents:  # 如果请求包含实际内容
                 for content_item in linked_contents_from_collection:
@@ -5488,9 +5672,9 @@ async def update_knowledge_base_folder(
 
     # 检查是否尝试修改为软链接状态，或修改软链接目标
     is_becoming_linked = (new_linked_folder_type and new_linked_folder_id is not None) and (
-                not old_linked_folder_type or old_linked_folder_id is None or new_linked_folder_type != old_linked_folder_type or new_linked_folder_id != old_linked_folder_id)
+            not old_linked_folder_type or old_linked_folder_id is None or new_linked_folder_type != old_linked_folder_type or new_linked_folder_id != old_linked_folder_id)
     is_changing_from_linked_to_regular = (
-                old_linked_folder_type and (new_linked_folder_type is None or new_linked_folder_id is None))
+            old_linked_folder_type and (new_linked_folder_type is None or new_linked_folder_id is None))
 
     # 规则：软链接文件夹和普通文件夹不能互相转换 (避免复杂的数据迁移和业务逻辑)
     if (is_becoming_linked and (
@@ -5672,7 +5856,7 @@ async def update_knowledge_base_folder(
             ).all()
             db_kb_folder.item_count = len(linked_notes)
             db_kb_folder.linked_object_names_for_response = [n.title or n.content[:30] if n.content else n.media_url
-                                                              for n in linked_notes]
+                                                             for n in linked_notes]
         elif db_kb_folder.linked_folder_type == "collected_content_folder":
             linked_contents = db.query(CollectedContent).filter(
                 CollectedContent.owner_id == current_user_id,
@@ -5700,7 +5884,8 @@ async def update_knowledge_base_folder(
     return db_kb_folder
 
 
-@app.delete("/knowledge-bases/{kb_id}/folders/{kb_folder_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除指定知识库文件夹")
+@app.delete("/knowledge-bases/{kb_id}/folders/{kb_folder_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定知识库文件夹")
 async def delete_knowledge_base_folder(
         kb_id: int,
         kb_folder_id: int,
@@ -5730,7 +5915,8 @@ async def delete_knowledge_base_folder(
         # SQLAlchemy 会自动处理不带 cascade 的关系
         db.delete(db_kb_folder)
         db.commit()
-        print(f"DEBUG: 知识库软链接文件夹 {kb_folder_id} (链接到 {db_kb_folder.linked_folder_type} ID: {db_kb_folder.linked_folder_id}) 已成功删除（仅删除链接）。")
+        print(
+            f"DEBUG: 知识库软链接文件夹 {kb_folder_id} (链接到 {db_kb_folder.linked_folder_type} ID: {db_kb_folder.linked_folder_id}) 已成功删除（仅删除链接）。")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     else:
         # 如果是普通文件夹，则删除文件夹及其所有内容（文章、文档、子文件夹）
@@ -5740,7 +5926,6 @@ async def delete_knowledge_base_folder(
         db.commit()
         print(f"DEBUG: 知识库普通文件夹 {kb_folder_id} 及其内容已成功删除。")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-
 
 
 # --- 知识文章 (手动创建内容) 管理接口 ---
@@ -6265,11 +6450,14 @@ async def get_knowledge_base_documents(
         kb_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        kb_folder_id: Optional[int] = Query(None, description="按知识库文件夹ID过滤。传入0表示顶级文件夹（即kb_folder_id为NULL）"), # <<< 新增这行
-        status_filter: Optional[str] = Query(None, description="按处理状态过滤（processing, completed, failed）"),  # 根据状态过滤
-        query_str: Optional[str] = Query(None, description="按关键词搜索文件名"), # 新增搜索功能
-        page: int = Query(1, ge=1, description="页码，从1开始"), # 新增分页
-        page_size: int = Query(20, ge=1, le=100, description="每页文档数量") # 新增分页
+        kb_folder_id: Optional[int] = Query(None,
+                                            description="按知识库文件夹ID过滤。传入0表示顶级文件夹（即kb_folder_id为NULL）"),
+        # <<< 新增这行
+        status_filter: Optional[str] = Query(None, description="按处理状态过滤（processing, completed, failed）"),
+        # 根据状态过滤
+        query_str: Optional[str] = Query(None, description="按关键词搜索文件名"),  # 新增搜索功能
+        page: int = Query(1, ge=1, description="页码，从1开始"),  # 新增分页
+        page_size: int = Query(20, ge=1, le=100, description="每页文档数量")  # 新增分页
 ):
     """
     获取指定知识库下所有知识文档（已上传文件）的列表。
@@ -6288,9 +6476,9 @@ async def get_knowledge_base_documents(
 
     # 2. 应用文件夹过滤
     if kb_folder_id is not None:
-        if kb_folder_id == 0: # 0 表示顶级文件夹，即 kb_folder_id 为 NULL
+        if kb_folder_id == 0:  # 0 表示顶级文件夹，即 kb_folder_id 为 NULL
             query = query.filter(KnowledgeDocument.kb_folder_id.is_(None))
-        else: # 查询特定文件夹下的文档，并验证文件夹存在且属于该知识库
+        else:  # 查询特定文件夹下的文档，并验证文件夹存在且属于该知识库
             existing_kb_folder = db.query(KnowledgeBaseFolder).filter(
                 KnowledgeBaseFolder.id == kb_folder_id,
                 KnowledgeBaseFolder.kb_id == kb_id,
@@ -6308,7 +6496,6 @@ async def get_knowledge_base_documents(
     if query_str:
         query = query.filter(KnowledgeDocument.file_name.ilike(f"%{query_str}%"))
 
-
     # 5. 应用分页
     offset = (page - 1) * page_size
     documents = query.order_by(KnowledgeDocument.created_at.desc()).offset(offset).limit(page_size).all()
@@ -6316,17 +6503,17 @@ async def get_knowledge_base_documents(
     # 6. 填充响应模型中的动态字段：文件夹名称
     # 提前加载所有相关知识库文件夹，避免 N+1 查询
     kb_folder_ids_in_results = list(set([doc.kb_folder_id for doc in documents if doc.kb_folder_id is not None]))
-    kb_folder_map = {f.id: f.name for f in db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id.in_(kb_folder_ids_in_results)).all()}
+    kb_folder_map = {f.id: f.name for f in
+                     db.query(KnowledgeBaseFolder).filter(KnowledgeBaseFolder.id.in_(kb_folder_ids_in_results)).all()}
 
     for doc in documents:
         if doc.kb_folder_id and doc.kb_folder_id in kb_folder_map:
             doc.kb_folder_name_for_response = kb_folder_map[doc.kb_folder_id]
         elif doc.kb_folder_id is None:
-            doc.kb_folder_name_for_response = "未分类" # 或其他表示根目录的字符串
+            doc.kb_folder_name_for_response = "未分类"  # 或其他表示根目录的字符串
 
     print(f"DEBUG: 知识库 {kb_id} 获取到 {len(documents)} 个文档。")
     return documents
-
 
 
 @app.get("/knowledge-bases/{kb_id}/documents/{document_id}", response_model=schemas.KnowledgeDocumentResponse,
@@ -6354,9 +6541,9 @@ async def get_knowledge_document_detail(
         if kb_folder_obj:
             document.kb_folder_name_for_response = kb_folder_obj.name
         else:
-            document.kb_folder_name_for_response = "未知文件夹" # 或处理错误情况
+            document.kb_folder_name_for_response = "未知文件夹"  # 或处理错误情况
     elif document.kb_folder_id is None:
-        document.kb_folder_name_for_response = "未分类" # 或其他表示根目录的字符串
+        document.kb_folder_name_for_response = "未分类"  # 或其他表示根目录的字符串
 
     return document
 
@@ -6383,7 +6570,8 @@ async def delete_knowledge_document(
     # <<< 修改：从OSS删除文件 >>>
     # 从OSS URL中解析出 object_name
     oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
-    object_name = db_document.file_path.replace(oss_base_url_parsed, '', 1) if db_document.file_path.startswith(oss_base_url_parsed) else db_document.file_path
+    object_name = db_document.file_path.replace(oss_base_url_parsed, '', 1) if db_document.file_path.startswith(
+        oss_base_url_parsed) else db_document.file_path
 
     if object_name:
         try:
@@ -6436,8 +6624,8 @@ async def get_document_raw_content(
     if not chunks:
         # 如果没有文本块，但文档状态是 completed，说明可能内容为空
         if document.status == "completed":
-             return {"content": "文档已处理完成，但内容为空。"}
-        else: # 否则还在处理中或失败
+            return {"content": "文档已处理完成，但内容为空。"}
+        else:  # 否则还在处理中或失败
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"文档状态为 '{document.status}'，文本处理尚未完成或失败，暂无内容。")
 
@@ -6484,7 +6672,7 @@ async def get_document_chunks(
 def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]:
     """
     清理从表单接收到的可选JSON字符串参数。
-    将 None, 空字符串, 或'string'字面量（通常来自Swagger UI默认值）转换为 None。
+    将 None, 空字符串, 或常见的默认值字面量转换为 None。
 
     """
     if input_str is None:
@@ -6492,8 +6680,9 @@ def _clean_optional_json_string_input(input_str: Optional[str]) -> Optional[str]
 
     stripped_str = input_str.strip()
 
-    # 将空字符串 或 Swagger UI默认的'string'占位符视为None
-    if stripped_str == "" or stripped_str.lower() == "string":
+    # 将空字符串或常见的默认值占位符视为None
+    invalid_values = ["", "string", "null", "undefined", "none"]
+    if stripped_str.lower() in invalid_values:
         return None
 
     return stripped_str
@@ -6511,15 +6700,15 @@ async def get_conversation_files_status(
         AIConversation.id == conversation_id,
         AIConversation.user_id == current_user_id
     ).first()
-    
+
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话不存在或无权访问")
-    
+
     # 获取对话中的所有临时文件
     temp_files = db.query(AIConversationTemporaryFile).filter(
         AIConversationTemporaryFile.conversation_id == conversation_id
     ).all()
-    
+
     files_status = []
     for tf in temp_files:
         files_status.append({
@@ -6530,7 +6719,7 @@ async def get_conversation_files_status(
             "created_at": tf.created_at.isoformat() if tf.created_at else None,
             "has_content": bool(tf.extracted_text and tf.extracted_text.strip())
         })
-    
+
     return {
         "conversation_id": conversation_id,
         "files_count": len(files_status),
@@ -6543,10 +6732,9 @@ async def ai_qa(
         query: str = Form(..., description="用户的问题文本"),
         conversation_id: Optional[int] = Form(None, description="要继续的对话Session ID。如果为空，则开始新的对话。"),
         kb_ids_json: Optional[str] = Form(None, description="要检索的知识库ID列表，格式为JSON字符串。例如: '[1, 2, 3]'"),
-        note_ids_json: Optional[str] = Form(None, description="要检索的笔记ID列表，格式为JSON字符串。例如: '[10, 11]'"),
         use_tools: Optional[bool] = Form(False, description="是否启用AI智能工具调用"),
         preferred_tools_json: Optional[str] = Form(None,
-                                                   description="AI在工具模式下偏好使用的工具类型列表，格式为JSON字符串。例如: '[\"rag\", \"web_search\"]'"),
+                                                   description="AI在工具模式下偏好使用的工具类型。支持: JSON数组('[\"rag\", \"mcp_tool\"]')、'All'(所有工具)、或None(无工具)"),
         llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),  # <- 这里会从表单接收
         uploaded_file: Optional[UploadFile] = File(None,
                                                    description="可选：上传文件（图片或文档）对AI进行提问"),
@@ -6556,10 +6744,15 @@ async def ai_qa(
     """
     使用LLM进行问答，并支持对话历史记录。
     支持上传文件或图片作为临时上下文对AI进行提问。
+
     - `query`：用户的问题文本。
     - `conversation_id`：如果为空，则开始新的对话。否则，加载指定对话的历史记录作为LLM的上下文。
     - `use_tools` 为 `False`：通用问答。
-    - `use_tools` 为 `True`：LLM将尝试智能选择并调用工具 (RAG、网络搜索、MCP工具)。
+    - `use_tools` 为 `True`：启用工具模式，具体行为取决于 `preferred_tools_json`：
+      * `preferred_tools_json` = `None`：不启用任何工具
+      * `preferred_tools_json` = `"All"`：启用所有可用工具（RAG、网络搜索、MCP工具）
+      * `preferred_tools_json` = `'["rag", "mcp_tool"]'`：只启用指定的工具类型
+      * `preferred_tools_json` = `'[]'`：明确不启用任何工具
     """
     print(
         f"DEBUG: 用户 {current_user_id} 提问: {query}，使用工具模式: {use_tools}，偏好工具(json): {preferred_tools_json}，文件: {uploaded_file.filename if uploaded_file else '无'}")
@@ -6569,7 +6762,6 @@ async def ai_qa(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     kb_ids_json = _clean_optional_json_string_input(kb_ids_json)
-    note_ids_json = _clean_optional_json_string_input(note_ids_json)
     preferred_tools_json = _clean_optional_json_string_input(preferred_tools_json)
     # --- 新增 --- 对 llm_model_id 进行清理，解决 "string" 的问题
     llm_model_id = _clean_optional_json_string_input(llm_model_id)
@@ -6585,29 +6777,46 @@ async def ai_qa(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"kb_ids 格式不正确: {e}。应为 JSON 整数列表。")
 
-    actual_note_ids: Optional[List[int]] = None
-    if note_ids_json:
-        try:
-            actual_note_ids = json.loads(note_ids_json)
-            if not isinstance(actual_note_ids, list) or not all(isinstance(x, int) for x in actual_note_ids):
-                raise ValueError("note_ids 必须是一个整数列表格式的JSON字符串。")
-        except (json.JSONDecodeError, ValueError) as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"note_ids 格式不正确: {e}。应为 JSON 整数列表。")
-
     actual_preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
-    if preferred_tools_json:
+    # 只有在启用工具时才解析preferred_tools_json，避免不必要的处理
+    if use_tools and preferred_tools_json:
         try:
-            parsed_tools = json.loads(preferred_tools_json)
-            if not isinstance(parsed_tools, list) or not all(isinstance(x, str) for x in parsed_tools):
-                raise ValueError("preferred_tools 必须是一个字符串列表格式的JSON字符串。")
-            valid_tool_types = ["rag", "web_search", "mcp_tool"]
-            if not all(tool in valid_tool_types for tool in parsed_tools):
-                raise ValueError(f"preferred_tools 包含无效的工具类型。有效类型: {valid_tool_types}")
-            actual_preferred_tools = parsed_tools
+            # 特殊处理："All" 表示使用所有可用工具
+            if preferred_tools_json.strip().lower() == "all":
+                actual_preferred_tools = "all"  # 特殊标记，表示使用所有工具
+                print(f"DEBUG: 用户选择启用所有可用工具")
+            else:
+                parsed_tools = json.loads(preferred_tools_json)
+
+                # 改进：处理 JSON null 值
+                if parsed_tools is None:
+                    actual_preferred_tools = None
+                    print(f"DEBUG: 用户提供了 JSON null 值，视为不使用任何工具")
+                elif not isinstance(parsed_tools, list):
+                    raise ValueError("偏好工具配置必须是工具名称列表（如 '[\"rag\", \"mcp_tool\"]'）或 'All'。")
+                elif not all(isinstance(x, str) for x in parsed_tools):
+                    raise ValueError("偏好工具配置中的所有工具名称必须是字符串。")
+                elif len(parsed_tools) == 0:
+                    # 如果解析后是空数组，视为None处理
+                    actual_preferred_tools = None
+                    print(f"DEBUG: 用户提供了空的工具列表，视为不使用任何工具")
+                else:
+                    valid_tool_types = ["rag", "web_search", "mcp_tool"]
+                    invalid_tools = [tool for tool in parsed_tools if tool not in valid_tool_types]
+                    if invalid_tools:
+                        raise ValueError(f"包含不支持的工具类型：{invalid_tools}。支持的工具类型：{valid_tool_types}")
+                    actual_preferred_tools = parsed_tools
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"preferred_tools 格式不正确: {e}。应为 JSON 字符串列表。")
+                                detail=f"偏好工具配置格式错误：{str(e)} 请使用工具名称的JSON数组格式（如 '[\"rag\", \"mcp_tool\"]'）或 'All' 表示所有工具。")
+    elif use_tools and not preferred_tools_json:
+        # 改进：当工具启用但没有提供偏好工具配置时，给出更明确的提示
+        actual_preferred_tools = None
+        print(
+            f"DEBUG: 用户 {current_user_id} 启用了工具模式但未指定偏好工具，将不启用任何工具。建议明确指定工具类型或使用 'All'。")
+    elif not use_tools and preferred_tools_json:
+        # 当工具未启用但提供了偏好工具配置时，给出警告信息
+        print(f"WARNING: 用户 {current_user_id} 提供了偏好工具配置但未启用工具模式，偏好工具配置将被忽略。")
 
     # 1. 获取或创建 AI Conversation
     db_conversation: AIConversation
@@ -6650,8 +6859,17 @@ async def ai_qa(
     # 从用户配置中获取LLM信息
     user_llm_api_type = user.llm_api_type
     user_llm_api_base_url = user.llm_api_base_url
-    user_llm_model_id_configured = user.llm_model_id  # 用户配置的模型ID
-    llm_model_id_final = llm_model_id or user.llm_model_id  # 优先使用请求中的模型，其次用户默认配置
+    user_llm_model_id_configured = user.llm_model_id  # 用户配置的模型ID（兼容性）
+
+    # 优先级：1. 请求指定的模型 2. 用户多模型配置 3. 用户单模型配置
+    if llm_model_id:
+        llm_model_id_final = llm_model_id
+    else:
+        llm_model_id_final = ai_core.get_user_model_for_provider(
+            user.llm_model_ids,
+            user.llm_api_type,
+            user.llm_model_id
+        )
 
     if not user_llm_api_type or not user.llm_api_key_encrypted:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -6698,16 +6916,16 @@ async def ai_qa(
             )
             db.add(temp_file_record)
             db.flush()  # 获取ID
-            
+
             # 立即提交这条记录，确保后台任务能够看到它
             db.commit()
-            
+
             temp_file_ids_for_context.append(temp_file_record.id)
 
             from database import SessionLocal
             # 创建一个独立的会话用于后台任务，避免与当前请求事务冲突
             background_db_session = SessionLocal()
-            
+
             # 立即启动后台任务并添加错误处理
             task = asyncio.create_task(
                 process_ai_temp_file_in_background(
@@ -6718,7 +6936,7 @@ async def ai_qa(
                     background_db_session
                 )
             )
-            
+
             # 添加任务完成回调来处理异常
             def task_done_callback(task_result):
                 try:
@@ -6728,9 +6946,9 @@ async def ai_qa(
                         print(f"DEBUG_AI_TEMP_FILE_TASK: 后台任务完成")
                 except Exception as e:
                     print(f"ERROR_AI_TEMP_FILE_TASK: 任务回调异常: {e}")
-            
+
             task.add_done_callback(task_done_callback)
-            
+
             print(f"DEBUG_AI_QA: 后台文件处理任务已启动，任务ID: {temp_file_record.id}")
 
             file_link = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{oss_object_name}"
@@ -6746,48 +6964,49 @@ async def ai_qa(
     # --- 优化：快速检查文件处理状态，不长时间等待 ---
     if temp_file_ids_for_context:
         print(f"DEBUG_AI_QA: 检查 {len(temp_file_ids_for_context)} 个临时文件的初始状态...")
-        
+
         # 快速检查一次，不等待
         completed_files = db.query(AIConversationTemporaryFile).filter(
             AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
             AIConversationTemporaryFile.status == "completed"
         ).all()
-        
+
         pending_files = db.query(AIConversationTemporaryFile).filter(
             AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
             AIConversationTemporaryFile.status.in_(["pending", "processing"])
         ).all()
-        
+
         failed_files = db.query(AIConversationTemporaryFile).filter(
             AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
             AIConversationTemporaryFile.status == "failed"
         ).all()
-        
-        print(f"DEBUG_AI_QA: 文件状态统计 - 已完成: {len(completed_files)}, 处理中: {len(pending_files)}, 失败: {len(failed_files)}")
-        
+
+        print(
+            f"DEBUG_AI_QA: 文件状态统计 - 已完成: {len(completed_files)}, 处理中: {len(pending_files)}, 失败: {len(failed_files)}")
+
         # 如果有文件正在处理，只等待很短时间（最多5秒）
         if pending_files:
             print(f"DEBUG_AI_QA: 有文件正在处理中，等待最多5秒...")
             wait_count = 0
             max_quick_wait = 5  # 最多等待5秒
-            
+
             while wait_count < max_quick_wait and pending_files:
                 await asyncio.sleep(1)
                 wait_count += 1
-                
+
                 # 重新检查状态
                 pending_files = db.query(AIConversationTemporaryFile).filter(
                     AIConversationTemporaryFile.id.in_(temp_file_ids_for_context),
                     AIConversationTemporaryFile.status.in_(["pending", "processing"])
                 ).all()
-                
+
                 if not pending_files:
                     print(f"DEBUG_AI_QA: 所有文件处理完成，用时 {wait_count} 秒")
                     break
-            
+
             if pending_files:
                 print(f"DEBUG_AI_QA: 快速等待结束，仍有 {len(pending_files)} 个文件在处理中，继续AI查询")
-        
+
         # 刷新数据库会话
         db.expire_all()
         db.commit()
@@ -6803,7 +7022,7 @@ async def ai_qa(
             llm_api_base_url=user_llm_api_base_url,
             llm_model_id=llm_model_id_final,
             kb_ids=actual_kb_ids,
-            note_ids=actual_note_ids,
+            # note_ids 参数已移除，不再支持笔记RAG
             preferred_tools=actual_preferred_tools,
             past_messages=past_messages_for_llm,
             temp_file_ids=temp_file_ids_for_context,
@@ -6915,6 +7134,9 @@ async def semantic_search(
     """
     print(f"DEBUG: 用户 {current_user_id} 语义搜索: {search_request.query}，范围: {search_request.item_types}")
 
+    # 记录搜索开始时间
+    search_start_time = time.time()
+
     # 从数据库中加载完整的用户对象
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
@@ -7016,15 +7238,17 @@ async def semantic_search(
         rerank_candidate_texts,
         api_key=user_llm_api_key,  # 传入用户的解密Key
         llm_type=user_llm_type,  # 传入用户的LLM Type
-        llm_base_url=user_llm_base_url  # 尽管 reranker API 不直接用 base_url，但保持参数一致性
+        llm_base_url=user_llm_base_url,  # 尽管 reranker API 不直接用 base_url，但保持参数一致性
+        fallback_to_similarity=True  # 启用回退机制
     )
     # 检查返回的rerank_scores是否是零分数（表示API调用失败或未配置）
     if all(score == 0.0 for score in rerank_scores):
-        print(f"WARNING_AI: 重排服务未能返回有效分数，可能是API配置问题。将回退到嵌入相似度进行排序。")
+        print(f"WARNING_AI: 重排服务未能返回有效分数，使用嵌入相似度作为最终分数。")
         # 如果重排失败，回退到使用粗召回的相似度作为最终相关性得分
         for i, score in enumerate(rerank_scores):  # 遍历所有候选者
             initial_candidates[i]['relevance_score'] = initial_candidates[i]['similarity_stage1']
     else:
+        print(f"DEBUG_AI: 重排服务返回有效分数，使用重排结果。")
         for i, score in enumerate(rerank_scores):
             initial_candidates[i]['relevance_score'] = float(score)
 
@@ -7053,7 +7277,123 @@ async def semantic_search(
         ))
 
     print(f"DEBUG_AI: 语义搜索完成，返回 {len(final_results)} 个结果。")
+
+    # 记录搜索性能
+    search_end_time = time.time()
+    search_duration = search_end_time - search_start_time
+    print(
+        f"PERFORMANCE_AI: 语义搜索耗时 {search_duration:.2f}秒，处理了 {len(searchable_items)} 个候选项，返回 {len(final_results)} 个结果")
+
     return final_results
+
+
+@app.get("/admin/rag/status", summary="RAG功能状态检查（管理员）")
+async def get_rag_status(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    检查RAG功能的整体状态和性能指标（仅管理员可访问）
+    """
+    user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not user or not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可访问此功能")
+
+    try:
+        from rag_utils import rag_monitor
+        stats = rag_monitor.get_stats()
+
+        # 统计系统整体数据
+        total_articles = db.query(KnowledgeArticle).count()
+        articles_with_embedding = db.query(KnowledgeArticle).filter(KnowledgeArticle.embedding.isnot(None)).count()
+        total_documents = db.query(KnowledgeDocument).count()
+        completed_documents = db.query(KnowledgeDocument).filter(KnowledgeDocument.status == "completed").count()
+        total_chunks = db.query(KnowledgeDocumentChunk).count()
+        chunks_with_embedding = db.query(KnowledgeDocumentChunk).filter(
+            KnowledgeDocumentChunk.embedding.isnot(None)).count()
+        total_notes = db.query(Note).count()
+        notes_with_embedding = db.query(Note).filter(Note.embedding.isnot(None)).count()
+
+        return {
+            "status": "ok",
+            "performance_metrics": stats,
+            "data_statistics": {
+                "articles": {
+                    "total": total_articles,
+                    "with_embedding": articles_with_embedding,
+                    "embedding_rate": articles_with_embedding / total_articles if total_articles > 0 else 0
+                },
+                "documents": {
+                    "total": total_documents,
+                    "completed": completed_documents,
+                    "completion_rate": completed_documents / total_documents if total_documents > 0 else 0
+                },
+                "chunks": {
+                    "total": total_chunks,
+                    "with_embedding": chunks_with_embedding,
+                    "embedding_rate": chunks_with_embedding / total_chunks if total_chunks > 0 else 0
+                },
+                "notes": {
+                    "total": total_notes,
+                    "with_embedding": notes_with_embedding,
+                    "embedding_rate": notes_with_embedding / total_notes if total_notes > 0 else 0
+                }
+            }
+        }
+    except ImportError:
+        return {
+            "status": "monitoring_unavailable",
+            "message": "RAG监控模块未启用"
+        }
+
+
+@app.get("/users/me/rag/diagnosis", summary="用户RAG功能诊断")
+async def diagnose_user_rag(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    诊断当前用户的RAG功能配置和数据状态
+    """
+    try:
+        from rag_utils import RAGDebugger
+        diagnosis = RAGDebugger.validate_rag_setup(db, current_user_id)
+        return diagnosis
+    except ImportError:
+        # 如果rag_utils不可用，提供基本诊断
+        user = db.query(Student).filter(Student.id == current_user_id).first()
+        issues = []
+        recommendations = []
+
+        if not user.llm_api_type or user.llm_api_type != "siliconflow":
+            issues.append("未配置SiliconFlow LLM API")
+            recommendations.append("在个人设置中配置SiliconFlow API以启用完整RAG功能")
+
+        if not user.llm_api_key_encrypted:
+            issues.append("未配置LLM API密钥")
+            recommendations.append("添加有效的LLM API密钥")
+
+        # 检查用户内容
+        kb_count = db.query(KnowledgeBase).filter(KnowledgeBase.owner_id == current_user_id).count()
+        article_count = db.query(KnowledgeArticle).filter(KnowledgeArticle.author_id == current_user_id).count()
+        doc_count = db.query(KnowledgeDocument).filter(KnowledgeDocument.owner_id == current_user_id).count()
+        note_count = db.query(Note).filter(Note.owner_id == current_user_id).count()
+
+        if kb_count == 0 and article_count == 0 and doc_count == 0 and note_count == 0:
+            issues.append("没有任何可搜索的内容")
+            recommendations.append("创建知识库、上传文档或添加笔记")
+
+        return {
+            "issues": issues,
+            "recommendations": recommendations,
+            "status": "ok" if not issues else "has_issues",
+            "content_summary": {
+                "knowledge_bases": kb_count,
+                "articles": article_count,
+                "documents": doc_count,
+                "notes": note_count
+            }
+        }
 
 
 @app.get("/users/me/ai-conversations", response_model=List[schemas.AIConversationResponse],
@@ -7262,7 +7602,6 @@ async def get_ai_conversation_retitle(
     conv_response.total_messages_count = total_messages_count
 
     return conv_response
-
 
 
 @app.delete("/users/me/ai-conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT,
@@ -8096,7 +8435,8 @@ async def delete_course_material(
     if db_material.type == "file" and db_material.file_path:
         oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
-        object_name = db_material.file_path.replace(oss_base_url_parsed, '', 1) if db_material.file_path.startswith(oss_base_url_parsed) else db_material.file_path
+        object_name = db_material.file_path.replace(oss_base_url_parsed, '', 1) if db_material.file_path.startswith(
+            oss_base_url_parsed) else db_material.file_path
 
         if object_name:
             try:
@@ -8106,7 +8446,8 @@ async def delete_course_material(
                 print(f"ERROR_COURSE_MATERIAL: 删除OSS文件 {object_name} 失败: {e}")
                 # 这里不抛出异常，即使OSS文件删除失败，也应该允许数据库记录被删除
         else:
-            print(f"WARNING_COURSE_MATERIAL: 材料 {material_id} 的 file_path 无效或非OSS URL: {db_material.file_path}，跳过OSS文件删除。")
+            print(
+                f"WARNING_COURSE_MATERIAL: 材料 {material_id} 的 file_path 无效或非OSS URL: {db_material.file_path}，跳过OSS文件删除。")
 
     db.delete(db_material)
     db.commit()
@@ -8491,9 +8832,9 @@ async def get_collected_content_by_id(
         if folder_obj:
             item.folder_name_for_response = folder_obj.name
         else:
-            item.folder_name_for_response = "未知文件夹" # 或处理错误情况
+            item.folder_name_for_response = "未知文件夹"  # 或处理错误情况
     elif item.folder_id is None:
-        item.folder_name_for_response = "未分类" # 或其他表示根目录的字符串
+        item.folder_name_for_response = "未分类"  # 或其他表示根目录的字符串
     # <<< 新增结束 >>>
 
     return item
@@ -8769,7 +9110,8 @@ async def delete_collected_content(
     if db_item.type in ["file", "image", "video"] and db_item.url:
         oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
-        object_name = db_item.url.replace(oss_base_url_parsed, '', 1) if db_item.url.startswith(oss_base_url_parsed) else None
+        object_name = db_item.url.replace(oss_base_url_parsed, '', 1) if db_item.url.startswith(
+            oss_base_url_parsed) else None
 
         if object_name:
             try:
@@ -8779,7 +9121,8 @@ async def delete_collected_content(
                 print(f"ERROR_COLLECTED_CONTENT: 删除OSS文件 {object_name} 失败: {e}")
                 # 这里不抛出异常，即使OSS文件删除失败，也应该允许数据库记录被删除
         else:
-            print(f"WARNING_COLLECTED_CONTENT: 收藏内容 {content_id} 的 URL ({db_item.url}) 无效或非OSS URL，跳过OSS文件删除。")
+            print(
+                f"WARNING_COLLECTED_CONTENT: 收藏内容 {content_id} 的 URL ({db_item.url}) 无效或非OSS URL，跳过OSS文件删除。")
 
     db.delete(db_item)
     db.commit()
@@ -8804,7 +9147,6 @@ async def create_chat_room(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目不存在。")
             if project.chat_room:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目已有关联聊天室。")
-
 
         if chat_room_data.course_id:
             course = db.query(Course).filter(Course.id == chat_room_data.course_id).first()
@@ -8937,7 +9279,7 @@ async def get_all_chat_rooms(
             room_latest_messages_map[msg.room_id] = {
                 "sender": msg.sender_name or "未知",
                 "content": (msg.content_text[:50] + "..." if msg.content_text and len(msg.content_text) > 50 else (
-                            msg.content_text or ""))
+                        msg.content_text or ""))
             }
 
     # 3. 填充动态统计字段到每个聊天室对象
@@ -9014,7 +9356,8 @@ async def get_chat_room_by_id(
             content_text, sender_name = latest_message_data
             chat_room.last_message = {
                 "sender": sender_name or "未知",
-                "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (content_text or "")
+                "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (
+                            content_text or "")
             }
         else:
             chat_room.last_message = {"sender": "系统", "content": "暂无消息"}
@@ -9232,7 +9575,7 @@ async def set_chat_room_member_role(
 
 
 # 聊天室管理接口部分 - 删除成员
-@app.delete("/chat-rooms/{room_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT, # 改为 204 No Content
+@app.delete("/chat-rooms/{room_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT,  # 改为 204 No Content
             summary="从聊天室移除成员（踢出或离开）")
 async def remove_chat_room_member(
         room_id: int,
@@ -9240,7 +9583,7 @@ async def remove_chat_room_member(
         current_user_id: str = Depends(get_current_user_id),  # 操作者用户ID (现在明确是 str 类型)
         db: Session = Depends(get_db)
 ):
-    current_user_id_int = int(current_user_id) # 将字符串ID转换为整数
+    current_user_id_int = int(current_user_id)  # 将字符串ID转换为整数
 
     print(f"DEBUG: 用户 {current_user_id_int} 尝试从聊天室 {room_id} 移除成员 {member_id}。")
 
@@ -9255,11 +9598,10 @@ async def remove_chat_room_member(
         if not chat_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-
         # 获取目标成员的 ChatRoomMember 记录，且必须是活跃成员才能被操作
         target_membership = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
-            ChatRoomMember.member_id == member_id, # member_id 已经是 int
+            ChatRoomMember.member_id == member_id,  # member_id 已经是 int
             ChatRoomMember.status == "active"
         ).first()
 
@@ -9267,14 +9609,14 @@ async def remove_chat_room_member(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标用户不是该聊天室的活跃成员。")
 
         # 调试打印：查看权限相关的原始值和比较结果
-        print(f"DEBUG_PERM_REMOVE: current_user_id_int={current_user_id_int}, chat_room.creator_id={chat_room.creator_id}, current_user.is_admin={acting_user.is_admin}")
-
+        print(
+            f"DEBUG_PERM_REMOVE: current_user_id_int={current_user_id_int}, chat_room.creator_id={chat_room.creator_id}, current_user.is_admin={acting_user.is_admin}")
 
         # 2. 处理用户自己离开群聊的情况
         if current_user_id_int == member_id:
             print(f"DEBUG_PERM_REMOVE: 判定为用户 {current_user_id_int} 尝试自己离开。")
             # 群主不能通过此接口离开群聊（他们应该使用解散群聊功能）
-            if chat_room.creator_id == current_user_id_int: # 使用 int 型 ID 比较
+            if chat_room.creator_id == current_user_id_int:  # 使用 int 型 ID 比较
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="群主不能通过此接口离开群聊。要解散聊天室请使用解散功能。")
 
@@ -9283,12 +9625,12 @@ async def remove_chat_room_member(
             db.add(target_membership)
             db.commit()
             print(f"DEBUG: 用户 {current_user_id_int} 已成功离开聊天室 {room_id}。")
-            return Response(status_code=status.HTTP_204_NO_CONTENT) # 成功离开，返回 204
+            return Response(status_code=status.HTTP_204_NO_CONTENT)  # 成功离开，返回 204
 
         # 3. 处理踢出他人成员的情况** (`member_id` != `current_user_id_int`)
         print(f"DEBUG_PERM_REMOVE: 判定为用户 {current_user_id_int} 尝试移除他人 {member_id}。")
         # 确定操作者的角色
-        is_creator = (chat_room.creator_id == current_user_id_int) # 使用 int 型 ID 比较
+        is_creator = (chat_room.creator_id == current_user_id_int)  # 使用 int 型 ID 比较
         is_system_admin = acting_user.is_admin
 
         # 如果操作者不是群主也不是系统管理员，则去查询他是否是聊天室管理员
@@ -9303,7 +9645,8 @@ async def remove_chat_room_member(
 
         is_room_admin = (acting_user_membership and acting_user_membership.role == "admin")
 
-        print(f"DEBUG_PERM_REMOVE: is_creator={is_creator}, is_system_admin={is_system_admin}, is_room_admin={is_room_admin}")
+        print(
+            f"DEBUG_PERM_REMOVE: is_creator={is_creator}, is_system_admin={is_system_admin}, is_room_admin={is_room_admin}")
 
         # 确定被操作成员的角色
         target_member_is_creator = (member_id == chat_room.creator_id)
@@ -9344,7 +9687,7 @@ async def remove_chat_room_member(
         db.commit()
 
         print(f"DEBUG: 成员 {member_id} 已成功从聊天室 {room_id} 移除（被踢出）。")
-        return Response(status_code=status.HTTP_204_NO_CONTENT) # 成功踢出，返回 204
+        return Response(status_code=status.HTTP_204_NO_CONTENT)  # 成功踢出，返回 204
 
     except HTTPException as e:
         db.rollback()
@@ -9422,7 +9765,7 @@ async def update_chat_room(
             db_chat_room.last_message = {
                 "sender": sender_name or "未知",
                 "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (
-                            content_text or "")
+                        content_text or "")
             }
         else:
             db_chat_room.last_message = {"sender": "系统", "content": "暂无消息"}
@@ -9471,7 +9814,8 @@ async def delete_chat_room(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
         # 调试打印：查看权限相关的原始值和比较结果
-        print(f"DEBUG_PERM_DELETE_ROOM: current_user_id={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={db_chat_room.creator_id} (type={type(db_chat_room.creator_id)})")
+        print(
+            f"DEBUG_PERM_DELETE_ROOM: current_user_id={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={db_chat_room.creator_id} (type={type(db_chat_room.creator_id)})")
         print(f"DEBUG_PERM_DELETE_ROOM: current_user.is_admin={current_user.is_admin}")
 
         # 核心权限检查：只有群主或系统管理员可以删除此聊天室
@@ -9778,9 +10122,12 @@ async def process_join_request(
 async def send_chat_message(
         room_id: int,
         # 移除 message_data: schemas.ChatMessageCreate = Depends()，我们将手动从 Form 参数构建它
-        content_text: Optional[str] = Form(None, description="消息文本内容，当message_type为'text'时为必填"), # 使用 From 明确接收表单字段
-        message_type: Literal["text", "image", "file", "video", "system_notification"] = Form("text", description="消息类型"), # 使用 From
-        media_url: Optional[str] = Form(None, description="媒体文件OSS URL或外部链接"), # 使用 From
+        content_text: Optional[str] = Form(None, description="消息文本内容，当message_type为'text'时为必填"),
+        # 使用 From 明确接收表单字段
+        message_type: Literal["text", "image", "file", "video", "system_notification"] = Form("text",
+                                                                                              description="消息类型"),
+        # 使用 From
+        media_url: Optional[str] = Form(None, description="媒体文件OSS URL或外部链接"),  # 使用 From
         file: Optional[UploadFile] = File(None, description="上传文件、图片或视频作为消息"),
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
@@ -9818,16 +10165,14 @@ async def send_chat_message(
         if not db_sender:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到。")
 
-
-        final_media_url = media_url # 初始化为 Form 接收到的 media_url
-        final_content_text = content_text # 初始化为 Form 接收到的 content_text
-        final_message_type = message_type # 初始化为 Form 接收到的 message_type
-
+        final_media_url = media_url  # 初始化为 Form 接收到的 media_url
+        final_content_text = content_text  # 初始化为 Form 接收到的 content_text
+        final_message_type = message_type  # 初始化为 Form 接收到的 message_type
 
         # 4. 处理文件上传（如果提供了文件）
         if file:
             # 检查 message_type 是否与文件上传一致
-            if final_message_type not in ["file", "image", "video"]: # 补充了 video 类型检查
+            if final_message_type not in ["file", "image", "video"]:  # 补充了 video 类型检查
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="当上传文件时，message_type 必须为 'file', 'image' 或 'video'。")
 
@@ -9933,7 +10278,7 @@ async def send_chat_message(
         print(f"DEBUG: 聊天室 {room_id} 收到消息 (ID: {db_message.id})。")
         return db_message
 
-    except HTTPException as e: # 捕获FastAPI的异常，包括OSS上传时抛出的
+    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
         db.rollback()
         if oss_object_name_for_rollback:
             asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
@@ -9991,7 +10336,7 @@ async def get_chat_messages(
     # 4. 填充 sender_name
     response_messages = []
     # 预加载所有发送者信息，以避免 N+1 查询问题
-    sender_ids = list(set([msg.sender_id for msg in messages])) # 获取所有不重复的发送者ID
+    sender_ids = list(set([msg.sender_id for msg in messages]))  # 获取所有不重复的发送者ID
     senders_map = {s.id: s.name for s in db.query(Student).filter(Student.id.in_(sender_ids)).all()}
 
     for msg in messages:
@@ -10239,7 +10584,6 @@ async def _get_forum_topics_with_details(query, current_user_id: int, db: Sessio
     return topics
 
 
-
 # --- 辅助函数：获取项目列表并填充动态信息 ---
 async def _get_projects_with_details(query, current_user_id: int, db: Session):
     projects = query.all()
@@ -10251,7 +10595,7 @@ async def _get_projects_with_details(query, current_user_id: int, db: Session):
 
         # 填充 is_liked_by_current_user
         project.is_liked_by_current_user = False
-        if current_user_id: # 只有登录用户才检查是否点赞
+        if current_user_id:  # 只有登录用户才检查是否点赞
             like = db.query(ProjectLike).filter(
                 ProjectLike.owner_id == current_user_id,
                 ProjectLike.project_id == project.id
@@ -10267,7 +10611,7 @@ async def _get_courses_with_details(query, current_user_id: int, db: Session):
     for course in courses:
         # 填充 is_liked_by_current_user
         course.is_liked_by_current_user = False
-        if current_user_id: # 只有登录用户才检查是否点赞
+        if current_user_id:  # 只有登录用户才检查是否点赞
             like = db.query(CourseLike).filter(
                 CourseLike.owner_id == current_user_id,
                 CourseLike.course_id == course.id
@@ -10570,7 +10914,8 @@ async def delete_forum_topic(
     if db_topic.media_type in ["image", "video", "file"] and db_topic.media_url:
         oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
-        object_name = db_topic.media_url.replace(oss_base_url_parsed, '', 1) if db_topic.media_url.startswith(oss_base_url_parsed) else None
+        object_name = db_topic.media_url.replace(oss_base_url_parsed, '', 1) if db_topic.media_url.startswith(
+            oss_base_url_parsed) else None
 
         if object_name:
             try:
@@ -10580,7 +10925,8 @@ async def delete_forum_topic(
                 print(f"ERROR_FORUM: 删除话题 {topic_id} 关联的OSS文件 {object_name} 失败: {e}")
                 # 即使OSS文件删除失败，也应该允许数据库记录被删除
         else:
-            print(f"WARNING_FORUM: 话题 {topic_id} 的 media_url ({db_topic.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
+            print(
+                f"WARNING_FORUM: 话题 {topic_id} 的 media_url ({db_topic.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
 
     # SQLAlchemy的cascade="all, delete-orphan"会在db.delete(db_topic)时自动处理所有评论和点赞
     db.delete(db_topic)
@@ -10997,7 +11343,8 @@ async def delete_forum_comment(
     if db_comment.media_type in ["image", "video", "file"] and db_comment.media_url:
         oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
-        object_name = db_comment.media_url.replace(oss_base_url_parsed, '', 1) if db_comment.media_url.startswith(oss_base_url_parsed) else None
+        object_name = db_comment.media_url.replace(oss_base_url_parsed, '', 1) if db_comment.media_url.startswith(
+            oss_base_url_parsed) else None
 
         if object_name:
             try:
@@ -11007,7 +11354,8 @@ async def delete_forum_comment(
                 print(f"ERROR_FORUM: 删除评论 {comment_id} 关联的OSS文件 {object_name} 失败: {e}")
                 # 即使OSS文件删除失败，也应该允许数据库记录被删除
         else:
-            print(f"WARNING_FORUM: 评论 {comment_id} 的 media_url ({db_comment.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
+            print(
+                f"WARNING_FORUM: 评论 {comment_id} 的 media_url ({db_comment.media_url}) 无效或非OSS URL，跳过OSS文件删除。")
 
     # SQLAlchemy的cascade="all, delete-orphan"会在db.delete(db_comment)时自动处理所有子评论和点赞
     db.delete(db_comment)
@@ -11029,14 +11377,16 @@ async def like_forum_item(
     点赞成功后，为被点赞的话题/评论的作者奖励积分，并检查其成就。
     """
     print(f"DEBUG: 用户 {current_user_id} 尝试点赞。")
-    try: # 将整个接口逻辑包裹在一个 try 块中，统一提交
+    try:  # 将整个接口逻辑包裹在一个 try 块中，统一提交
         topic_id = like_data.get("topic_id")
         comment_id = like_data.get("comment_id")
 
         if not topic_id and not comment_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either topic_id or comment_id must be provided.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Either topic_id or comment_id must be provided.")
         if topic_id and comment_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only one of topic_id or comment_id can be provided.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Only one of topic_id or comment_id can be provided.")
 
         existing_like = None
         target_item_owner_id = None
@@ -11051,8 +11401,8 @@ async def like_forum_item(
                 if not target_item:
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum topic not found.")
                 target_item.likes_count += 1
-                db.add(target_item) # 在会话中更新点赞数
-                target_item_owner_id = target_item.owner_id # 获取话题作者ID
+                db.add(target_item)  # 在会话中更新点赞数
+                target_item_owner_id = target_item.owner_id  # 获取话题作者ID
                 related_entity_type = "forum_topic"
                 related_entity_id = topic_id
         elif comment_id:
@@ -11063,8 +11413,8 @@ async def like_forum_item(
                 if not target_item:
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forum comment not found.")
                 target_item.likes_count += 1
-                db.add(target_item) # 在会话中更新点赞数
-                target_item_owner_id = target_item.owner_id # 获取评论作者ID
+                db.add(target_item)  # 在会话中更新点赞数
+                target_item_owner_id = target_item.owner_id  # 获取评论作者ID
                 related_entity_type = "forum_comment"
                 related_entity_id = comment_id
 
@@ -11077,14 +11427,14 @@ async def like_forum_item(
             comment_id=comment_id
         )
 
-        db.add(db_like) # 将点赞记录添加到会话
+        db.add(db_like)  # 将点赞记录添加到会话
 
         # 在检查成就前，强制刷新会话，使 db_like 和 target_item 对查询可见
-        db.flush() # 确保点赞记录和被点赞项的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
+        db.flush()  # 确保点赞记录和被点赞项的更新已刷新到数据库会话，供 _check_and_award_achievements 查询
         print(f"DEBUG_FLUSH: 点赞记录 {db_like.id} 和被点赞项更新已刷新到会话。")
 
         # 为被点赞的作者奖励积分和检查成就
-        if target_item_owner_id and target_item_owner_id != current_user_id: # 奖励积分，但不能点赞自己给自己加分
+        if target_item_owner_id and target_item_owner_id != current_user_id:  # 奖励积分，但不能点赞自己给自己加分
             owner_user = db.query(Student).filter(Student.id == target_item_owner_id).first()
             if owner_user:
                 like_points = 5
@@ -11098,15 +11448,17 @@ async def like_forum_item(
                     related_entity_id=related_entity_id
                 )
                 await _check_and_award_achievements(db, target_item_owner_id)
-                print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {target_item_owner_id} 因获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
+                print(
+                    f"DEBUG_POINTS_ACHIEVEMENT: 用户 {target_item_owner_id} 因获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
 
-        db.commit() # 这里是唯一也是最终的提交
-        db.refresh(db_like) # 提交后刷新db_like以返回完整对象
+        db.commit()  # 这里是唯一也是最终的提交
+        db.refresh(db_like)  # 提交后刷新db_like以返回完整对象
 
-        print(f"DEBUG: 用户 {current_user_id} 点赞成功 (Topic ID: {topic_id or 'N/A'}, Comment ID: {comment_id or 'N/A'})。所有事务已提交。")
+        print(
+            f"DEBUG: 用户 {current_user_id} 点赞成功 (Topic ID: {topic_id or 'N/A'}, Comment ID: {comment_id or 'N/A'})。所有事务已提交。")
         return db_like
 
-    except Exception as e: # 捕获所有异常并回滚
+    except Exception as e:  # 捕获所有异常并回滚
         db.rollback()
         print(f"ERROR_LIKE_FORUM_GLOBAL: 点赞失败，事务已回滚: {e}")
         raise HTTPException(
@@ -11129,9 +11481,11 @@ async def unlike_forum_item(
     comment_id = unlike_data.get("comment_id")
 
     if not topic_id and not comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either topic_id or comment_id must be provided.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Either topic_id or comment_id must be provided.")
     if topic_id and comment_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only one of topic_id or comment_id can be provided.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Only one of topic_id or comment_id can be provided.")
 
     db_like = None
     if topic_id:
@@ -11269,7 +11623,7 @@ async def like_project_item(
 
         # 5. 奖励积分和检查成就 (请将 current_user_id 替换为被点赞项目的创建者 ID)
         project_creator_id = db_project.creator_id
-        if project_creator_id and project_creator_id != current_user_id: # 只有被点赞的不是自己才加分
+        if project_creator_id and project_creator_id != current_user_id:  # 只有被点赞的不是自己才加分
             creator_user = db.query(Student).filter(Student.id == project_creator_id).first()
             if creator_user:
                 like_points = 5
@@ -11283,10 +11637,10 @@ async def like_project_item(
                     related_entity_id=project_id
                 )
                 await _check_and_award_achievements(db, project_creator_id)
-                print(f"DEBUG_POINTS_ACHIEVEMENT: 用户 {project_creator_id} 因项目获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
+                print(
+                    f"DEBUG_POINTS_ACHIEVEMENT: 用户 {project_creator_id} 因项目获得点赞奖励 {like_points} 积分并检查成就 (待提交)。")
 
-
-        db.commit() # 统一提交所有操作
+        db.commit()  # 统一提交所有操作
         db.refresh(db_like)
 
         print(f"DEBUG_LIKE: 用户 {current_user_id} 点赞项目 {project_id} 成功。")
@@ -11382,7 +11736,7 @@ async def like_course_item(
         # 为了简化，这里先不给课程讲师或创建者加积分，或者仅在讲师是平台注册用户时进行。
         print(f"DEBUG_POINTS_ACHIEVEMENT: 课程点赞不直接奖励积分给讲师，除非讲师是平台注册用户且有相应逻辑支持。")
 
-        db.commit() # 统一提交所有操作
+        db.commit()  # 统一提交所有操作
         db.refresh(db_like)
 
         print(f"DEBUG_LIKE: 用户 {current_user_id} 点赞课程 {course_id} 成功。")
@@ -11433,9 +11787,6 @@ async def unlike_course_item(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"取消课程点赞失败: {e}")
 
 
-
-
-
 # --- MCP服务配置管理接口 ---
 @app.post("/mcp-configs/", response_model=schemas.UserMcpConfigResponse, summary="创建新的MCP配置")
 async def create_mcp_config(
@@ -11476,11 +11827,23 @@ async def create_mcp_config(
     db.commit()  # 提交事务
     db.refresh(db_config)  # 刷新以获取数据库生成的ID和时间戳
 
-    # 确保不返回明文 API 密钥 (无论是否加密，都确保 Response Schema 中没有此字段的明文)
-    db_config.api_key = None  # 安全保障：确保不返回明文密钥
+    # 确保不返回明文 API 密钥，使用字典构造确保安全
+    response_dict = {
+        'id': db_config.id,
+        'owner_id': db_config.owner_id,
+        'name': db_config.name,
+        'mcp_type': db_config.mcp_type,
+        'base_url': db_config.base_url,
+        'protocol_type': db_config.protocol_type,
+        'is_active': db_config.is_active,
+        'description': db_config.description,
+        'created_at': db_config.created_at,
+        'updated_at': db_config.updated_at,
+        'api_key_encrypted': None  # 明确设置为None
+    }
 
     print(f"DEBUG: 用户 {current_user_id} 的MCP配置 '{db_config.name}' (ID: {db_config.id}) 创建成功。")
-    return db_config
+    return schemas.UserMcpConfigResponse(**response_dict)
 
 
 @app.get("/mcp-configs/", response_model=List[schemas.UserMcpConfigResponse], summary="获取当前用户所有MCP服务配置")
@@ -11498,10 +11861,27 @@ async def get_all_mcp_configs(
         query = query.filter(UserMcpConfig.is_active == is_active)
 
     configs = query.order_by(UserMcpConfig.created_at.desc()).all()
+
+    # 安全处理：确保不返回任何敏感信息
+    result_configs = []
     for config in configs:
-        config.api_key = None  # 不返回密钥
-    print(f"DEBUG: 获取到 {len(configs)} 条MCP配置。")
-    return configs
+        config_dict = {
+            'id': config.id,
+            'owner_id': config.owner_id,
+            'name': config.name,
+            'mcp_type': config.mcp_type,
+            'base_url': config.base_url,
+            'protocol_type': config.protocol_type,
+            'is_active': config.is_active,
+            'description': config.description,
+            'created_at': config.created_at,
+            'updated_at': config.updated_at,
+            'api_key_encrypted': None  # 明确设置为None，确保不泄露
+        }
+        result_configs.append(schemas.UserMcpConfigResponse(**config_dict))
+
+    print(f"DEBUG: 获取到 {len(result_configs)} 条MCP配置。")
+    return result_configs
 
 
 # 用户MCP配置接口部分
@@ -11558,11 +11938,23 @@ async def update_mcp_config(
     db.commit()
     db.refresh(db_config)
 
-    # 安全处理：确保敏感的API密钥不会返回给客户端
-    db_config.api_key = None  # 确保不返回明文密钥
+    # 安全处理：确保敏感的API密钥不会返回给客户端，使用字典构造
+    response_dict = {
+        'id': db_config.id,
+        'owner_id': db_config.owner_id,
+        'name': db_config.name,
+        'mcp_type': db_config.mcp_type,
+        'base_url': db_config.base_url,
+        'protocol_type': db_config.protocol_type,
+        'is_active': db_config.is_active,
+        'description': db_config.description,
+        'created_at': db_config.created_at,
+        'updated_at': db_config.updated_at,
+        'api_key_encrypted': None  # 明确设置为None
+    }
 
     print(f"DEBUG: MCP配置 {db_config.id} 更新成功。")
-    return db_config
+    return schemas.UserMcpConfigResponse(**response_dict)
 
 
 @app.delete("/mcp-configs/{config_id}", summary="删除指定MCP服务配置")
@@ -11702,6 +12094,7 @@ async def get_mcp_available_tools(
 
     print(f"DEBUG: 找到 {len(available_tools)} 个可用的MCP工具。")
     return available_tools
+
 
 # --- WebSocket 聊天室接口 --
 @app.websocket("/ws/chat/{room_id}")

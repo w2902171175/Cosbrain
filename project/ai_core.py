@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from gtts import gTTS
 from docx import Document as DocxDocument
 from models import Student, Project, KnowledgeBase, KnowledgeArticle, Note, Course, KnowledgeDocument, \
-    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial, AIConversationMessage,AIConversationTemporaryFile
+    KnowledgeDocumentChunk, UserMcpConfig, UserSearchEngineConfig, CourseMaterial, AIConversationMessage,AIConversationTemporaryFile, AIConversation
 from schemas import WebSearchResult, WebSearchResponse, McpToolDefinition, McpStatusResponse, MatchedProject, \
     MatchedStudent, MatchedCourse
 
@@ -280,6 +280,67 @@ def get_available_llm_configs() -> Dict[str, Dict[str, Any]]:
             configs[llm_type]["default_model"] = None # 强调无默认模型
             configs[llm_type]["available_models"] = ["任意兼容OpenAI API的自定义模型"]
     return configs
+
+
+# --- 多模型ID处理辅助函数 ---
+def parse_llm_model_ids(llm_model_ids_json: Optional[str]) -> Dict[str, List[str]]:
+    """
+    解析存储在数据库中的 JSON 格式的模型ID配置
+    返回: {"服务商类型": ["模型ID1", "模型ID2"]}
+    """
+    if not llm_model_ids_json:
+        return {}
+    
+    try:
+        parsed = json.loads(llm_model_ids_json)
+        if isinstance(parsed, dict):
+            # 确保值都是列表格式
+            result = {}
+            for provider, models in parsed.items():
+                if isinstance(models, str):
+                    result[provider] = [models]
+                elif isinstance(models, list):
+                    result[provider] = models
+                else:
+                    result[provider] = []
+            return result
+        return {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def get_user_model_for_provider(llm_model_ids_json: Optional[str], provider: str, fallback_model_id: Optional[str] = None) -> Optional[str]:
+    """
+    从用户的多模型配置中获取指定服务商的首选模型
+    如果没有配置，则使用fallback_model_id或配置中的默认模型
+    """
+    model_ids_dict = parse_llm_model_ids(llm_model_ids_json)
+    
+    # 从多模型配置中获取
+    provider_models = model_ids_dict.get(provider, [])
+    if provider_models:
+        return provider_models[0]  # 使用第一个作为默认
+    
+    # 如果没有配置，尝试使用fallback
+    if fallback_model_id:
+        return fallback_model_id
+        
+    # 最后使用系统默认配置
+    config = DEFAULT_LLM_API_CONFIG.get(provider)
+    if config:
+        return config.get("default_model")
+    
+    return None
+
+
+def serialize_llm_model_ids(model_ids_dict: Dict[str, List[str]]) -> str:
+    """
+    将模型ID字典序列化为JSON字符串以存储到数据库
+    """
+    try:
+        return json.dumps(model_ids_dict, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
 
 
 async def call_llm_api(
@@ -609,12 +670,13 @@ async def get_rerank_scores_from_api(
         texts: List[str],
         api_key: Optional[str] = None,  # 用户传入的 (解密后的) API key
         llm_type: Optional[str] = None,  # 用户配置的 LLM 类型
-        llm_base_url: Optional[str] = None  # 虽然 reranker 不用 base_url，但保持参数一致性
+        llm_base_url: Optional[str] = None,  # 虽然 reranker 不用 base_url，但保持参数一致性
+        fallback_to_similarity: bool = False  # 是否回退到文本相似度
 ) -> List[float]:
     """
     根据查询和文本列表生成重排分数。
     优先使用用户配置的'siliconflow'重排API Key和其专有模型。
-    如果用户未配置'siliconflow'LLM或提供的密钥无效，则返回零分数。
+    如果用户未配置'siliconflow'LLM或提供的密钥无效，则返回零分数或回退到文本相似度。
     """
     if not texts:
         return []
@@ -645,19 +707,74 @@ async def get_rerank_scores_from_api(
                 response.raise_for_status()
                 data = response.json()
                 scores = [item["score"] for item in data["results"]]
+                print(f"DEBUG_RERANKER_API: Successfully got {len(scores)} rerank scores")
                 return scores
             except httpx.RequestError as e:
-                print(f"ERROR_RERANKER_API: Request failed for '{final_model_name}': {e}. Returning zero scores.")
+                print(f"ERROR_RERANKER_API: Request failed for '{final_model_name}': {e}")
+                if fallback_to_similarity:
+                    print(f"INFO_RERANKER_API: Falling back to text similarity calculation")
+                    return _calculate_text_similarity_scores(query, texts)
                 return [0.0] * len(texts)
             except KeyError as e:
-                print(
-                    f"ERROR_RERANKER_API: Response format error for '{final_model_name}': {e}. Response: {data}. Returning zero scores.")
+                print(f"ERROR_RERANKER_API: Response format error for '{final_model_name}': {e}. Response: {data}")
+                if fallback_to_similarity:
+                    print(f"INFO_RERANKER_API: Falling back to text similarity calculation")
+                    return _calculate_text_similarity_scores(query, texts)
+                return [0.0] * len(texts)
+            except Exception as e:
+                print(f"ERROR_RERANKER_API: Unexpected error: {e}")
+                if fallback_to_similarity:
+                    print(f"INFO_RERANKER_API: Falling back to text similarity calculation")
+                    return _calculate_text_similarity_scores(query, texts)
                 return [0.0] * len(texts)
     else:
-        # 如果用户未配置siliconflow LLM或API key无效，则返回零分数。
-        print(
-            f"INFO_RERANKER_API: User's LLM config is not SiliconFlow or API key is missing/dummy. Returning zero reranker scores.")
-        return [0.0] * len(texts)
+        # 如果用户未配置siliconflow LLM或API key无效
+        if fallback_to_similarity:
+            print(f"INFO_RERANKER_API: User's LLM config is not SiliconFlow, using text similarity fallback")
+            return _calculate_text_similarity_scores(query, texts)
+        else:
+            print(f"INFO_RERANKER_API: User's LLM config is not SiliconFlow or API key is missing/dummy. Returning zero reranker scores.")
+            return [0.0] * len(texts)
+
+
+def _calculate_text_similarity_scores(query: str, texts: List[str]) -> List[float]:
+    """简单的文本相似度计算作为回退"""
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        
+        # 使用TF-IDF计算文本相似度
+        all_texts = [query] + texts
+        vectorizer = TfidfVectorizer(stop_words=None, max_features=1000)
+        tfidf_matrix = vectorizer.fit_transform(all_texts)
+        
+        # 计算查询与每个文档的余弦相似度
+        query_vector = tfidf_matrix[0:1]
+        doc_vectors = tfidf_matrix[1:]
+        similarities = cosine_similarity(query_vector, doc_vectors)[0]
+        
+        # 归一化到0-1范围
+        max_sim = similarities.max() if similarities.max() > 0 else 1.0
+        normalized_scores = (similarities / max_sim).tolist()
+        
+        print(f"DEBUG_RERANKER_FALLBACK: Calculated text similarity scores for {len(texts)} documents")
+        return normalized_scores
+    except ImportError:
+        print(f"WARNING_RERANKER_FALLBACK: sklearn not available, using simple scoring")
+        # 如果sklearn不可用，使用简单的字符串匹配评分
+        scores = []
+        query_words = set(query.lower().split())
+        for text in texts:
+            text_words = set(text.lower().split())
+            if query_words and text_words:
+                intersection = query_words.intersection(text_words)
+                score = len(intersection) / len(query_words.union(text_words))
+            else:
+                score = 0.0
+            scores.append(score)
+        return scores
+    except Exception as e:
+        print(f"ERROR_RERANKER_FALLBACK: Text similarity calculation failed: {e}")
+        return [0.1] * len(texts)  # 返回小的非零值而不是零值
 
 
 def extract_text_from_document(file_content_bytes: bytes, file_type: str) -> str:
@@ -852,18 +969,39 @@ async def execute_tool(
 
         user_llm_api_key = None
         user_llm_type = None
+        user_llm_base_url = None
+        user_llm_model_id = None
         user_obj = db.query(Student).filter(Student.id == user_id).first()
         if user_obj and user_obj.llm_api_type == "siliconflow" and user_obj.llm_api_key_encrypted:
             try:
                 user_llm_api_key = decrypt_key(user_obj.llm_api_key_encrypted)
                 user_llm_type = user_obj.llm_api_type
+                user_llm_base_url = user_obj.llm_api_base_url
+                # 优先使用新的多模型配置，fallback到原模型ID
+                user_llm_model_id = get_user_model_for_provider(
+                    user_obj.llm_model_ids, 
+                    user_obj.llm_api_type, 
+                    user_obj.llm_model_id
+                )
             except Exception as e:
                 pass
 
         context_docs = []
         source_articles_info = []
 
-        if not kb_ids:
+        # 权限验证：验证知识库访问权限
+        if kb_ids:
+            from sqlalchemy import or_
+            accessible_kbs = db.query(KnowledgeBase).filter(
+                KnowledgeBase.id.in_(kb_ids),
+                or_(
+                    KnowledgeBase.owner_id == user_id,
+                    KnowledgeBase.access_type == "public"
+                )
+            ).all()
+            kb_ids = [kb.id for kb in accessible_kbs]
+            print(f"DEBUG_RAG_TOOL: 验证后可访问的知识库: {kb_ids}")
+        else:
             user_kbs = db.query(KnowledgeBase).filter(KnowledgeBase.owner_id == user_id).all()
             kb_ids = [kb.id for kb in user_kbs]
             if not kb_ids:
@@ -873,7 +1011,8 @@ async def execute_tool(
         if kb_ids:
             articles_candidate = db.query(KnowledgeArticle).filter(
                 KnowledgeArticle.kb_id.in_(kb_ids),
-                KnowledgeArticle.author_id == user_id
+                KnowledgeArticle.author_id == user_id,
+                KnowledgeArticle.content.isnot(None)
             ).all()
             for article in articles_candidate:
                 if article.content and article.content.strip():
@@ -894,8 +1033,9 @@ async def execute_tool(
                     KnowledgeDocumentChunk.document_id == doc.id,
                     KnowledgeDocumentChunk.owner_id == user_id,
                     KnowledgeDocumentChunk.kb_id == doc.kb_id,
-                    KnowledgeDocumentChunk.content.isnot(None)
-                ).all()
+                    KnowledgeDocumentChunk.content.isnot(None),
+                    KnowledgeDocumentChunk.embedding.isnot(None)  # 确保有embedding
+                ).order_by(KnowledgeDocumentChunk.chunk_index).all()  # 按顺序排列
                 combined_doc_content = "\n".join([chunk.content for chunk in doc_chunks if chunk.content])
                 if combined_doc_content.strip():
                     context_docs.append({
@@ -905,8 +1045,20 @@ async def execute_tool(
                         "title": doc.file_name
                     })
 
+        # 权限验证：验证笔记访问权限
         if not note_ids:
-            user_notes = db.query(Note).filter(Note.owner_id == user_id).all()
+            user_notes = db.query(Note).filter(
+                Note.owner_id == user_id,
+                Note.content.isnot(None)
+            ).all()
+            note_ids = [note.id for note in user_notes]
+        else:
+            # 验证用户对这些笔记的访问权限
+            user_notes = db.query(Note).filter(
+                Note.id.in_(note_ids),
+                Note.owner_id == user_id,
+                Note.content.isnot(None)
+            ).all()
             note_ids = [note.id for note in user_notes]
 
         if note_ids:
@@ -926,60 +1078,71 @@ async def execute_tool(
                         "title": note.title
                     })
 
+        # 权限验证：验证临时文件访问权限
         if temp_file_ids and conversation_id_from_args:
             print(f"DEBUG_RAG_TOOL: 检查 {len(temp_file_ids)} 个临时文件...")
-            temp_files_candidate = db.query(AIConversationTemporaryFile).filter(
-                AIConversationTemporaryFile.id.in_(temp_file_ids),
-                AIConversationTemporaryFile.conversation_id == conversation_id_from_args
-            ).all()
+            # 验证临时文件属于指定对话且用户有权限访问
+            conversation = db.query(AIConversation).filter(
+                AIConversation.id == conversation_id_from_args,
+                AIConversation.user_id == user_id
+            ).first()
             
-            # 打印所有临时文件的状态
-            processing_files = []
-            failed_files = []
-            
-            for temp_file in temp_files_candidate:
-                print(f"DEBUG_RAG_TOOL: 临时文件 {temp_file.id} - 状态: {temp_file.status}, 文件名: {temp_file.original_filename}")
-                if temp_file.status == "completed" and temp_file.extracted_text and temp_file.extracted_text.strip():
+            if not conversation:
+                print(f"WARNING_RAG_TOOL: 用户 {user_id} 无权访问对话 {conversation_id_from_args}")
+                temp_file_ids = []  # 清空临时文件ID列表
+            else:
+                temp_files_candidate = db.query(AIConversationTemporaryFile).filter(
+                    AIConversationTemporaryFile.id.in_(temp_file_ids),
+                    AIConversationTemporaryFile.conversation_id == conversation_id_from_args
+                ).all()
+                
+                # 打印所有临时文件的状态
+                processing_files = []
+                failed_files = []
+                
+                for temp_file in temp_files_candidate:
+                    print(f"DEBUG_RAG_TOOL: 临时文件 {temp_file.id} - 状态: {temp_file.status}, 文件名: {temp_file.original_filename}")
+                    if temp_file.status == "completed" and temp_file.extracted_text and temp_file.extracted_text.strip():
+                        context_docs.append({
+                            "content": temp_file.original_filename + "\n" + temp_file.extracted_text,
+                            "type": "ai_temp_file",
+                            "id": temp_file.id,
+                            "title": temp_file.original_filename
+                        })
+                        print(f"DEBUG_RAG_TOOL: 临时文件 {temp_file.id} 已添加到上下文")
+                    elif temp_file.status == "failed":
+                        failed_files.append(temp_file)
+                        print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 处理失败: {temp_file.processing_message}")
+                    elif temp_file.status in ["pending", "processing"]:
+                        processing_files.append(temp_file)
+                        print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 仍在处理中，状态: {temp_file.status}")
+                    else:
+                        print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 内容为空或无法使用")
+                
+                # 如果有正在处理的文件，给出提示
+                if processing_files:
+                    processing_names = [f.original_filename for f in processing_files]
+                    processing_message = f"正在处理文件：{', '.join(processing_names)}。请稍后再试，或者您可以继续提问，我会基于其他可用信息回答。"
+                    # 将处理中的文件信息添加到对话中
                     context_docs.append({
-                        "content": temp_file.original_filename + "\n" + temp_file.extracted_text,
-                        "type": "ai_temp_file",
-                        "id": temp_file.id,
-                        "title": temp_file.original_filename
+                        "content": processing_message,
+                        "type": "system_message", 
+                        "id": "processing_files",
+                        "title": "文件处理状态"
                     })
-                    print(f"DEBUG_RAG_TOOL: 临时文件 {temp_file.id} 已添加到上下文")
-                elif temp_file.status == "failed":
-                    failed_files.append(temp_file)
-                    print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 处理失败: {temp_file.processing_message}")
-                elif temp_file.status in ["pending", "processing"]:
-                    processing_files.append(temp_file)
-                    print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 仍在处理中，状态: {temp_file.status}")
-                else:
-                    print(f"WARNING_RAG_TOOL: 临时文件 {temp_file.id} 内容为空或无法使用")
-            
-            # 如果有正在处理的文件，给出提示
-            if processing_files:
-                processing_names = [f.original_filename for f in processing_files]
-                processing_message = f"正在处理文件：{', '.join(processing_names)}。请稍后再试，或者您可以继续提问，我会基于其他可用信息回答。"
-                # 将处理中的文件信息添加到对话中
-                context_docs.append({
-                    "content": processing_message,
-                    "type": "system_message", 
-                    "id": "processing_files",
-                    "title": "文件处理状态"
-                })
-                print(f"DEBUG_RAG_TOOL: 添加了处理中文件的提示信息")
-            
-            # 如果有处理失败的文件，给出提示
-            if failed_files:
-                failed_names = [f"{f.original_filename} ({f.processing_message})" for f in failed_files]
-                failed_message = f"以下文件处理失败：{'; '.join(failed_names)}。我将基于其他可用信息回答您的问题。"
-                context_docs.append({
-                    "content": failed_message,
-                    "type": "system_message",
-                    "id": "failed_files", 
-                    "title": "文件处理错误"
-                })
-                print(f"DEBUG_RAG_TOOL: 添加了处理失败文件的提示信息")
+                    print(f"DEBUG_RAG_TOOL: 添加了处理中文件的提示信息")
+                
+                # 如果有处理失败的文件，给出提示
+                if failed_files:
+                    failed_names = [f"{f.original_filename} ({f.processing_message})" for f in failed_files]
+                    failed_message = f"以下文件处理失败：{'; '.join(failed_names)}。我将基于其他可用信息回答您的问题。"
+                    context_docs.append({
+                        "content": failed_message,
+                        "type": "system_message",
+                        "id": "failed_files", 
+                        "title": "文件处理错误"
+                    })
+                    print(f"DEBUG_RAG_TOOL: 添加了处理失败文件的提示信息")
 
         print(f"DEBUG_RAG_TOOL: Collected {len(context_docs)} candidate documents for RAG prior to reranking.")
         if context_docs:
@@ -996,6 +1159,103 @@ async def execute_tool(
         if not context_docs:
             return "知识库、笔记或临时文件中没有找到与问题相关的文档信息。"
 
+        # 向量相似度预筛选（如果用户配置了有效的embedding API）
+        if user_llm_type == "siliconflow" and user_llm_api_key and user_llm_api_key != DUMMY_API_KEY:
+            print(f"DEBUG_RAG_TOOL: 开始向量相似度预筛选，候选文档数量: {len(context_docs)}")
+            
+            # 1. 生成查询向量
+            query_embedding_list = await get_embeddings_from_api(
+                [rag_query],
+                api_key=user_llm_api_key,
+                llm_type=user_llm_type,
+                llm_base_url=user_llm_base_url,
+                llm_model_id=user_llm_model_id
+            )
+            
+            if query_embedding_list and query_embedding_list[0] != GLOBAL_PLACEHOLDER_ZERO_VECTOR:
+                query_vector = np.array(query_embedding_list[0]).reshape(1, -1)
+                doc_vectors = []
+                valid_docs = []
+                
+                # 2. 收集文档向量
+                for doc in context_docs:
+                    doc_embedding = None
+                    
+                    if doc['type'] == 'knowledge_document':
+                        # 获取文档块的平均向量
+                        doc_chunks = db.query(KnowledgeDocumentChunk).filter(
+                            KnowledgeDocumentChunk.document_id == doc['id'],
+                            KnowledgeDocumentChunk.embedding.isnot(None)
+                        ).all()
+                        
+                        if doc_chunks:
+                            chunk_embeddings = [chunk.embedding for chunk in doc_chunks if chunk.embedding]
+                            if chunk_embeddings:
+                                doc_embedding = np.mean(chunk_embeddings, axis=0).tolist()
+                    
+                    elif doc['type'] == 'knowledge_article':
+                        # 获取文章的向量
+                        article = db.query(KnowledgeArticle).filter(KnowledgeArticle.id == doc['id']).first()
+                        if article and article.embedding:
+                            doc_embedding = article.embedding
+                    
+                    elif doc['type'] == 'note':
+                        # 获取笔记的向量
+                        note = db.query(Note).filter(Note.id == doc['id']).first()
+                        if note and note.embedding:
+                            doc_embedding = note.embedding
+                    
+                    # 对于临时文件或没有embedding的文档，使用零向量
+                    if doc_embedding is None:
+                        doc_embedding = GLOBAL_PLACEHOLDER_ZERO_VECTOR
+                    
+                    doc_vectors.append(doc_embedding)
+                    valid_docs.append(doc)
+                
+                # 3. 计算相似度并筛选
+                if doc_vectors and valid_docs:
+                    doc_vectors_np = np.array(doc_vectors)
+                    similarities = cosine_similarity(query_vector, doc_vectors_np)[0]
+                    
+                    # 按相似度排序并取前50个
+                    similarity_scores = [(i, sim) for i, sim in enumerate(similarities)]
+                    similarity_scores.sort(key=lambda x: x[1], reverse=True)
+                    
+                    # 取前50个最相似的文档，或者所有文档（如果少于50个）
+                    top_k = min(50, len(similarity_scores))
+                    top_indices = [idx for idx, _ in similarity_scores[:top_k]]
+                    
+                    context_docs = [valid_docs[i] for i in top_indices]
+                    print(f"DEBUG_RAG_TOOL: 向量预筛选完成，保留前 {len(context_docs)} 个相似文档")
+                else:
+                    print(f"WARNING_RAG_TOOL: 无法进行向量预筛选，使用所有候选文档")
+            else:
+                print(f"WARNING_RAG_TOOL: 查询向量生成失败，跳过向量预筛选")
+        else:
+            print(f"INFO_RAG_TOOL: 用户未配置SiliconFlow API，跳过向量预筛选")
+
+        # 内容长度限制
+        MAX_CONTENT_LENGTH = 2000  # 每个文档最大长度
+        MAX_TOTAL_LENGTH = 10000   # 总内容最大长度
+        
+        filtered_docs = []
+        total_length = 0
+        
+        for doc in context_docs:
+            content = doc["content"]
+            if len(content) > MAX_CONTENT_LENGTH:
+                content = content[:MAX_CONTENT_LENGTH] + "..."
+                doc["content"] = content
+            
+            if total_length + len(content) <= MAX_TOTAL_LENGTH:
+                filtered_docs.append(doc)
+                total_length += len(content)
+            else:
+                break
+        
+        context_docs = filtered_docs
+        print(f"DEBUG_RAG_TOOL: 内容长度限制后保留 {len(context_docs)} 个文档，总长度: {total_length}")
+
         candidate_contents = [doc["content"] for doc in context_docs]
         if not candidate_contents:
             return "知识库、笔记或临时文件中找到的文档内容为空，无法提取信息。"
@@ -1004,7 +1264,8 @@ async def execute_tool(
             rag_query,
             candidate_contents,
             api_key=user_llm_api_key,
-            llm_type=user_llm_type
+            llm_type=user_llm_type,
+            fallback_to_similarity=True  # 启用回退机制
         )
 
         scored_candidates = sorted(
@@ -1049,10 +1310,19 @@ async def execute_tool(
     elif tool_call_name.startswith("mcp_"):
         parts = tool_call_name.split("_")
         if len(parts) < 3:
-            return f"错误：MCP工具调用格式不正确: {tool_call_name}"
+            return f"错误：MCP工具调用格式不正确"
 
-        mcp_config_id = int(parts[1])
+        try:
+            mcp_config_id = int(parts[1])
+        except (ValueError, TypeError):
+            return f"错误：MCP配置ID格式无效"
+        
         mcp_tool_id = "_".join(parts[2:])
+        
+        # 验证工具ID格式，只允许字母、数字和下划线
+        import re
+        if not re.match(r'^[a-zA-Z0-9_]+$', mcp_tool_id):
+            return f"错误：MCP工具ID格式无效"
 
         mcp_config = db.query(UserMcpConfig).filter(
             UserMcpConfig.id == mcp_config_id,
@@ -1061,14 +1331,14 @@ async def execute_tool(
         ).first()
 
         if not mcp_config:
-            return f"错误：MCP配置ID {mcp_config_id} 未找到、未启用或无权访问。"
+            return f"错误：MCP配置未找到或无权访问"
 
         decrypted_key = ""
         if mcp_config.api_key_encrypted:
             try:
                 decrypted_key = decrypt_key(mcp_config.api_key_encrypted)
             except Exception:
-                return "错误：无法解密MCP API 密钥，请检查配置。"
+                return "错误：无法解密MCP API密钥"
 
         if mcp_tool_id == "visual_chart_generator":
             chart_type = tool_call_args.get("chart_type")
@@ -1086,8 +1356,15 @@ async def execute_tool(
 
             img_url = f"https://example.com/images/{style}_{uuid.uuid4().hex}.png"
             return f"图像已生成：{img_url}。基于描述：'{prompt}'。"
+        elif mcp_tool_id == "generic_tool":
+            task = tool_call_args.get("task")
+            input_data = tool_call_args.get("input_data")
+            
+            # 模拟通用MCP工具执行
+            result_id = uuid.uuid4().hex[:8]
+            return f"MCP服务 {mcp_config.name} 已处理任务 '{task}'，结果ID: {result_id}。输入数据: {input_data[:100]}..."
         else:
-            return f"错误：不支持的MCP工具ID: {mcp_tool_id} (所属MCP配置: {mcp_config.name})。请检查ai_core.py中的 execute_tool。"
+            return f"错误：不支持的MCP工具类型"
 
     else:
         return f"错误：未知工具：{tool_call_name}"
@@ -1108,10 +1385,13 @@ async def get_all_available_tools_for_llm(db: Session, user_id: int) -> List[Dic
     ).all()
 
     for config in active_mcp_configs:
-
+        # 为每个活跃的MCP配置生成至少一个通用工具，确保不会因为命名问题而无法使用
+        has_generated_tool = False
+        
+        # 1. 检查ModelScope特殊配置
         if "modelscope" in (config.base_url or "").lower() and (config.protocol_type or "").lower() == "sse":
-            if "chart" in config.name or "chart" in (config.name or "").lower() or "visual" in (
-                    config.name or "").lower():
+            # 图表生成工具
+            if "chart" in (config.name or "").lower() or "visual" in (config.name or "").lower() or "图表" in (config.name or ""):
                 tools.append({
                     "type": "function",
                     "function": {
@@ -1132,8 +1412,10 @@ async def get_all_available_tools_for_llm(db: Session, user_id: int) -> List[Dic
                         }
                     }
                 })
-            if "image generation" in config.name or "image" in (config.name or "").lower() or "gen" in (
-                    config.name or "").lower():
+                has_generated_tool = True
+            
+            # 图像生成工具
+            if "image" in (config.name or "").lower() or "gen" in (config.name or "").lower() or "图像" in (config.name or "") or "生成" in (config.name or ""):
                 tools.append({
                     "type": "function",
                     "function": {
@@ -1150,6 +1432,9 @@ async def get_all_available_tools_for_llm(db: Session, user_id: int) -> List[Dic
                         }
                     }
                 })
+                has_generated_tool = True
+                
+        # 2. 检查私有MCP配置
         elif "my_private_mcp" == (config.mcp_type or ""):
             tools.append({
                 "type": "function",
@@ -1161,6 +1446,26 @@ async def get_all_available_tools_for_llm(db: Session, user_id: int) -> List[Dic
                                    "required": ["text"]},
                 }
             })
+            has_generated_tool = True
+        
+        # 3. 为没有匹配到特定类型的MCP配置生成通用工具，确保每个配置都能被使用
+        if not has_generated_tool:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": f"mcp_{config.id}_generic_tool",
+                    "description": f"Generic MCP tool for {config.name} service. Can handle various tasks based on the service capabilities.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {"type": "string", "description": "The task to perform"},
+                            "input_data": {"type": "string", "description": "Input data for the task"}
+                        },
+                        "required": ["task", "input_data"]
+                    }
+                }
+            })
+            print(f"DEBUG_TOOL: Generated generic tool for MCP config {config.id} ({config.name})")
 
     print(f"DEBUG_TOOL: Assembled {len(tools)} available tools for user {user_id}.")
     return tools
@@ -1176,7 +1481,7 @@ async def invoke_agent(
         llm_model_id: Optional[str], # 这个llm_model_id是来自main.py的ai_qa请求或用户默认
         kb_ids: Optional[List[int]] = None,
         note_ids: Optional[List[int]] = None,
-        preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None,
+        preferred_tools: Optional[Union[List[Literal["rag", "web_search", "mcp_tool"]], str]] = None,
         past_messages: Optional[List[Dict[str, Any]]] = None,
         temp_file_ids: Optional[List[int]] = None,
         conversation_id_for_temp_files: Optional[int] = None,
@@ -1200,23 +1505,36 @@ async def invoke_agent(
     # >>> 核心逻辑修改：根据 enable_tool_use 参数决定是否准备工具 <<<
     if enable_tool_use:
         available_tools_for_llm = await get_all_available_tools_for_llm(db, user_id)
-        if preferred_tools:
+        if preferred_tools is not None:  # 明确检查是否为None
             print(f"DEBUG_AGENT: User preferred tools: {preferred_tools}")
-            for tool_def in available_tools_for_llm:
-                tool_name = tool_def["function"]["name"]
-                if ("rag" in preferred_tools and tool_name == "rag_knowledge_base") or \
-                   ("web_search" in preferred_tools and tool_name == "web_search") or \
-                   ("mcp_tool" in preferred_tools and tool_name.startswith("mcp_")):
-                    tools_to_send_to_llm.append(tool_def)
-            if tools_to_send_to_llm: # 只有当有工具被选中时，才将tool_choice设为auto
+            
+            # 特殊处理："all" 表示使用所有可用工具
+            if preferred_tools == "all":
+                tools_to_send_to_llm = available_tools_for_llm
                 tool_choice_param = "auto"
+                print(f"DEBUG_AGENT: User specified 'all' tools. Using all {len(available_tools_for_llm)} available tools.")
+            elif isinstance(preferred_tools, list) and len(preferred_tools) > 0:  # 只处理非空列表
+                for tool_def in available_tools_for_llm:
+                    tool_name = tool_def["function"]["name"]
+                    if ("rag" in preferred_tools and tool_name == "rag_knowledge_base") or \
+                       ("web_search" in preferred_tools and tool_name == "web_search") or \
+                       ("mcp_tool" in preferred_tools and tool_name.startswith("mcp_")):
+                        tools_to_send_to_llm.append(tool_def)
+                if tools_to_send_to_llm: # 只有当有工具被选中时，才将tool_choice设为auto
+                    tool_choice_param = "auto"
+                    print(f"DEBUG_AGENT: Selected {len(tools_to_send_to_llm)} tools based on user preferences.")
+                else:
+                    print("WARNING_AGENT: User specified preferred tools, but no matching active tools found. Falling back to general Q&A.")
+                    # tools_to_send_to_llm 为空，tool_choice_param 仍为 "none"
             else:
-                print("WARNING_AGENT: User specified preferred tools, but no matching active tools found. Falling back to general Q&A.")
-                # tools_to_send_to_llm 为空，tool_choice_param 仍为 "none"
-        else: # 如果 enable_tool_use 为 True，但 preferred_tools 为 None，则默认使用所有可用工具
-            tools_to_send_to_llm = available_tools_for_llm
-            tool_choice_param = "auto"
-            print(f"DEBUG_AGENT: Tool use enabled but no preferred tools specified. Auto-selecting all available tools.")
+                # preferred_tools为空列表或其他情况，不使用任何工具
+                print("INFO_AGENT: No valid preferred tools specified. No tools will be used.")
+                tools_to_send_to_llm = []
+                tool_choice_param = "none"
+        else: # 如果 enable_tool_use 为 True，但 preferred_tools 为 None，则不启用任何工具
+            tools_to_send_to_llm = []
+            tool_choice_param = "none"
+            print(f"DEBUG_AGENT: Tool use enabled but no preferred tools specified. No tools will be used.")
     else:
         # 如果 enable_tool_use 为 False，则不发送任何工具
         tools_to_send_to_llm = [] # 确保为空列表
@@ -1309,7 +1627,7 @@ async def invoke_agent(
                     executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
-                        tool_call_args=tc['function']['arguments'],
+                        tool_call_args=tool_args,  # 使用解析后的参数字典
                         user_id=user_id
                     )
                     tool_output_result = executed_output

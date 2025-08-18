@@ -64,7 +64,8 @@ class StudentResponse(StudentBase):
         "openai", "zhipu", "siliconflow", "huoshanengine", "kimi", "deepseek", "custom_openai"
     ]] = None
     llm_api_base_url: Optional[str] = None
-    llm_model_id: Optional[str] = None
+    llm_model_id: Optional[str] = None  # 保留原字段以兼容性
+    llm_model_ids: Optional[Dict[str, List[str]]] = None  # 新字段：为每个服务商配置的模型ID列表
     llm_api_key_encrypted: Optional[str] = None
 
     created_at: datetime
@@ -1375,7 +1376,8 @@ class UserLLMConfigUpdate(BaseModel):
     ]] = None
     llm_api_key: Optional[str] = None
     llm_api_base_url: Optional[str] = None
-    llm_model_id: Optional[str] = None
+    llm_model_id: Optional[str] = None  # 保留原字段以兼容性
+    llm_model_ids: Optional[Dict[str, List[str]]] = None  # 新字段：为每个服务商配置的模型ID列表
 
 
 # --- AI Conversation Message Schemas ---
