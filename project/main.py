@@ -2690,7 +2690,7 @@ async def collect_forum_topic(
 
     # 构造 CollectedContentBase payload，并填充话题特有的信息
     collected_content_data = schemas.CollectedContentBase(
-        title=collect_data.title or db_topic.title,  # 优先使用用户自定义标题，否则使用话题标题
+        title=collect_data.title or db_topic.title or "(无标题)",  # 优先使用用户自定义标题，否则使用话题标题，最后用默认标题
         type="forum_topic",  # 显式设置为“forum_topic”类型
         url=f"{FRONTEND_FORUM_TOPIC_DETAIL_URL_PREFIX}{topic_id}",  # 收藏的URL是前端话题详情页URL
         content=db_topic.content,  # 将话题内容作为收藏内容
@@ -10373,7 +10373,7 @@ async def create_forum_topic(
     """
     发布一个新论坛话题。可选择关联分享平台其他内容，或直接上传文件。
     """
-    print(f"DEBUG: 用户 {current_user_id} 尝试发布话题: {topic_data.title}，有文件：{bool(file)}")
+    print(f"DEBUG: 用户 {current_user_id} 尝试发布话题: {topic_data.title or '(无标题)'}，有文件：{bool(file)}")
 
     # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
     oss_object_name_for_rollback = None
@@ -10536,7 +10536,7 @@ async def create_forum_topic(
                 db=db,
                 user=topic_author,
                 amount=topic_post_points,
-                reason=f"发布论坛话题：'{db_topic.title}'",
+                reason=f"发布论坛话题：'{db_topic.title or '(无标题)'}'",
                 transaction_type="EARN",
                 related_entity_type="forum_topic",
                 related_entity_id=db_topic.id
@@ -10553,7 +10553,7 @@ async def create_forum_topic(
         db_topic.owner_name = owner_obj.name if owner_obj else "未知用户"
         db_topic.is_liked_by_current_user = False
 
-        print(f"DEBUG: 话题 '{db_topic.title}' (ID: {db_topic.id}) 发布成功，所有事务已提交。")
+        print(f"DEBUG: 话题 '{db_topic.title or '(无标题)'}' (ID: {db_topic.id}) 发布成功，所有事务已提交。")
         return db_topic
 
     except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
