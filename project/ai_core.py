@@ -943,7 +943,12 @@ async def execute_tool(
         db: Session,
         tool_call_name: str,
         tool_call_args: Dict[str, Any],
-        user_id: int
+        user_id: int,
+        # 新增LLM配置参数，用于RAG工具
+        llm_api_type: Optional[str] = None,
+        llm_api_key: Optional[str] = None,
+        llm_api_base_url: Optional[str] = None,
+        llm_model_id: Optional[str] = None
 ) -> Union[str, List[Dict[str, Any]], Dict[str, Any]]:
     if tool_call_name == "web_search":
         search_query = tool_call_args.get("query")
@@ -996,24 +1001,40 @@ async def execute_tool(
         temp_file_ids = tool_call_args.get("temp_file_ids")
         conversation_id_from_args = tool_call_args.get("conversation_id") # 获取conversation_id
 
-        user_llm_api_key = None
-        user_llm_type = None
-        user_llm_base_url = None
-        user_llm_model_id = None
-        user_obj = db.query(Student).filter(Student.id == user_id).first()
-        if user_obj and user_obj.llm_api_type == "siliconflow" and user_obj.llm_api_key_encrypted:
-            try:
-                user_llm_api_key = decrypt_key(user_obj.llm_api_key_encrypted)
-                user_llm_type = user_obj.llm_api_type
-                user_llm_base_url = user_obj.llm_api_base_url
-                # 优先使用新的多模型配置，fallback到原模型ID
-                user_llm_model_id = get_user_model_for_provider(
-                    user_obj.llm_model_ids, 
-                    user_obj.llm_api_type, 
-                    user_obj.llm_model_id
-                )
-            except Exception as e:
-                pass
+        print(f"DEBUG_RAG_TOOL: 开始执行RAG工具")
+        print(f"DEBUG_RAG_TOOL: 查询: {rag_query}")
+        print(f"DEBUG_RAG_TOOL: 传入的kb_ids: {kb_ids}")
+        print(f"DEBUG_RAG_TOOL: 传入的note_ids: {note_ids}")
+        print(f"DEBUG_RAG_TOOL: 用户ID: {user_id}")
+
+        # 优先使用传入的LLM配置，如果没有则从数据库查询
+        user_llm_api_key = llm_api_key
+        user_llm_type = llm_api_type
+        user_llm_base_url = llm_api_base_url
+        user_llm_model_id = llm_model_id
+        
+        # 如果没有传入LLM配置，则从数据库查询用户配置
+        if not (user_llm_api_key and user_llm_type):
+            print(f"DEBUG_RAG_TOOL: 没有传入LLM配置，从数据库查询用户配置")
+            user_obj = db.query(Student).filter(Student.id == user_id).first()
+            if user_obj and user_obj.llm_api_type == "siliconflow" and user_obj.llm_api_key_encrypted:
+                try:
+                    user_llm_api_key = decrypt_key(user_obj.llm_api_key_encrypted)
+                    user_llm_type = user_obj.llm_api_type
+                    user_llm_base_url = user_obj.llm_api_base_url
+                    # 优先使用新的多模型配置，fallback到原模型ID
+                    user_llm_model_id = get_user_model_for_provider(
+                        user_obj.llm_model_ids, 
+                        user_obj.llm_api_type, 
+                        user_obj.llm_model_id
+                    )
+                    print(f"DEBUG_RAG_TOOL: 使用数据库中的用户LLM配置")
+                except Exception as e:
+                    print(f"WARNING_RAG_TOOL: 无法获取用户LLM配置: {e}")
+        else:
+            print(f"DEBUG_RAG_TOOL: 使用传入的LLM配置: {user_llm_type}")
+
+        print(f"DEBUG_RAG_TOOL: 最终LLM配置 - 类型: {user_llm_type}, 有API密钥: {bool(user_llm_api_key)}")
 
         context_docs = []
         source_articles_info = []
@@ -1033,17 +1054,22 @@ async def execute_tool(
         else:
             user_kbs = db.query(KnowledgeBase).filter(KnowledgeBase.owner_id == user_id).all()
             kb_ids = [kb.id for kb in user_kbs]
+            print(f"DEBUG_RAG_TOOL: 用户所有知识库: {[(kb.id, kb.name) for kb in user_kbs]}")
+            print(f"DEBUG_RAG_TOOL: 使用的知识库ID列表: {kb_ids}")
             if not kb_ids:
-                pass
+                print(f"WARNING_RAG_TOOL: 用户 {user_id} 没有任何知识库")
 
 
         if kb_ids:
+            print(f"DEBUG_RAG_TOOL: 开始查询知识库文章，知识库IDs: {kb_ids}")
             articles_candidate = db.query(KnowledgeArticle).filter(
                 KnowledgeArticle.kb_id.in_(kb_ids),
                 KnowledgeArticle.author_id == user_id,
                 KnowledgeArticle.content.isnot(None)
             ).all()
+            print(f"DEBUG_RAG_TOOL: 找到的候选文章数量: {len(articles_candidate)}")
             for article in articles_candidate:
+                print(f"DEBUG_RAG_TOOL: 文章 {article.id}: '{article.title}', KB: {article.kb_id}, 内容长度: {len(article.content) if article.content else 0}")
                 if article.content and article.content.strip():
                     context_docs.append({
                         "content": article.title + "\n" + article.content,
@@ -1051,6 +1077,9 @@ async def execute_tool(
                         "id": article.id,
                         "title": article.title
                     })
+                    print(f"DEBUG_RAG_TOOL: 已添加文章 '{article.title}' 到上下文")
+                else:
+                    print(f"WARNING_RAG_TOOL: 文章 '{article.title}' 内容为空，跳过")
 
             documents_candidate = db.query(KnowledgeDocument).filter(
                 KnowledgeDocument.kb_id.in_(kb_ids),
@@ -1192,74 +1221,82 @@ async def execute_tool(
         if user_llm_type == "siliconflow" and user_llm_api_key and user_llm_api_key != DUMMY_API_KEY:
             print(f"DEBUG_RAG_TOOL: 开始向量相似度预筛选，候选文档数量: {len(context_docs)}")
             
-            # 1. 生成查询向量
-            query_embedding_list = await get_embeddings_from_api(
-                [rag_query],
-                api_key=user_llm_api_key,
-                llm_type=user_llm_type,
-                llm_base_url=user_llm_base_url,
-                llm_model_id=user_llm_model_id
-            )
-            
-            if query_embedding_list and query_embedding_list[0] != GLOBAL_PLACEHOLDER_ZERO_VECTOR:
-                query_vector = np.array(query_embedding_list[0]).reshape(1, -1)
-                doc_vectors = []
-                valid_docs = []
+            try:
+                # 1. 生成查询向量
+                query_embedding_list = await get_embeddings_from_api(
+                    [rag_query],
+                    api_key=user_llm_api_key,
+                    llm_type=user_llm_type,
+                    llm_base_url=user_llm_base_url,
+                    llm_model_id=user_llm_model_id
+                )
                 
-                # 2. 收集文档向量
-                for doc in context_docs:
-                    doc_embedding = None
+                print(f"DEBUG_RAG_TOOL: 查询向量生成结果: {type(query_embedding_list) if query_embedding_list else None}")
+                
+                # 修复NumPy数组比较问题：使用np.array_equal来比较数组
+                if query_embedding_list and not np.array_equal(query_embedding_list[0], GLOBAL_PLACEHOLDER_ZERO_VECTOR):
+                    print(f"DEBUG_RAG_TOOL: 查询向量有效，开始文档向量收集")
+                    query_vector = np.array(query_embedding_list[0]).reshape(1, -1)
+                    doc_vectors = []
+                    valid_docs = []
                     
-                    if doc['type'] == 'knowledge_document':
-                        # 获取文档块的平均向量
-                        doc_chunks = db.query(KnowledgeDocumentChunk).filter(
-                            KnowledgeDocumentChunk.document_id == doc['id'],
-                            KnowledgeDocumentChunk.embedding.isnot(None)
-                        ).all()
+                    # 2. 收集文档向量
+                    for doc in context_docs:
+                        doc_embedding = None
                         
-                        if doc_chunks:
-                            chunk_embeddings = [chunk.embedding for chunk in doc_chunks if chunk.embedding]
-                            if chunk_embeddings:
-                                doc_embedding = np.mean(chunk_embeddings, axis=0).tolist()
+                        if doc['type'] == 'knowledge_document':
+                            # 获取文档块的平均向量
+                            doc_chunks = db.query(KnowledgeDocumentChunk).filter(
+                                KnowledgeDocumentChunk.document_id == doc['id'],
+                                KnowledgeDocumentChunk.embedding.isnot(None)
+                            ).all()
+                            
+                            if doc_chunks:
+                                chunk_embeddings = [chunk.embedding for chunk in doc_chunks if chunk.embedding]
+                                if chunk_embeddings:
+                                    doc_embedding = np.mean(chunk_embeddings, axis=0).tolist()
+                        
+                        elif doc['type'] == 'knowledge_article':
+                            # 获取文章的向量
+                            article = db.query(KnowledgeArticle).filter(KnowledgeArticle.id == doc['id']).first()
+                            if article and article.embedding:
+                                doc_embedding = article.embedding
+                        
+                        elif doc['type'] == 'note':
+                            # 获取笔记的向量
+                            note = db.query(Note).filter(Note.id == doc['id']).first()
+                            if note and note.embedding:
+                                doc_embedding = note.embedding
+                        
+                        # 对于临时文件或没有embedding的文档，使用零向量
+                        if doc_embedding is None:
+                            doc_embedding = GLOBAL_PLACEHOLDER_ZERO_VECTOR
+                        
+                        doc_vectors.append(doc_embedding)
+                        valid_docs.append(doc)
                     
-                    elif doc['type'] == 'knowledge_article':
-                        # 获取文章的向量
-                        article = db.query(KnowledgeArticle).filter(KnowledgeArticle.id == doc['id']).first()
-                        if article and article.embedding:
-                            doc_embedding = article.embedding
-                    
-                    elif doc['type'] == 'note':
-                        # 获取笔记的向量
-                        note = db.query(Note).filter(Note.id == doc['id']).first()
-                        if note and note.embedding:
-                            doc_embedding = note.embedding
-                    
-                    # 对于临时文件或没有embedding的文档，使用零向量
-                    if doc_embedding is None:
-                        doc_embedding = GLOBAL_PLACEHOLDER_ZERO_VECTOR
-                    
-                    doc_vectors.append(doc_embedding)
-                    valid_docs.append(doc)
-                
-                # 3. 计算相似度并筛选
-                if doc_vectors and valid_docs:
-                    doc_vectors_np = np.array(doc_vectors)
-                    similarities = cosine_similarity(query_vector, doc_vectors_np)[0]
-                    
-                    # 按相似度排序并取前50个
-                    similarity_scores = [(i, sim) for i, sim in enumerate(similarities)]
-                    similarity_scores.sort(key=lambda x: x[1], reverse=True)
-                    
-                    # 取前50个最相似的文档，或者所有文档（如果少于50个）
-                    top_k = min(50, len(similarity_scores))
-                    top_indices = [idx for idx, _ in similarity_scores[:top_k]]
-                    
-                    context_docs = [valid_docs[i] for i in top_indices]
-                    print(f"DEBUG_RAG_TOOL: 向量预筛选完成，保留前 {len(context_docs)} 个相似文档")
+                    # 3. 计算相似度并筛选
+                    if doc_vectors and valid_docs:
+                        doc_vectors_np = np.array(doc_vectors)
+                        similarities = cosine_similarity(query_vector, doc_vectors_np)[0]
+                        
+                        # 按相似度排序并取前50个
+                        similarity_scores = [(i, sim) for i, sim in enumerate(similarities)]
+                        similarity_scores.sort(key=lambda x: x[1], reverse=True)
+                        
+                        # 取前50个最相似的文档，或者所有文档（如果少于50个）
+                        top_k = min(50, len(similarity_scores))
+                        top_indices = [idx for idx, _ in similarity_scores[:top_k]]
+                        
+                        context_docs = [valid_docs[i] for i in top_indices]
+                        print(f"DEBUG_RAG_TOOL: 向量预筛选完成，保留前 {len(context_docs)} 个相似文档")
+                    else:
+                        print(f"WARNING_RAG_TOOL: 无法进行向量预筛选，使用所有候选文档")
                 else:
-                    print(f"WARNING_RAG_TOOL: 无法进行向量预筛选，使用所有候选文档")
-            else:
-                print(f"WARNING_RAG_TOOL: 查询向量生成失败，跳过向量预筛选")
+                    print(f"WARNING_RAG_TOOL: 查询向量生成失败或为零向量，跳过向量预筛选")
+            except Exception as e:
+                print(f"ERROR_RAG_TOOL: 向量预筛选过程出错: {e}")
+                print(f"DEBUG_RAG_TOOL: 跳过向量预筛选，使用所有候选文档")
         else:
             print(f"INFO_RAG_TOOL: 用户未配置SiliconFlow API，跳过向量预筛选")
 
@@ -1289,19 +1326,28 @@ async def execute_tool(
         if not candidate_contents:
             return "知识库、笔记或临时文件中找到的文档内容为空，无法提取信息。"
 
-        reranked_scores = await get_rerank_scores_from_api(
-            rag_query,
-            candidate_contents,
-            api_key=user_llm_api_key,
-            llm_type=user_llm_type,
-            fallback_to_similarity=True  # 启用回退机制
-        )
+        try:
+            print(f"DEBUG_RAG_TOOL: 开始重排序，文档数量: {len(candidate_contents)}")
+            reranked_scores = await get_rerank_scores_from_api(
+                rag_query,
+                candidate_contents,
+                api_key=user_llm_api_key,
+                llm_type=user_llm_type,
+                fallback_to_similarity=True  # 启用回退机制
+            )
+            print(f"DEBUG_RAG_TOOL: 重排序完成，得到 {len(reranked_scores)} 个分数")
+        except Exception as e:
+            print(f"ERROR_RAG_TOOL: 重排序过程出错: {e}")
+            # 如果重排序失败，使用简单的分数（按文档顺序递减）
+            reranked_scores = [1.0 - i * 0.1 for i in range(len(candidate_contents))]
+            print(f"DEBUG_RAG_TOOL: 使用备用分数策略")
 
         scored_candidates = sorted(
             zip(context_docs, reranked_scores),
             key=lambda x: x[1],
             reverse=True
         )
+        print(f"DEBUG_RAG_TOOL: 文档排序完成，准备选择最终上下文")
 
         context_for_llm = []
         current_context_len = 0
@@ -1320,6 +1366,7 @@ async def execute_tool(
             return "虽然在知识库、笔记或临时文件中找到了一些文档，但未能提炼出足够相关或有用的信息来回答问题。"
 
         retrieved_content = "\n\n".join([doc["content"] for doc in context_for_llm])
+        print(f"DEBUG_RAG_TOOL: 最终选择 {len(context_for_llm)} 个文档作为上下文，总内容长度: {len(retrieved_content)}")
 
         for doc in context_for_llm:
             source_doc_info = {
@@ -1658,17 +1705,24 @@ async def invoke_agent(
             tool_output_result = None
             try:
                 if tool_name == "rag_knowledge_base":
+                    # 优先使用LLM工具调用中指定的kb_ids，如果没有则使用invoke_agent传入的kb_ids
+                    tool_kb_ids = tool_args.get("kb_ids") or kb_ids
                     executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
                         tool_call_args={
                             "query": tool_args.get("query"),
-                            "kb_ids": kb_ids,
-                            "note_ids": note_ids,
+                            "kb_ids": tool_kb_ids,
+                            "note_ids": tool_args.get("note_ids") or note_ids,
                             "temp_file_ids": temp_file_ids,
                             "conversation_id": conversation_id_for_temp_files
                         },
-                        user_id=user_id
+                        user_id=user_id,
+                        # 传递LLM配置给RAG工具
+                        llm_api_type=llm_api_type,
+                        llm_api_key=llm_api_key,
+                        llm_api_base_url=llm_api_base_url,
+                        llm_model_id=llm_model_id
                     )
                     rag_context = executed_output.get("context", "") if isinstance(executed_output, dict) else str(
                         executed_output)
