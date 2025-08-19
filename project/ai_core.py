@@ -1339,19 +1339,31 @@ async def execute_tool(
     elif tool_call_name.startswith("mcp_"):
         parts = tool_call_name.split("_")
         if len(parts) < 3:
-            return f"错误：MCP工具调用格式不正确"
+            return {
+                "status": "error",
+                "message": "MCP工具调用格式不正确",
+                "tool_name": tool_call_name
+            }
 
         try:
             mcp_config_id = int(parts[1])
         except (ValueError, TypeError):
-            return f"错误：MCP配置ID格式无效"
+            return {
+                "status": "error", 
+                "message": "MCP配置ID格式无效",
+                "tool_name": tool_call_name
+            }
         
         mcp_tool_id = "_".join(parts[2:])
         
         # 验证工具ID格式，只允许字母、数字和下划线
         import re
         if not re.match(r'^[a-zA-Z0-9_]+$', mcp_tool_id):
-            return f"错误：MCP工具ID格式无效"
+            return {
+                "status": "error",
+                "message": "MCP工具ID格式无效",
+                "mcp_tool_id": mcp_tool_id
+            }
 
         mcp_config = db.query(UserMcpConfig).filter(
             UserMcpConfig.id == mcp_config_id,
@@ -1360,14 +1372,22 @@ async def execute_tool(
         ).first()
 
         if not mcp_config:
-            return f"错误：MCP配置未找到或无权访问"
+            return {
+                "status": "error",
+                "message": "MCP配置未找到或无权访问",
+                "mcp_config_id": mcp_config_id
+            }
 
         decrypted_key = ""
         if mcp_config.api_key_encrypted:
             try:
                 decrypted_key = decrypt_key(mcp_config.api_key_encrypted)
             except Exception:
-                return "错误：无法解密MCP API密钥"
+                return {
+                    "status": "error",
+                    "message": "无法解密MCP API密钥",
+                    "mcp_config_id": mcp_config_id
+                }
 
         if mcp_tool_id == "visual_chart_generator":
             chart_type = tool_call_args.get("chart_type")
@@ -1376,27 +1396,58 @@ async def execute_tool(
 
             if chart_type and data_points:
                 img_url = f"https://example.com/charts/{chart_type}_{uuid.uuid4().hex}.png"
-                return f"可视化图表已生成：{img_url}。标题：{title}。数据：{data_points}"
+                return {
+                    "status": "success",
+                    "message": "可视化图表已成功生成。",
+                    "chart_url": img_url,
+                    "chart_type": chart_type,
+                    "title": title,
+                    "data_points": data_points
+                }
             else:
-                return "生成可视化图表所需参数不完整。"
+                return {
+                    "status": "error",
+                    "message": "生成可视化图表所需参数不完整。",
+                    "missing_params": []
+                }
         elif mcp_tool_id == "image_generator":
             prompt = tool_call_args.get("prompt")
             style = tool_call_args.get("style", "realistic")
 
             img_url = f"https://example.com/images/{style}_{uuid.uuid4().hex}.png"
-            return f"图像已生成：{img_url}。基于描述：'{prompt}'。"
+            return {
+                "status": "success",
+                "message": "图像已成功生成。",
+                "image_url": img_url,
+                "prompt": prompt,
+                "style": style
+            }
         elif mcp_tool_id == "generic_tool":
             task = tool_call_args.get("task")
             input_data = tool_call_args.get("input_data")
             
             # 模拟通用MCP工具执行
             result_id = uuid.uuid4().hex[:8]
-            return f"MCP服务 {mcp_config.name} 已处理任务 '{task}'，结果ID: {result_id}。输入数据: {input_data[:100]}..."
+            return {
+                "status": "success",
+                "message": f"任务 '{task}' 已成功处理。",
+                "result_id": result_id,
+                "service_name": mcp_config.name,
+                "input_data": input_data[:100] + "..." if len(str(input_data)) > 100 else input_data
+            }
         else:
-            return f"错误：不支持的MCP工具类型"
+            return {
+                "status": "error",
+                "message": f"不支持的MCP工具类型: {mcp_tool_id}",
+                "mcp_tool_id": mcp_tool_id
+            }
 
     else:
-        return f"错误：未知工具：{tool_call_name}"
+        return {
+            "status": "error",
+            "message": f"未知工具: {tool_call_name}",
+            "tool_name": tool_call_name
+        }
 
 
 
@@ -1662,8 +1713,12 @@ async def invoke_agent(
                     tool_output_result = executed_output
 
                 else:
-                    tool_output_result = f"Error: LLM attempted to call an unexpected tool: {tool_name}"
-                    print(tool_output_result)
+                    tool_output_result = {
+                        "status": "error",
+                        "message": f"LLM attempted to call an unexpected tool: {tool_name}",
+                        "tool_name": tool_name
+                    }
+                    print(f"Error: {tool_output_result['message']}")
 
                 output_content_str = str(tool_output_result)
                 current_turn_messages_to_log.append({
