@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from functools import partial
 load_dotenv()
 
+
 # 从环境变量加载S3兼容存储配置
 S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("OSS_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("OSS_ACCESS_KEY_SECRET")
