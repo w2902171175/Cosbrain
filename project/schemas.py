@@ -667,12 +667,18 @@ class ForumTopicBase(BaseModel):
 
     @model_validator(mode='after')
     def validate_media_and_shared_item(self) -> 'ForumTopicBase':
-        if self.media_type and not self.media_url:
-            raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
+        # 注意：这里不检查 media_type 和 media_url 的组合，因为在文件上传场景中，
+        # media_type 可能在前端预设，而 media_url 会在后端文件上传后才生成
+        
+        # 只在有 media_url 时才要求必须有 media_type
         if self.media_url and not self.media_type:
             raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+        
+        # 检查共享内容和直接上传媒体文件的互斥性（但这里要考虑文件上传场景）
         if (self.shared_item_type and self.shared_item_id is not None) and self.media_url:
             raise ValueError("不能同时指定共享平台内容 (shared_item_type/id) 和直接上传媒体文件 (media_url)。请选择一种方式。")
+        
+        # 检查共享内容字段的完整性
         if (self.shared_item_type and self.shared_item_id is None) or \
                 (self.shared_item_id is not None and not self.shared_item_type):
             raise ValueError("shared_item_type 和 shared_item_id 必须同时提供，或同时为空。")
@@ -712,8 +718,10 @@ class ForumCommentBase(BaseModel):
 
     @model_validator(mode='after')
     def validate_media_in_comment(self) -> 'ForumCommentBase':
-        if self.media_type and not self.media_url:
-            raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
+        # 注意：这里不检查 media_type 和 media_url 的组合，因为在文件上传场景中，
+        # media_type 可能在前端预设，而 media_url 会在后端文件上传后才生成
+        
+        # 只在有 media_url 时才要求必须有 media_type
         if self.media_url and not self.media_type:
             raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
         return self
