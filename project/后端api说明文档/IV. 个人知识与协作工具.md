@@ -1460,7 +1460,7 @@
 **摘要**: 发布一个新论坛话题。可选择关联分享平台其他内容（如笔记、课程等），或直接上传文件作为附件。
 **权限**: 需要认证 (JWT Token)。
 **请求体**: `multipart/form-data`
-* **title** (str): 话题标题。
+* **title** (str, 可选): 话题标题。
 * **content** (str): 话题内容。
 * **shared_item_type** (str, 可选): 如果分享平台内部内容，记录其类型。可选值：`note`, `daily_record`, `course`, `project`, `knowledge_article`, `knowledge_base`, `collected_content`。
 * **shared_item_id** (int, 可选): 如果分享平台内部内容，记录其ID。
@@ -1470,7 +1470,7 @@
 * **file** (file, 可选): 要上传的文件、图片或视频。当 `media_type` 为 `image`, `video`, `file` 且无 `media_url` 时，可上传此文件。
 
 **请求体注意事项**:
-* `title` 和 `content` 不能为空。
+* `content` 不能为空。
 * `shared_item_type` 和 `shared_item_id` 必须同时提供或同时为空。
 * `shared_item_type/id` 和 `media_url` / `file` 不能同时提供，即不能同时分享内部内容和直接上传/链接外部媒体/文件。
 * 如果提供 `media_url` 但不上传 `file`，则 `media_type` 必须与提供的 `media_url` 类型语义匹配。

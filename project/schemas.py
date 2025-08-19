@@ -653,7 +653,7 @@ class ChatMessageResponse(ChatMessageBase):
 
 # --- ForumTopic Schemas ---
 class ForumTopicBase(BaseModel):
-    title: str
+    title: Optional[str] = None
     content: str
     shared_item_type: Optional[Literal[
         "note", "daily_record", "course", "project", "knowledge_article", "knowledge_base", "collected_content"]] = Field(

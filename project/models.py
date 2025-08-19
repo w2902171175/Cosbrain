@@ -473,7 +473,7 @@ class ForumTopic(Base):
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("students.id"), nullable=False)
 
-    title = Column(String, nullable=False)
+    title = Column(String, nullable=True)
     content = Column(Text, nullable=False)
 
     shared_item_type = Column(String, nullable=True)
