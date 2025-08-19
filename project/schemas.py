@@ -64,8 +64,8 @@ class StudentResponse(StudentBase):
         "openai", "zhipu", "siliconflow", "huoshanengine", "kimi", "deepseek", "custom_openai"
     ]] = None
     llm_api_base_url: Optional[str] = None
-    llm_model_id: Optional[str] = None  # 保留原字段以兼容性
-    llm_model_ids: Optional[Dict[str, List[str]]] = None  # 新字段：为每个服务商配置的模型ID列表
+    llm_model_id: Optional[str] = None
+    llm_model_ids: Optional[Dict[str, List[str]]] = None
     llm_api_key_encrypted: Optional[str] = None
 
     created_at: datetime
@@ -78,10 +78,26 @@ class StudentResponse(StudentBase):
     completed_projects_count: Optional[int] = Field(None, description="用户创建并已完成的项目总数")
     completed_courses_count: Optional[int] = Field(None, description="用户完成的课程总数")
 
+    # 3. 添加下面的验证器函数
+    @field_validator('llm_model_ids', mode='before')
+    @classmethod
+    def parse_llm_model_ids(cls, value):
+        """
+        在验证之前，尝试将字符串类型的 llm_model_ids 解析为字典。
+        """
+        # 如果值是字符串类型，就尝试用 json.loads 解析它
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                # 如果字符串不是有效的JSON，返回None，符合字段的Optional属性
+                return None
+        # 如果值不是字符串（比如已经是dict或None），直接返回原值
+        return value
+
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-
 
 class StudentUpdate(BaseModel):
     """更新学生信息时的模型，所有字段均为可选"""
