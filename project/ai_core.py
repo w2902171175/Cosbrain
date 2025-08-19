@@ -1040,7 +1040,8 @@ async def execute_tool(
         source_articles_info = []
 
         # 权限验证：验证知识库访问权限
-        if kb_ids:
+        # 修复NumPy数组布尔判断问题
+        if kb_ids is not None and len(kb_ids) > 0:
             from sqlalchemy import or_
             accessible_kbs = db.query(KnowledgeBase).filter(
                 KnowledgeBase.id.in_(kb_ids),
@@ -1056,11 +1057,11 @@ async def execute_tool(
             kb_ids = [kb.id for kb in user_kbs]
             print(f"DEBUG_RAG_TOOL: 用户所有知识库: {[(kb.id, kb.name) for kb in user_kbs]}")
             print(f"DEBUG_RAG_TOOL: 使用的知识库ID列表: {kb_ids}")
-            if not kb_ids:
+            if len(kb_ids) == 0:
                 print(f"WARNING_RAG_TOOL: 用户 {user_id} 没有任何知识库")
 
 
-        if kb_ids:
+        if kb_ids and len(kb_ids) > 0:
             print(f"DEBUG_RAG_TOOL: 开始查询知识库文章，知识库IDs: {kb_ids}")
             articles_candidate = db.query(KnowledgeArticle).filter(
                 KnowledgeArticle.kb_id.in_(kb_ids),
@@ -1104,7 +1105,8 @@ async def execute_tool(
                     })
 
         # 权限验证：验证笔记访问权限
-        if not note_ids:
+        # 修复NumPy数组布尔判断问题
+        if note_ids is None or len(note_ids) == 0:
             user_notes = db.query(Note).filter(
                 Note.owner_id == user_id,
                 Note.content.isnot(None)
@@ -1119,7 +1121,7 @@ async def execute_tool(
             ).all()
             note_ids = [note.id for note in user_notes]
 
-        if note_ids:
+        if note_ids and len(note_ids) > 0:
             notes_candidate = db.query(Note).filter(
                 Note.id.in_(note_ids),
                 Note.owner_id == user_id
@@ -1137,7 +1139,8 @@ async def execute_tool(
                     })
 
         # 权限验证：验证临时文件访问权限
-        if temp_file_ids and conversation_id_from_args:
+        # 修复NumPy数组布尔判断问题
+        if temp_file_ids is not None and len(temp_file_ids) > 0 and conversation_id_from_args:
             print(f"DEBUG_RAG_TOOL: 检查 {len(temp_file_ids)} 个临时文件...")
             # 验证临时文件属于指定对话且用户有权限访问
             conversation = db.query(AIConversation).filter(
@@ -1668,9 +1671,28 @@ async def invoke_agent(
         tool_choice_param = "none" # 确保明确不选择工具
         print(f"DEBUG_AGENT: Tool use explicitly disabled (enable_tool_use is False). Calling LLM without tools.")
 
+    # 过滤消息，将内部角色转换为 LLM API 兼容的格式
+    filtered_messages = []
+    for msg in messages:
+        if msg["role"] == "user":
+            filtered_messages.append({"role": "user", "content": msg["content"]})
+        elif msg["role"] == "assistant":
+            filtered_messages.append({"role": "assistant", "content": msg["content"]})
+        elif msg["role"] == "tool_call":
+            # 将工具调用信息作为助手消息
+            tool_info = json.dumps(msg.get("tool_calls_json", {}), ensure_ascii=False)[:200]
+            filtered_messages.append({"role": "assistant", "content": f"我决定调用工具: {tool_info}..."})
+        elif msg["role"] == "tool_output":
+            # 将工具输出信息作为助手消息  
+            output_info = json.dumps(msg.get("tool_output_json", {}), ensure_ascii=False)[:300]
+            filtered_messages.append({"role": "assistant", "content": f"工具执行结果: {output_info}..."})
+        # 跳过其他不支持的角色
+
+    print(f"DEBUG_AGENT: Filtered {len(messages)} messages to {len(filtered_messages)} LLM-compatible messages")
+
     # 调用 LLM API，根据 tools_to_send_to_llm 和 tool_choice_param 传递参数
     llm_response_data = await call_llm_api(
-        messages,
+        filtered_messages,  # 使用过滤后的消息
         llm_api_type,
         llm_api_key,
         llm_api_base_url,
@@ -1706,14 +1728,26 @@ async def invoke_agent(
             try:
                 if tool_name == "rag_knowledge_base":
                     # 优先使用LLM工具调用中指定的kb_ids，如果没有则使用invoke_agent传入的kb_ids
-                    tool_kb_ids = tool_args.get("kb_ids") or kb_ids
+                    # 修复NumPy数组布尔判断问题
+                    tool_kb_ids_arg = tool_args.get("kb_ids")
+                    if tool_kb_ids_arg is not None and len(tool_kb_ids_arg) > 0:
+                        tool_kb_ids = tool_kb_ids_arg
+                    else:
+                        tool_kb_ids = kb_ids
+                    
+                    tool_note_ids_arg = tool_args.get("note_ids")
+                    if tool_note_ids_arg is not None and len(tool_note_ids_arg) > 0:
+                        tool_note_ids = tool_note_ids_arg
+                    else:
+                        tool_note_ids = note_ids
+                        
                     executed_output = await execute_tool(
                         db=db,
                         tool_call_name=tool_name,
                         tool_call_args={
                             "query": tool_args.get("query"),
                             "kb_ids": tool_kb_ids,
-                            "note_ids": tool_args.get("note_ids") or note_ids,
+                            "note_ids": tool_note_ids,
                             "temp_file_ids": temp_file_ids,
                             "conversation_id": conversation_id_for_temp_files
                         },
@@ -1805,8 +1839,42 @@ async def invoke_agent(
 
         print(f"DEBUG_AGENT: Sending tool output back to LLM for final answer.")
 
+        # 过滤消息，确保所有角色都与 LLM API 兼容
+        filtered_messages_for_final = []
+        for msg in messages:
+            if msg["role"] == "user":
+                filtered_messages_for_final.append({"role": "user", "content": msg["content"]})
+            elif msg["role"] == "assistant":
+                # 处理可能包含 tool_calls 的助手消息
+                if "tool_calls" in msg:
+                    filtered_messages_for_final.append({
+                        "role": "assistant", 
+                        "content": msg.get("content", ""),
+                        "tool_calls": msg["tool_calls"]
+                    })
+                else:
+                    filtered_messages_for_final.append({"role": "assistant", "content": msg["content"]})
+            elif msg["role"] == "tool":
+                # 保持标准的工具响应格式
+                filtered_messages_for_final.append({
+                    "role": "tool", 
+                    "tool_call_id": msg["tool_call_id"], 
+                    "content": msg["content"]
+                })
+            elif msg["role"] == "tool_call":
+                # 将工具调用信息作为助手消息
+                tool_info = json.dumps(msg.get("tool_calls_json", {}), ensure_ascii=False)[:200]
+                filtered_messages_for_final.append({"role": "assistant", "content": f"我决定调用工具: {tool_info}..."})
+            elif msg["role"] == "tool_output":
+                # 将工具输出信息作为助手消息  
+                output_info = json.dumps(msg.get("tool_output_json", {}), ensure_ascii=False)[:300]
+                filtered_messages_for_final.append({"role": "assistant", "content": f"工具执行结果: {output_info}..."})
+            # 跳过其他不支持的角色
+
+        print(f"DEBUG_AGENT: Filtered {len(messages)} final messages to {len(filtered_messages_for_final)} LLM-compatible messages")
+
         final_llm_response = await call_llm_api(
-            messages,
+            filtered_messages_for_final,  # 使用过滤后的消息
             llm_api_type,
             llm_api_key,
             llm_api_base_url,
