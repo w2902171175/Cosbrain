@@ -1260,39 +1260,49 @@ class UserCourseResponse(UserCourseBase):
 
 class CourseMaterialBase(BaseModel):
     title: str = Field(..., description="课程材料标题")
-    type: Literal["file", "link", "text", "video", "image"] = Field(..., description="材料类型：'file', 'link', 'text', 'video', 'image'")
+    type: Literal["file", "link", "text", "video", "image"] = Field(...,
+                                                                    description="材料类型：'file', 'link', 'text', 'video', 'image'")
 
-    url: Optional[str] = Field(None, description="当类型为'link'或媒体文件时，提供外部链接URL或OSS URL")
+    url: Optional[str] = Field(None, description="当类型为'link'时，提供外部链接URL。对于文件类型，此字段由服务器生成。")
     content: Optional[str] = Field(None, description="当类型为'text'时，提供少量文本内容，或作为文件/链接/媒体的补充描述")
 
-    original_filename: Optional[str] = Field(None, description="原始上传文件名")
-    file_type: Optional[str] = Field(None, description="文件MIME类型")
-    size_bytes: Optional[int] = Field(None, description="文件大小（字节）")
+    original_filename: Optional[str] = Field(None, description="原始上传文件名，由服务器生成")
+    file_type: Optional[str] = Field(None, description="文件MIME类型，由服务器生成")
+    size_bytes: Optional[int] = Field(None, description="文件大小（字节），由服务器生成")
 
     @field_validator('url', 'content', 'original_filename', 'file_type', 'size_bytes', mode='before')
     def validate_material_fields(cls, v, info):
-        if not info.data.get('type'):
+        # 这个前置检查很好，保留它
+        if 'type' not in info.data:
             return v
+
         material_type = info.data['type']
         field_name = info.field_name
+
+        # 这部分 'link' 类型的逻辑是正确的
         if material_type == "link":
             if field_name == "url" and not v:
                 raise ValueError("类型为 'link' 时，'url' 字段为必填。")
             if field_name in ['original_filename', 'file_type', 'size_bytes'] and v is not None:
-                raise ValueError(f"类型为 'link' 时，'{field_name}' 字段不应提供。")
-            if field_name == "content" and v is not None:  # Content for links is optional
-                return v
+                raise ValueError(f"类型为 'link' 时，客户端不应提供 '{field_name}' 字段。")
+
+        # 这部分 'text' 类型的逻辑是正确的
         elif material_type == "text":
             if field_name == "content" and not v:
                 raise ValueError("类型为 'text' 时，'content' 字段为必填。")
             if field_name in ['url', 'original_filename', 'file_type', 'size_bytes'] and v is not None:
-                raise ValueError(f"类型为 'text' 时，'{field_name}' 字段不应提供。")
+                raise ValueError(f"类型为 'text' 时，客户端不应提供 '{field_name}' 字段。")
+
+        # --- 修正之处在这里 ---
+        # 对于依赖文件上传的类型，客户端不应提供URL或文件元数据。
+        # 这些信息将由服务器在文件上传后生成。
         elif material_type in ["file", "image", "video"]:
-            if field_name == "url" and not v:
-                raise ValueError(f"类型为 '{material_type}' 时，'url' 字段为必填。")
-            # For file/image/video, content is optional supplemental description
-            if field_name == "content" and v is not None:
-                return v
+            # 我们把逻辑从“url是必需的”改为“url必须不能由客户端提供”。
+            if field_name == "url" and v is not None:
+                raise ValueError(f"类型为 '{material_type}' 时，客户端不应提供 'url' 字段，它将由服务器在文件上传后生成。")
+
+            # content 是可选的补充描述，所以这里我们不需要为它添加规则。
+
         return v
 
 
