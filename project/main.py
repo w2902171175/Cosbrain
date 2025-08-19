@@ -10469,11 +10469,17 @@ async def create_forum_topic(
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                     detail=f"文件上传到云存储失败: {e}")
         else:  # 没有上传文件，但可能提供了 media_url (例如用户粘贴的外部链接)
-            # 验证 media_url 和 media_type 的一致性 (由 schema 校验，但这里再次检查)
+            # 验证 media_url 和 media_type 的一致性
             if final_media_url and not final_media_type:
-                # 这种情况应该已经在 schema.py 的 @model_validator 处捕获
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="media_url 存在时，media_type 不能为空。")
+            
+            # 如果设置了 media_type 但没有 media_url，且没有上传文件，清空 media_type
+            if final_media_type and not final_media_url:
+                print(f"DEBUG: 检测到设置了 media_type='{final_media_type}' 但没有 media_url 和上传文件，自动清空 media_type")
+                final_media_type = None
+                final_original_filename = None
+                final_media_size_bytes = None
 
         # 3. 组合文本用于嵌入
         combined_text = ". ".join(filter(None, [
@@ -11052,11 +11058,17 @@ async def add_forum_comment(
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                     detail=f"文件上传到云存储失败: {e}")
         else:  # 没有上传文件，但可能提供了 media_url (例如用户粘贴的外部链接)
-            # 验证 media_url 和 media_type 的一致性 (由 schema 校验，但这里再次检查)
+            # 验证 media_url 和 media_type 的一致性
             if final_media_url and not final_media_type:
-                # 这种情况应该已经在 schema.py 的 @model_validator 处捕获
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail="media_url 存在时，media_type 不能为空。")
+            
+            # 如果设置了 media_type 但没有 media_url，且没有上传文件，清空 media_type
+            if final_media_type and not final_media_url:
+                print(f"DEBUG: 检测到设置了 media_type='{final_media_type}' 但没有 media_url 和上传文件，自动清空 media_type")
+                final_media_type = None
+                final_original_filename = None
+                final_media_size_bytes = None
 
         # 4. 创建评论记录
         db_comment = ForumComment(
