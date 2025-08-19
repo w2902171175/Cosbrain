@@ -3635,7 +3635,7 @@ async def update_project(
         # --- Handle Cover Image Upload/Update/Clear ---
         # Get old OSS object name for cover image (if any)
         old_cover_oss_object_name = None
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         if db_project.cover_image_url and db_project.cover_image_url.startswith(oss_base_url_parsed):
             old_cover_oss_object_name = db_project.cover_image_url.replace(oss_base_url_parsed, '', 1)
 
@@ -4050,7 +4050,7 @@ async def delete_project(
         # 3. 删除项目封面图片（如果托管在OSS）
         # Project 模型的 cover_image_url 是直接 string，没有像 ProjectFile 那样的 event listener
         # 所以这里需要手动删除 OSS 上的封面文件
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         cover_image_oss_object_name = None
         if db_project.cover_image_url and db_project.cover_image_url.startswith(oss_base_url_parsed):
             cover_image_oss_object_name = db_project.cover_image_url.replace(oss_base_url_parsed, '', 1)
@@ -4888,7 +4888,7 @@ async def update_note(
     new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
     # 从现有的 db_note.media_url 中提取旧的 OSS object name
-    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
     if db_note.media_url and db_note.media_url.startswith(oss_base_url_parsed):
         old_media_oss_object_name = db_note.media_url.replace(oss_base_url_parsed, '', 1)
 
@@ -5150,7 +5150,7 @@ async def delete_note(
 
     # <<< 新增：如果笔记关联了文件或媒体，并且是OSS URL，则尝试从OSS删除文件 >>>
     if db_note.media_type in ["image", "video", "file"] and db_note.media_url:
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
         object_name = db_note.media_url.replace(oss_base_url_parsed, '', 1) if db_note.media_url.startswith(
             oss_base_url_parsed) else None
@@ -6584,7 +6584,7 @@ async def delete_knowledge_document(
 
     # <<< 修改：从OSS删除文件 >>>
     # 从OSS URL中解析出 object_name
-    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
     object_name = db_document.file_path.replace(oss_base_url_parsed, '', 1) if db_document.file_path.startswith(
         oss_base_url_parsed) else db_document.file_path
 
@@ -8246,7 +8246,7 @@ async def update_course_material(
 
     # 获取旧的OSS对象名称，用于替换时删除
     old_oss_object_name = None
-    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
     if db_material.file_path and db_material.file_path.startswith(oss_base_url_parsed):
         old_oss_object_name = db_material.file_path.replace(oss_base_url_parsed, '', 1)
 
@@ -8448,7 +8448,7 @@ async def delete_course_material(
 
     # 如果材料是 'file' 类型，从OSS删除文件
     if db_material.type == "file" and db_material.file_path:
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
         object_name = db_material.file_path.replace(oss_base_url_parsed, '', 1) if db_material.file_path.startswith(
             oss_base_url_parsed) else db_material.file_path
@@ -8898,7 +8898,7 @@ async def update_collected_content(
     new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
     # 从现有的 db_item.url 中提取旧的 OSS object name
-    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
     if db_item.url and db_item.url.startswith(oss_base_url_parsed):
         old_media_oss_object_name = db_item.url.replace(oss_base_url_parsed, '', 1)
 
@@ -9139,7 +9139,7 @@ async def delete_collected_content(
 
     # 如果是 'file', 'image', 'video' 类型，并且有 OSS URL，则尝试删除 OSS 文件
     if db_item.type in ["file", "image", "video"] and db_item.url:
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
         object_name = db_item.url.replace(oss_base_url_parsed, '', 1) if db_item.url.startswith(
             oss_base_url_parsed) else None
@@ -10752,7 +10752,7 @@ async def update_forum_topic(
     new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
     # 从现有的 db_topic.media_url 中提取旧的 OSS object name
-    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
     if db_topic.media_url and db_topic.media_url.startswith(oss_base_url_parsed):
         old_media_oss_object_name = db_topic.media_url.replace(oss_base_url_parsed, '', 1)
 
@@ -10949,7 +10949,7 @@ async def delete_forum_topic(
 
     # <<< 新增：如果话题关联了文件或媒体，并且是OSS URL，则尝试从OSS删除文件 >>>
     if db_topic.media_type in ["image", "video", "file"] and db_topic.media_url:
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
         object_name = db_topic.media_url.replace(oss_base_url_parsed, '', 1) if db_topic.media_url.startswith(
             oss_base_url_parsed) else None
@@ -11213,7 +11213,7 @@ async def update_forum_comment(
     new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
 
     # 从现有的 db_comment.media_url 中提取旧的 OSS object name
-    oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+    oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
     if db_comment.media_url and db_comment.media_url.startswith(oss_base_url_parsed):
         old_media_oss_object_name = db_comment.media_url.replace(oss_base_url_parsed, '', 1)
 
@@ -11384,7 +11384,7 @@ async def delete_forum_comment(
 
     # <<< 新增：如果评论关联了文件或媒体，并且是OSS URL，则尝试从OSS删除文件 >>>
     if db_comment.media_type in ["image", "video", "file"] and db_comment.media_url:
-        oss_base_url_parsed = os.getenv("OSS_BASE_URL").rstrip('/') + '/'
+        oss_base_url_parsed = os.getenv("S3_BASE_URL").rstrip('/') + '/'
         # 从OSS URL中解析出 object_name
         object_name = db_comment.media_url.replace(oss_base_url_parsed, '', 1) if db_comment.media_url.startswith(
             oss_base_url_parsed) else None
