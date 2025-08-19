@@ -2277,10 +2277,22 @@ async def get_user_llm_model_ids(
 
     model_ids_dict = ai_core.parse_llm_model_ids(db_student.llm_model_ids)
 
+    # 获取清理后的 fallback_model_id，使用与当前服务商配置一致的逻辑
+    fallback_model_id = None
+    if db_student.llm_api_type:
+        user_models = model_ids_dict.get(db_student.llm_api_type, [])
+        if user_models:
+            fallback_model_id = user_models[0]
+        else:
+            # 获取系统默认模型
+            available_configs = ai_core.get_available_llm_configs()
+            provider_config = available_configs.get(db_student.llm_api_type, {})
+            fallback_model_id = provider_config.get("default_model")
+
     return {
         "llm_model_ids": model_ids_dict,
         "current_provider": db_student.llm_api_type,
-        "fallback_model_id": db_student.llm_model_id,  # 兼容性字段
+        "fallback_model_id": fallback_model_id,  # 兼容性字段，现在使用清理后的模型ID
         "available_providers": ai_core.get_available_llm_configs()
     }
 
@@ -2322,12 +2334,15 @@ async def get_current_provider_models(
     elif provider_config.get("default_model"):
         recommended_model = provider_config["default_model"]
 
+    # fallback_model 使用与 recommended_model 相同的逻辑，而不是直接使用可能包含方括号的 llm_model_id
+    fallback_model = recommended_model
+
     return {
         "current_provider": db_student.llm_api_type,
         "user_configured_models": user_models,
         "system_available_models": system_models,
         "recommended_model": recommended_model,
-        "fallback_model": db_student.llm_model_id  # 兼容性字段
+        "fallback_model": fallback_model  # 兼容性字段，现在使用清理后的模型ID
     }
 
 
