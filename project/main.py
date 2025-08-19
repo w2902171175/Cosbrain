@@ -8739,11 +8739,27 @@ async def add_platform_item_to_collection(
     print(
         f"DEBUG: 用户 {current_user_id} 尝试快速收藏平台内容。类型: {request_data.shared_item_type}, ID: {request_data.shared_item_id}")
 
+    # 创建类型映射，将shared_item_type映射到CollectedContentBase允许的type值
+    type_mapping = {
+        "knowledge_document": None,  # 留空，由后端自动推断为合适的类型（document/image/video/file等）
+        "course_material": None,     # 留空，由后端自动推断为合适的类型
+        "project": "project",
+        "course": "course", 
+        "forum_topic": "forum_topic",
+        "note": "note",
+        "daily_record": "daily_record",
+        "knowledge_article": "knowledge_article",
+        "chat_message": None  # 留空，由后端自动推断为合适的类型（image/video/link/text等）
+    }
+    
+    # 获取映射后的类型，如果映射结果为None，则让后端自动推断
+    mapped_type = type_mapping.get(request_data.shared_item_type, request_data.shared_item_type)
+
     # 构造一个 CollectedContentBase 对象，只填充 shared_item 相关字段和用户主动提供的可选字段
     # 其他默认字段（如 title, type, url, content, tags, author等）将留空，由 _create_collected_content_item_internal 自动填充。
     collected_content_base_data = schemas.CollectedContentBase(
         title=request_data.title,  # 允许快速收藏时提供一个标题，如果不提供则由后端推断
-        type=request_data.shared_item_type,  # 根据共享项类型设置收藏类型
+        type=mapped_type,  # 使用映射后的类型，如果为None则由后端推断
         url=None,  # URL由后端推断
         content=None,  # content由后端推断
         tags=None,  # 标签由后端推断
