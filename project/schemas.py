@@ -422,11 +422,11 @@ class FolderResponse(FolderBase):
 # --- CollectedContent Schemas ---
 class CollectedContentBase(BaseModel):
     """具体收藏内容基础信息模型，用于创建或更新时接收数据"""
-    title: str
-    type: Literal[
+    title: Optional[str] = None
+    type: Optional[Literal[
         "document", "video", "note", "link", "file", "image",
         "forum_topic", "course", "project", "knowledge_article",
-        "daily_record"] = Field(..., description="内容类型：document, video, note, link, file, image, forum_topic, course, project, knowledge_article, daily_record")
+        "daily_record"]] = Field(None, description="内容类型：document, video, note, link, file, image, forum_topic, course, project, knowledge_article, daily_record")
     url: Optional[str] = Field(None, description="外部链接或OSS URL")
     content: Optional[str] = Field(None, description="文本内容或简要描述")
     tags: Optional[str] = None
@@ -439,6 +439,10 @@ class CollectedContentBase(BaseModel):
     duration: Optional[str] = None
     file_size: Optional[int] = Field(None, description="文件大小（字节）")
     status: Optional[Literal["active", "archived", "deleted"]] = None
+    
+    # 用于快速收藏平台内部内容的字段
+    shared_item_type: Optional[str] = Field(None, description="要收藏的平台内部内容的类型")
+    shared_item_id: Optional[int] = Field(None, description="要收藏的平台内部内容的ID")
 
     @model_validator(mode='after')
     def validate_content_or_url(self) -> 'CollectedContentBase':

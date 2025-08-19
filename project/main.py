@@ -8743,7 +8743,7 @@ async def add_platform_item_to_collection(
     # 其他默认字段（如 title, type, url, content, tags, author等）将留空，由 _create_collected_content_item_internal 自动填充。
     collected_content_base_data = schemas.CollectedContentBase(
         title=request_data.title,  # 允许快速收藏时提供一个标题，如果不提供则由后端推断
-        type=None,  # 类型由后端推断
+        type=request_data.shared_item_type,  # 根据共享项类型设置收藏类型
         url=None,  # URL由后端推断
         content=None,  # content由后端推断
         tags=None,  # 标签由后端推断
