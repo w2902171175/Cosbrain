@@ -3054,7 +3054,7 @@ async def find_matching_courses_for_student(db: Session, student_id: int,
                     llm_api_key=student_api_key_for_embedding_and_rerank
                 )
                 final_recommendations.append(
-                    MatchedCourse( # 返回 MatchedCourse
+                    MatchedCourse( # 返回MatchedCourse
                         course_id=rec["course"].id,
                         title=rec["course"].title,
                         description=rec["course"].description,
