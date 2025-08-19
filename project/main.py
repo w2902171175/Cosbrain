@@ -218,7 +218,10 @@ async def _check_and_award_achievements(db: Session, user_id: int):
             )
         ).count(),
         "FORUM_POSTS_COUNT": db.query(ForumTopic).filter(ForumTopic.owner_id == user_id).count(),
-        "CHAT_MESSAGES_SENT_COUNT": db.query(ChatMessage).filter(ChatMessage.sender_id == user_id).count(),
+        "CHAT_MESSAGES_SENT_COUNT": db.query(ChatMessage).filter(
+            ChatMessage.sender_id == user_id,
+            ChatMessage.deleted_at.is_(None)  # 排除已删除的消息
+        ).count(),
         "LOGIN_COUNT": user.login_count
     }
 
@@ -9291,7 +9294,10 @@ async def get_all_chat_rooms(
                     order_by=ChatMessage.sent_at.desc()
                 ).label('rn')
             )
-            .filter(ChatMessage.room_id.in_(room_ids))
+            .filter(
+                ChatMessage.room_id.in_(room_ids),
+                ChatMessage.deleted_at.is_(None)  # 排除已删除的消息
+            )
             .subquery('ranked_messages')
         )
 
@@ -9377,7 +9383,10 @@ async def get_chat_room_by_id(
 
         latest_message_data = (
             db.query(ChatMessage.content_text, Student.name)
-            .filter(ChatMessage.room_id == chat_room.id)
+            .filter(
+                ChatMessage.room_id == chat_room.id,
+                ChatMessage.deleted_at.is_(None)  # 排除已删除的消息
+            )
             .join(Student, Student.id == ChatMessage.sender_id)
             .order_by(ChatMessage.sent_at.desc())
             .first()
@@ -9786,7 +9795,10 @@ async def update_chat_room(
         db_chat_room.members_count = 1
         latest_message_data = (
             db.query(ChatMessage.content_text, Student.name)
-            .filter(ChatMessage.room_id == db_chat_room.id)
+            .filter(
+                ChatMessage.room_id == db_chat_room.id,
+                ChatMessage.deleted_at.is_(None)  # 排除已删除的消息
+            )
             .join(Student, Student.id == ChatMessage.sender_id)
             .order_by(ChatMessage.sent_at.desc())
             .first()
@@ -10359,9 +10371,11 @@ async def get_chat_messages(
     if not (is_creator or is_active_member or current_user.is_admin):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权查看该聊天室的历史消息。")
 
-    # 3. 查询消息
-    messages = db.query(ChatMessage).filter(ChatMessage.room_id == room_id) \
-        .order_by(ChatMessage.sent_at.asc()) \
+    # 3. 查询消息（过滤掉被删除的消息）
+    messages = db.query(ChatMessage).filter(
+        ChatMessage.room_id == room_id,
+        ChatMessage.deleted_at.is_(None)  # 只获取未删除的消息
+    ).order_by(ChatMessage.sent_at.asc()) \
         .offset(offset).limit(limit).all()
 
     # 4. 填充 sender_name
@@ -10376,6 +10390,82 @@ async def get_chat_messages(
 
     print(f"DEBUG: 聊天室 {room_id} 获取到 {len(messages)} 条历史消息。")
     return response_messages
+
+
+@app.delete("/chatrooms/{room_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定聊天消息（仅限消息发送者）")
+async def delete_chat_message(
+        room_id: int,
+        message_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    删除指定聊天消息。
+    只有消息的发送者可以删除自己发送的消息。
+    使用软删除，消息在数据库中保留但对所有用户不可见。
+    """
+    print(f"DEBUG: 用户 {current_user_id} 尝试删除聊天室 {room_id} 中的消息 {message_id}。")
+
+    try:
+        # 1. 查询要删除的消息
+        db_message = db.query(ChatMessage).filter(
+            ChatMessage.id == message_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)  # 只能删除未被删除的消息
+        ).first()
+
+        if not db_message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="消息未找到或已被删除。"
+            )
+
+        # 2. 权限检查：只有消息的发送者可以删除
+        if db_message.sender_id != current_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您只能删除自己发送的消息。"
+            )
+
+        # 3. 验证用户是否还是聊天室的成员（可选检查）
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+
+        # 检查用户是否是聊天室成员或群主
+        is_creator = (db_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您不是该聊天室的成员，无法删除消息。"
+            )
+
+        # 4. 执行软删除
+        from sqlalchemy import func
+        db_message.deleted_at = func.now()
+        db.add(db_message)
+        db.commit()
+
+        print(f"DEBUG: 消息 {message_id} 已被用户 {current_user_id} 成功删除。")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except HTTPException as e:
+        db.rollback()
+        raise e
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR_DB: 删除聊天消息失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"删除聊天消息失败: {e}"
+        )
 
 
 # --- 小论坛 - 话题管理接口 ---
