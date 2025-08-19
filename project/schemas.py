@@ -644,6 +644,7 @@ class ChatMessageResponse(ChatMessageBase):
     room_id: int
     sender_id: int
     sent_at: datetime
+    deleted_at: Optional[datetime] = None
     sender_name: Optional[str] = None
 
     class Config:

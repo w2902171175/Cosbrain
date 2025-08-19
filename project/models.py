@@ -410,6 +410,7 @@ class ChatMessage(Base):
     media_url = Column(String, nullable=True, comment="媒体文件OSS URL或外部链接")
 
     sent_at = Column(DateTime, server_default=func.now())
+    deleted_at = Column(DateTime, nullable=True, comment="消息删除时间，为空表示未删除")
 
     room = relationship("ChatRoom", back_populates="messages")
     sender = relationship("Student", back_populates="sent_messages")
