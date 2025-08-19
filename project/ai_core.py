@@ -366,6 +366,14 @@ async def call_llm_api(
         api_base_url_final = user_llm_api_base_url
         chat_path_final = "/chat/completions"  # OpenAI兼容API的标准路径
         model_to_use_final = user_llm_model_id
+        
+        # 确保模型名称是字符串而不是列表
+        if isinstance(model_to_use_final, list):
+            model_to_use_final = model_to_use_final[0] if model_to_use_final else None
+            if not model_to_use_final:
+                raise ValueError("Custom OpenAI compatible LLM model ID is empty or invalid.")
+        
+        print(f"DEBUG_AI: Custom OpenAI model - provided: {user_llm_model_id}, final: {model_to_use_final}")
 
         # Check if API Key is a dummy key for custom_openai chat
         if user_llm_api_key == "dummy_key_for_testing_without_api":
@@ -386,6 +394,12 @@ async def call_llm_api(
 
         # Choose model: user-provided first, then default from config
         model_to_use_final = user_llm_model_id or config["default_model"]
+        
+        # 确保模型名称是字符串而不是列表
+        if isinstance(model_to_use_final, list):
+            model_to_use_final = model_to_use_final[0] if model_to_use_final else config["default_model"]
+        
+        print(f"DEBUG_AI: Model selection - user_provided: {user_llm_model_id}, config_default: {config['default_model']}, final: {model_to_use_final}")
 
         # Check if API Key is a dummy key for known LLM chat
         if user_llm_api_key == "dummy_key_for_testing_without_api":
@@ -422,6 +436,14 @@ async def call_llm_api(
             data = response.json()
             return data
 
+        except httpx.HTTPStatusError as e:
+            print(f"LLM API HTTP状态错误 ({user_llm_api_type}): {e}")
+            print(f"请求URL: {api_url}")
+            print(f"请求头: {headers}")
+            print(f"请求体: {payload}")
+            print(f"响应状态码: {e.response.status_code}")
+            print(f"响应内容: {e.response.text}")
+            raise
         except httpx.RequestError as e:
             print(f"LLM API请求错误 ({user_llm_api_type}): {e}")
             print(f"LLM API响应内容: {getattr(e, 'response', None).text if getattr(e, 'response', None) else '无'}")
@@ -462,16 +484,23 @@ async def call_web_search_api(
                 raise
 
         elif search_engine_type == "tavily":
-            search_url = base_url or "https://api.tavily.com/rpc/rawsearch"
+            search_url = base_url or "https://api.tavily.com"
+            # 构建完整的搜索端点URL
+            if not search_url.endswith('/search'):
+                search_url = search_url.rstrip('/') + '/search'
+            
+            # 使用Bearer Token认证
+            tavily_headers = headers.copy()
+            tavily_headers["Authorization"] = f"Bearer {api_key}"
+            
             payload = {
-                "api_key": api_key,
                 "query": query,
                 "search_depth": "basic",
                 "include_answer": False,
                 "max_results": 5
             }
             try:
-                response = await client.post(search_url, headers=headers, json=payload, timeout=10)
+                response = await client.post(search_url, headers=tavily_headers, json=payload, timeout=10)
                 response.raise_for_status()
                 data = response.json()
                 for item in data.get("results", []):

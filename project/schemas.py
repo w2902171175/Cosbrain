@@ -835,7 +835,7 @@ class UserSearchEngineConfigBase(BaseModel):
     api_key: Optional[str] = None
     is_active: Optional[bool] = True
     description: Optional[str] = None
-    base_url: Optional[str] = Field(None, description="搜索引擎API的基础URL，例如：https://api.tavily.com")
+    base_url: Optional[str] = Field(None, description="搜索引擎API的基础URL。Tavily: https://api.tavily.com, Bing: https://api.bing.microsoft.com")
 
 
 class UserSearchEngineConfigCreate(UserSearchEngineConfigBase):
