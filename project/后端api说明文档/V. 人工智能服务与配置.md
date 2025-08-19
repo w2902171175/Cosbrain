@@ -449,7 +449,7 @@
  * `api_key` (str): 搜索引擎的 API 密钥。不能为空。
  * `is_active` (bool, 可选): 配置是否激活。默认为 `True`。
  * `description` (str, 可选): 配置描述。
- * `base_url` (str, 可选): 搜索引擎API的基础URL。
+ * `base_url` (str, 可选): 搜索引擎API的基础URL。Tavily使用: `https://api.tavily.com`, Bing使用: `https://api.bing.microsoft.com`。
  * 响应体: `schemas.UserSearchEngineConfigResponse`
  * `id` (int): 配置ID。
  * `owner_id` (int): 配置所有者ID。
