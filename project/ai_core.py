@@ -3519,7 +3519,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
                 # MODIFICATION: 将项目创建者自己的 API Key 传递给 _generate_match_rationale_llm
                 rationale = await _generate_match_rationale_llm(
                     student=rec["student"],
-                    project=project,
+                    target_item=project,
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
@@ -3547,7 +3547,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
             for rec in refined_candidates[:final_k]:
                 rationale = await _generate_match_rationale_llm(
                     student=rec["student"],
-                    project=project,
+                    target_item=project,
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
@@ -3573,7 +3573,7 @@ async def find_matching_students_for_project(db: Session, project_id: int,
         for rec in refined_candidates[:final_k]:
             rationale = await _generate_match_rationale_llm(
                 student=rec["student"],
-                project=project,
+                target_item=project,
                 sim_score=rec["sim_score"],
                 proficiency_score=rec["proficiency_score"],
                 time_score=rec["time_score"],
