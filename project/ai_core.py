@@ -1381,7 +1381,7 @@ async def execute_tool(
             if doc["type"] == "ai_temp_file":
                 temp_file_obj = db.query(AIConversationTemporaryFile).filter(AIConversationTemporaryFile.id == doc["id"]).first()
                 if temp_file_obj and hasattr(temp_file_obj, 'oss_object_name'):
-                     source_doc_info["file_path"] = f"{os.getenv('OSS_BASE_URL').rstrip('/')}/{temp_file_obj.oss_object_name}"
+                     source_doc_info["file_path"] = f"{os.getenv('S3_BASE_URL').rstrip('/')}/{temp_file_obj.oss_object_name}"
             source_articles_info.append(source_doc_info)
 
         return {"context": retrieved_content, "sources": source_articles_info}
