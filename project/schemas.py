@@ -323,20 +323,30 @@ class NoteBase(BaseModel):
 
     @model_validator(mode='after')
     def validate_media_and_content(self) -> 'NoteBase':
-        if not self.content and not self.media_url:
-            raise ValueError("笔记内容 (content) 和媒体文件 (media_url) 至少需要提供一个。")
+        # 注意：当使用 FastAPI 的 Depends() 时，验证会在文件上传处理之前执行
+        # 因此我们需要放宽验证条件，允许在没有 content 和 media_url 的情况下通过验证
+        # 实际的内容验证将在 API 端点中进行
+        
+        # 只有当明确提供了 media_type 但没有 media_url 时才报错
         if self.media_type and not self.media_url:
             raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
+        
+        # 只有当明确提供了 media_url 但没有 media_type 时才报错
         if self.media_url and not self.media_type:
             raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+        
+        # 🔧 修复：先进行 folder_id 的转换，再进行关联关系验证
+        if self.folder_id == 0:
+            self.folder_id = None
+        
+        # 现在进行关联关系验证（在 folder_id 转换之后）
         is_course_note = (self.course_id is not None) or (self.chapter is not None and self.chapter.strip() != "")
         is_folder_note = (self.folder_id is not None)
         if is_course_note and is_folder_note:
             raise ValueError("笔记不能同时关联到课程/章节和自定义文件夹。请选择一种组织方式。")
         if (self.chapter is not None and self.chapter.strip() != "") and (self.course_id is None):
             raise ValueError("为了关联章节信息，课程ID (course_id) 不能为空。")
-        if self.folder_id == 0:
-            self.folder_id = None
+        
         return self
 
 

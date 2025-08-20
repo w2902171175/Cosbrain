@@ -4702,6 +4702,17 @@ async def create_note(
             # 验证 media_url 和 media_type 的一致性 (由 schema 校验，这里不重复，但假设通过)
             pass
 
+        # 1.5. 验证笔记内容完整性 - 在文件处理之后进行
+        # 检查是否有有效的文本内容（非空且非纯空白字符）
+        has_valid_content = note_data.content and note_data.content.strip()
+        has_media_file = final_media_url is not None
+        
+        if not has_valid_content and not has_media_file:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="笔记内容 (content) 和媒体文件 (media_url) 至少需要提供一个。"
+            )
+
         # 2. 组合文本用于嵌入
         # 根据是课程笔记还是文件夹笔记，调整combined_text内容
         context_identifier = ""
@@ -5086,6 +5097,17 @@ async def update_note(
                         db_note.folder_id = value
                 else:  # For other fields, just apply
                     setattr(db_note, key, value)
+
+        # 2.5. 验证笔记内容完整性 - 在所有字段更新之后进行
+        # 检查是否有有效的文本内容（非空且非纯空白字符）
+        has_valid_content = db_note.content and db_note.content.strip()
+        has_media_file = db_note.media_url is not None
+        
+        if not has_valid_content and not has_media_file:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="笔记内容 (content) 和媒体文件 (media_url) 至少需要提供一个。"
+            )
 
         # 3. 重新生成 combined_text
         context_identifier = ""
