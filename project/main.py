@@ -558,7 +558,7 @@ async def _create_collected_content_item_internal(
 
     # 优先处理直接上传的文件/媒体
     if uploaded_file_bytes and uploaded_file_object_name and uploaded_file_content_type:
-        final_url = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{uploaded_file_object_name}"
+        final_url = f"{oss_utils.S3_BASE_URL.rstrip('/')}/{uploaded_file_object_name}"
         final_file_size = uploaded_file_size
         # 自动推断文件类型
         if uploaded_file_content_type.startswith("image/"):
@@ -7152,7 +7152,7 @@ async def ai_qa(
 
             print(f"DEBUG_AI_QA: 后台文件处理任务已启动，任务ID: {temp_file_record.id}")
 
-            file_link = f"{oss_utils.OSS_BASE_URL.rstrip('/')}/{oss_object_name}"
+            file_link = f"{oss_utils.S3_BASE_URL.rstrip('/')}/{oss_object_name}"
             # 将文件信息加入当前查询，提示LLM
             file_prompt = f"\n\n[用户上传了一个文件，名为 '{uploaded_file.filename}' ({uploaded_file.content_type})。链接: {file_link}。请尝试利用其内容。文件内容将通过RAG工具提供。]"
             query += file_prompt
