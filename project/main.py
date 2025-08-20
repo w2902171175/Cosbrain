@@ -2720,6 +2720,11 @@ async def get_project_applications(
         db: Session = Depends(get_db),
         status_filter: Optional[Literal["pending", "approved", "rejected"]] = None
 ):
+
+    # --- 新增：强制类型转换为整数 ---
+    current_user_id_int = int(current_user_id)
+    # --------------------------------
+
     """
     项目创建者或系统管理员可以获取指定项目的申请列表。
     可根据 status_filter (pending, approved, rejected) 筛选。
@@ -2735,7 +2740,29 @@ async def get_project_applications(
     if not current_user_obj:  # 理论上不会发生
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    if not (db_project.creator_id == current_user_id or current_user_obj.is_admin):
+    # --- 开始修改权限检查 ---
+
+    # 检查1: 用户是否为项目创建者
+    is_creator = (db_project.creator_id == current_user_id_int)
+
+    # 检查2: 用户是否为系统管理员
+    is_system_admin = current_user_obj.is_admin
+
+    # 检查3: 用户是否为该项目的管理员
+    membership = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.student_id == current_user_id_int,
+        ProjectMember.role == 'admin',  # 明确检查角色是否为 'admin'
+        ProjectMember.status == 'active'
+    ).first()
+    is_project_admin = (membership is not None)
+
+    # 只要满足以上任一条件，就授予权限
+    if not (is_creator or is_system_admin or is_project_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="无权查看该项目的申请列表。只有项目创建者、项目管理员或系统管理员可以。")
+
+    if not (db_project.creator_id == current_user_id_int or current_user_obj.is_admin):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="无权查看该项目的申请列表。只有项目创建者或系统管理员可以。")
 
@@ -2775,54 +2802,64 @@ async def process_project_application(
         db: Session = Depends(get_db)
 ):
     """
-    项目创建者或系统管理员可以批准或拒绝项目申请。
+    项目创建者、项目管理员或系统管理员可以批准或拒绝项目申请。
     如果申请被批准，用户将成为项目成员。
     """
-    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 尝试处理申请 {application_id} 为 '{process_data.status}'。")
+    # --- 1. 强制类型转换为整数 (关键修复点) ---
+    current_user_id_int = int(current_user_id)
+    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id_int} 尝试处理申请 {application_id} 为 '{process_data.status}'。")
 
-    # 1. 验证申请是否存在且为 'pending' 状态
+    # 2. 验证申请是否存在且为 'pending' 状态
     db_application = db.query(ProjectApplication).filter(ProjectApplication.id == application_id).first()
     if not db_application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目申请未找到。")
     if db_application.status != "pending":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该申请已处理或状态异常，无法再次处理。")
 
-    # 2. 验证操作者权限 (只有项目创建者或系统管理员能处理)
-    # 预加载 project 和 applicant
+    # 3. 验证操作者权限 (只有项目创建者、项目管理员或系统管理员能处理)
     db_project = db.query(Project).filter(Project.id == db_application.project_id).first()
-    if not db_project:  # 理论上不会发生，因为 db_application 关联 Project
+    if not db_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目未找到。")
 
-    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id_int).first()  # 使用 int
     if not current_user_obj:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-    if not (db_project.creator_id == current_user_id or current_user_obj.is_admin):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="无权处理该项目申请。只有项目创建者或系统管理员可以。")
+    # --- 4. 实现完整的三重权限检查 (关键修复点) ---
+    is_creator = (db_project.creator_id == current_user_id_int)  # 使用 int
+    is_system_admin = current_user_obj.is_admin
 
-    # 3. 更新申请状态
+    membership = db.query(ProjectMember).filter(
+        ProjectMember.project_id == db_project.id,
+        ProjectMember.student_id == current_user_id_int,  # 使用 int
+        ProjectMember.role == 'admin',
+        ProjectMember.status == 'active'
+    ).first()
+    is_project_admin = (membership is not None)
+
+    if not (is_creator or is_system_admin or is_project_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="无权处理该项目申请。只有项目创建者、项目管理员或系统管理员可以。")
+
+    # 5. 更新申请状态
     db_application.status = process_data.status
     db_application.processed_at = func.now()
-    db_application.processed_by_id = current_user_id
-    # 允许更新 message (如拒绝原因)
+    db_application.processed_by_id = current_user_id_int  # 使用 int
     db_application.message = process_data.process_message if process_data.process_message is not None else db_application.message
 
     db.add(db_application)
 
-    # 4. 如果批准，则添加为项目成员或激活现有成员
+    # 6. 如果批准，则添加为项目成员或激活现有成员
     if process_data.status == "approved":
-        # 检查是否已是成员 (避免重复添加，ProjectMember 表有唯一约束)
         existing_member = db.query(ProjectMember).filter(
             ProjectMember.project_id == db_application.project_id,
             ProjectMember.student_id == db_application.student_id
         ).first()
 
         if existing_member:
-            # 如果申请者之前是成员（例如被移除了又申请），这里可以更新其状态或角色
-            # 简化处理为确认其为“member”角色。如果需要更复杂的角色管理，这里需细化。
+            existing_member.status = "active"  # 确保是激活状态
             existing_member.role = "member"
-            existing_member.joined_at = func.now()  # 更新加入时间
+            existing_member.joined_at = func.now()
             db.add(existing_member)
             print(
                 f"DEBUG_PROJECT_APP: 用户 {db_application.student_id} 已再次激活为项目 {db_application.project_id} 的成员。")
@@ -2830,23 +2867,19 @@ async def process_project_application(
             new_member = ProjectMember(
                 project_id=db_application.project_id,
                 student_id=db_application.student_id,
-                role="member"  # 默认角色
+                role="member",
+                status="active"  # 新成员也应是 active 状态
             )
             db.add(new_member)
             print(
                 f"DEBUG_PROJECT_APP: 用户 {db_application.student_id} 已添加为项目 {db_application.project_id} 的新成员。")
 
-        # 可选：如果希望在加入项目时奖励积分或触发成就，可以在这里调用
-        # if db_application.applicant: # 确保 applicant 关系已加载
-        #     await _award_points(db, db_application.applicant, amount=10, reason=f"成功加入项目 {db_project.title}")
-        #     await _check_and_award_achievements(db, db_application.applicant.id)
-
     db.commit()
     db.refresh(db_application)
 
-    # 填充响应模型中的申请者和审批者信息
+    # 7. 填充响应模型 (这部分可以优化，但功能上没问题)
     applicant_user = db.query(Student).filter(Student.id == db_application.student_id).first()
-    processor_user = db.query(Student).filter(Student.id == db_application.processed_by_id).first()
+    processor_user = current_user_obj  # 直接复用前面查过的 current_user_obj，更高效
 
     db_application.applicant_name = applicant_user.name if applicant_user else "未知用户"
     db_application.applicant_email = applicant_user.email if applicant_user else None
@@ -2854,7 +2887,6 @@ async def process_project_application(
 
     print(f"DEBUG_PROJECT_APP: 项目申请 {db_application.id} 已处理为 '{process_data.status}'。")
     return db_application
-
 
 @app.get("/projects/{project_id}/members", response_model=List[schemas.ProjectMemberResponse],
          summary="获取项目成员列表")
@@ -3336,6 +3368,19 @@ async def create_project(
         )
         db.add(db_project)
         db.flush()  # Flush to get the ID for db_project, but don't commit yet to allow rollback of files
+
+        # --- 新增逻辑：将创建者自动添加为项目的第一个成员 ---
+        print(f"DEBUG: 准备将创建者 {current_user_id_int} 自动添加为项目 {db_project.id} 的成员。")
+        initial_member = ProjectMember(
+            project_id=db_project.id,  # 使用刚生成的项目ID
+            student_id=current_user_id_int,  # 创建者的ID
+            role="admin",  # 或者 "管理员", "负责人" 等，根据你的系统设计
+            status="active",  # 状态设为活跃
+            # join_date=datetime.utcnow()     # 如果你的模型有加入日期字段
+        )
+        db.add(initial_member)
+        print(f"DEBUG: 创建者已作为成员添加到数据库会话中。")
+        # --- 新增逻辑结束 ---
 
         # --- Process Project Attachment Files ---
         project_files_for_db = []
