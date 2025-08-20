@@ -4975,21 +4975,86 @@ async def get_note_by_id(
 @app.put("/notes/{note_id}", response_model=schemas.NoteResponse, summary="更新指定笔记")
 async def update_note(
         note_id: int,
-        note_data: schemas.NoteBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
-        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为笔记的附件"),  # 新增：接收上传文件
+        note_data: schemas.NoteBase,  # 移除 Depends()，只支持JSON请求
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    更新指定ID的笔记内容。用户只能更新自己的记录。
-    支持替换附件文件和更新所属课程/章节或自定义文件夹。更新后会重新生成 combined_text 和 embedding。
+    更新指定ID的笔记内容（纯JSON请求）。用户只能更新自己的记录。
+    如需更新文件，请使用 /notes/{note_id}/with-file 端点。
     """
+    print(f"DEBUG: 更新笔记 ID: {note_id}")
+    print(f"DEBUG: 更新数据内容: title='{note_data.title}', content='{note_data.content}', note_type='{note_data.note_type}'")
+    
+    return await _update_note_internal(note_id, note_data, None, current_user_id, db)
+
+
+@app.put("/notes/{note_id}/with-file", response_model=schemas.NoteResponse, summary="更新笔记并支持文件上传")
+async def update_note_with_file(
+        note_id: int,
+        note_data_json: str = Form(..., description="笔记数据，JSON字符串格式"),
+        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为笔记的附件"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    更新指定ID的笔记内容并支持文件上传（multipart请求）。
+    """
+    # 解析JSON数据
+    try:
+        import json
+        note_data_dict = json.loads(note_data_json)
+        note_data = schemas.NoteBase(**note_data_dict)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"无效的JSON格式: {e}"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"数据验证失败: {e}"
+        )
+    
     print(f"DEBUG: 更新笔记 ID: {note_id}。有文件: {bool(file)}")
+    return await _update_note_internal(note_id, note_data, file, current_user_id, db)
+
+
+async def _update_note_internal(
+        note_id: int,
+        note_data: schemas.NoteBase,
+        file: Optional[UploadFile],
+        current_user_id: int,
+        db: Session
+):
+
+    """
+    更新笔记的内部实现
+    """
     db_note = db.query(Note).filter(Note.id == note_id, Note.owner_id == current_user_id).first()
     if not db_note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found or not authorized")
 
     update_dict = note_data.dict(exclude_unset=True)
+    print(f"DEBUG: update_dict 内容: {update_dict}")
+    
+    # 手动检查哪些字段真正被设置了（非默认值）
+    # 对于JSON请求，我们可以检查字段是否为None来判断是否被设置
+    actual_updates = {}
+    for key, value in update_dict.items():
+        if key == "title" and value is not None:
+            actual_updates[key] = value
+        elif key == "content" and value is not None:
+            actual_updates[key] = value
+        elif key == "note_type" and value != "general":  # general是默认值
+            actual_updates[key] = value
+        elif key in ["course_id", "folder_id", "tags", "chapter"] and value is not None:
+            actual_updates[key] = value
+        elif key in ["media_url", "media_type", "original_filename", "media_size_bytes"] and value is not None:
+            actual_updates[key] = value
+    
+    print(f"DEBUG: 实际要更新的字段: {actual_updates}")
+    update_dict = actual_updates
 
     old_media_oss_object_name = None  # 用于删除旧文件的OSS对象名称
     new_uploaded_oss_object_name = None  # 用于回滚时删除新上传的OSS文件
@@ -5134,9 +5199,12 @@ async def update_note(
                             setattr(db_note, key, value)
                     else:  # Content value is not None/empty
                         setattr(db_note, key, value)
-                elif key == "title":  # Title is mandatory, cannot be None or empty
+                elif key == "title":  # Title is mandatory, cannot be None or empty when provided
                     if value is None or (isinstance(value, str) and not value.strip()):
-                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="笔记标题不能为空。")
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST, 
+                            detail="笔记标题不能为空。如果不想修改标题，请不要包含此字段。"
+                        )
                     setattr(db_note, key, value)
                 elif key == "folder_id":  # Handle folder_id separately if it's 0 to mean None
                     if value == 0:
