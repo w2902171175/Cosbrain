@@ -351,7 +351,13 @@ class NoteBase(BaseModel):
 
 
 class NoteCreate(NoteBase):
-    pass
+    title: str = Field(..., description="笔记标题，创建时必需")
+    
+    @model_validator(mode='after')
+    def validate_title_not_empty(self) -> 'NoteCreate':
+        if not self.title or not self.title.strip():
+            raise ValueError("笔记标题不能为空。")
+        return self
 
 
 class NoteResponse(NoteBase):

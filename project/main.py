@@ -1,7 +1,7 @@
 # project/main.py
 from fastapi.responses import PlainTextResponse, Response
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket, WebSocketDisconnect, Query, \
-    Response, Form
+    Response, Form, Body
 from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
@@ -4615,16 +4615,64 @@ async def get_dashboard_courses(
 # --- 笔记管理接口 ---
 @app.post("/notes/", response_model=schemas.NoteResponse, summary="创建新笔记")
 async def create_note(
-        note_data: schemas.NoteBase = Depends(),  # 使用 Depends() 允许同时接收 form-data 和 body
-        file: Optional[UploadFile] = File(None, description="可选：上传图片、视频或文件作为笔记的附件"),  # 新增：接收上传文件
+        note_data: schemas.NoteBase,  # 对于JSON请求
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    为当前用户创建一条新笔记。
-    支持直接上传文件作为附件，并支持关联课程章节信息或用户自定义文件夹。
-    后端会根据记录内容生成 combined_text 和 embedding。
+    为当前用户创建一条新笔记（纯JSON请求，不支持文件上传）。
+    支持关联课程章节信息或用户自定义文件夹。
+    如需上传文件，请使用 /notes/with-file/ 端点。
     """
+    return await _create_note_internal(note_data, None, current_user_id, db)
+
+
+@app.post("/notes/with-file/", response_model=schemas.NoteResponse, summary="创建带文件的新笔记")
+async def create_note_with_file(
+        note_data_json: str = Form(..., description="笔记数据，JSON字符串格式"),
+        file: UploadFile = File(..., description="上传图片、视频或文件作为笔记的附件"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    为当前用户创建一条新笔记（支持文件上传）。
+    使用multipart/form-data格式，笔记数据通过JSON字符串传递。
+    """
+    # 解析JSON数据
+    try:
+        import json
+        note_data_dict = json.loads(note_data_json)
+        note_data = schemas.NoteBase(**note_data_dict)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"无效的JSON格式: {e}"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"数据验证失败: {e}"
+        )
+    
+    return await _create_note_internal(note_data, file, current_user_id, db)
+
+
+async def _create_note_internal(
+        note_data: schemas.NoteBase,
+        file: Optional[UploadFile],
+        current_user_id: int,
+        db: Session
+):
+    """
+    创建笔记的内部实现
+    """
+    # 验证标题：标题是必需的，不能为空
+    if note_data.title is None or (isinstance(note_data.title, str) and not note_data.title.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="笔记标题不能为空。"
+        )
+    
     print(
         f"DEBUG: 用户 {current_user_id} 尝试创建笔记。标题: {note_data.title}，有文件：{bool(file)}，文件夹ID：{note_data.folder_id}，课程ID：{note_data.course_id}")
 
