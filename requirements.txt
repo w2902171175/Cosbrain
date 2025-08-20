@@ -57,3 +57,5 @@ asyncio-mqtt==0.16.1
 # 开发和调试工具（可选）
 pytest==8.0.2
 pytest-asyncio==0.23.7
+
+boto3==1.37.38
