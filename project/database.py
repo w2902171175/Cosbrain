@@ -7,19 +7,22 @@ from base import Base
 import models
 
 load_dotenv()
-# PostgreSQL 数据库连接字符串
-DATABASE_URL = "postgresql+psycopg2://wcr:%40wcr123456@pgm-7xv2wyg2zes246l3co.pg.rds.aliyuncs.com:5432/Cosbrain"
+# PostgreSQL 数据库连接字符串（优先读取环境变量，未提供则回退到原默认值）
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg2://wcr:%40wcr123456@pgm-7xv2wyg2zes246l3co.pg.rds.aliyuncs.com:5432/Cosbrain"
+)
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL 环境变量未设置。")
 
 engine = create_engine(
     DATABASE_URL,
-    echo=True,  # 调试时保留，会打印SQL语句
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30,
-    pool_recycle=3600,
+    echo=(os.getenv("SQL_ECHO", "false").lower() == "true"),  # 生产默认关闭，可通过环境变量开启
+    pool_size=int(os.getenv("SQL_POOL_SIZE", "10")),
+    max_overflow=int(os.getenv("SQL_MAX_OVERFLOW", "20")),
+    pool_timeout=int(os.getenv("SQL_POOL_TIMEOUT", "30")),
+    pool_recycle=int(os.getenv("SQL_POOL_RECYCLE", "3600")),
     pool_pre_ping=True
 )
 

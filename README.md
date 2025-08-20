@@ -1,6 +1,6 @@
-# 鸿庆书云创新协作平台
+# 🎓鸿庆书云创新协作平台
 
-> 🎓 一个为师生提供智能匹配、知识管理、课程学习和协作支持的综合性教育平台
+>  一个为师生提供智能匹配、知识管理、课程学习和协作支持的综合性教育平台
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-blue.svg)](https://postgresql.org)
@@ -286,8 +286,73 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
     
+    # Cosbrain
     location /ws/ {
         proxy_pass http://127.0.0.1:8000;
+
+    你可以用容器（推荐）或裸机方式部署。
+
+    ### 方案A：Docker（推荐，最省事）
+
+    1) 准备环境变量
+
+    复制 `.env.example` 为 `.env`，按需调整值（尤其是 SECRET_KEY、DATABASE_URL）。
+
+    2) 一键启动
+
+    在项目根目录运行：
+
+    ```
+    docker compose up -d --build
+    ```
+
+    这会启动 Postgres 和 API。默认 API 监听 8000 端口。
+
+    3) 反向代理（可选）
+
+    将 `deploy/nginx.conf.example` 配置到你的 Nginx，并将域名指向服务器。
+
+    ### 方案B：裸机/服务器直跑（Windows/Linux）
+
+    1) Python 环境
+
+    - Python 3.11+，建议使用虚拟环境
+
+    2) 安装依赖
+
+    在项目根目录执行：
+
+    ```
+    pip install -r requirements.txt
+    ```
+
+    3) 配置环境变量
+
+    复制 `.env.example` 为 `.env`，设置 `DATABASE_URL` 指向你的 PostgreSQL。
+
+    4) 运行服务
+
+    ```
+    uvicorn project.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ```
+
+    5) 生产守护
+
+    - Linux 可参考 `deploy/cosbrain.service.example` 创建 systemd 服务
+    - Windows 可使用 NSSM 或任务计划程序把 uvicorn 作为服务常驻
+
+    ### 数据库
+
+    默认使用 PostgreSQL。生产建议开启自动备份并限制公网访问，仅通过内网或隧道访问。
+
+    ### 配置项
+
+    可通过环境变量控制：
+
+    - `DATABASE_URL`：PostgreSQL 连接串
+    - `SECRET_KEY`：JWT 密钥
+    - `SQL_ECHO`：是否打印 SQL（true/false）
+    - 连接池：`SQL_POOL_SIZE`、`SQL_MAX_OVERFLOW`、`SQL_POOL_TIMEOUT`、`SQL_POOL_RECYCLE`
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
