@@ -2182,101 +2182,85 @@ def _parse_weekly_hours_from_availability(availability_str: Optional[str]) -> Op
     return None
 
 
-def _calculate_time_match_score(student: Student, project: Project) -> float:
+
+# --- 新的、通用的时间匹配函数 ---
+def _calculate_time_match_score(student: Student, item: Union[Project, Course]) -> float:
     """
     计算基于时间与投入度的匹配分数。
-    包括每周小时数匹配和日期/持续时间匹配。
-    分数越高表示匹配度越高。
+    如果 item 是 Project，则会详细计算周小时数和日期匹配。
+    如果 item 是 Course，则返回一个较高的默认分数，因为课程通常没有严格的时间限制。
     """
-    score_hours = 0.0
-    score_dates = 0.0
+    # --- 核心修改：进行类型检查 ---
+    if isinstance(item, Project):
+        # 如果传入的是项目，则执行原始的、详细的时间匹配逻辑
+        
+        score_hours = 0.0
+        score_dates = 0.0
 
-    # 1. 周小时数匹配 (权重 0.6)
-    student_weekly_hours = _parse_weekly_hours_from_availability(student.availability)
+        # 1. 周小时数匹配 (权重 0.6)
+        student_weekly_hours = _parse_weekly_hours_from_availability(student.availability)
 
-    # 项目有明确的小时数要求
-    if project.estimated_weekly_hours is not None and project.estimated_weekly_hours > 0:
-        if student_weekly_hours is not None:
-            if student_weekly_hours >= project.estimated_weekly_hours:
-                score_hours = 1.0  # 学生满足或超出要求
-                print(
-                    f"DEBUG_TIME_MATCH: 周小时数匹配 - 学生 {student_weekly_hours}h >= 项目 {project.estimated_weekly_hours}h。得分：+{score_hours:.2f}")
+        if item.estimated_weekly_hours is not None and item.estimated_weekly_hours > 0:
+            if student_weekly_hours is not None:
+                if student_weekly_hours >= item.estimated_weekly_hours:
+                    score_hours = 1.0
+                else:
+                    score_hours = max(0.2, student_weekly_hours / item.estimated_weekly_hours)
             else:
-                score_hours = max(0.2, student_weekly_hours / project.estimated_weekly_hours)  # 按比例，最低0.2
-                print(
-                    f"DEBUG_TIME_MATCH: 周小时数匹配 - 学生 {student_weekly_hours}h < 项目 {project.estimated_weekly_hours}h。得分：+{score_hours:.2f}")
+                score_hours = 0.3
         else:
-            score_hours = 0.3  # 项目需要，但学生未明确
-            print(f"DEBUG_TIME_MATCH: 周小时数匹配 - 项目有要求，学生未明确。得分：+{score_hours:.2f}")
-    else:  # 项目没有明确的小时数要求
-        if student_weekly_hours is not None:  # 学生有明确，但项目灵活
-            score_hours = 0.8
-            print(f"DEBUG_TIME_MATCH: 周小时数匹配 - 项目无要求，学生有明确。得分：+{score_hours:.2f}")
+            if student_weekly_hours is not None:
+                score_hours = 0.8
+            else:
+                score_hours = 0.5
+        
+        # 2. 日期/持续时间匹配 (权重 0.4)
+        student_temporal_keywords = set()
+        if student.availability:
+            avail_lower = student.availability.lower()
+            if "暑假" in avail_lower or "夏季" in avail_lower: student_temporal_keywords.add("summer")
+            if "寒假" in avail_lower or "冬季" in avail_lower: student_temporal_keywords.add("winter")
+            if "学期内" in avail_lower: student_temporal_keywords.add("semester")
+            if "长期" in avail_lower or "long-term" in avail_lower: student_temporal_keywords.add("long_term")
+            if "短期" in avail_lower or "short-term" in avail_lower: student_temporal_keywords.add("short_term")
+
+        project_has_dates = item.start_date and item.end_date and item.end_date > item.start_date
+        project_duration_months = (item.end_date - item.start_date).days / 30 if project_has_dates else None
+
+        if project_has_dates:
+            matched_period = False
+            project_start_month = item.start_date.month
+
+            if "summer" in student_temporal_keywords and 6 <= project_start_month <= 8: matched_period = True
+            elif "winter" in student_temporal_keywords and (project_start_month == 1 or project_start_month == 12): matched_period = True
+            elif "semester" in student_temporal_keywords and not (6 <= project_start_month <= 8 or project_start_month == 1 or project_start_month == 12): matched_period = True
+            
+            if "long_term" in student_temporal_keywords and project_duration_months is not None and project_duration_months >= 6: matched_period = True
+            elif "short_term" in student_temporal_keywords and project_duration_months is not None and project_duration_months < 3: matched_period = True
+
+            if matched_period: score_dates = 1.0
+            elif student_temporal_keywords: score_dates = 0.5
+            else: score_dates = 0.2
         else:
-            score_hours = 0.5  # 双方都未明确，中立
-            print(f"DEBUG_TIME_MATCH: 周小时数匹配 - 双方均未明确。得分：+{score_hours:.2f}")
+            if student_temporal_keywords: score_dates = 0.7
+            else: score_dates = 0.5
 
-    # 2. 日期/持续时间匹配 (权重 0.4)
-    # 因学生 availability 是自由文本，这里进行粗略的日期匹配
+        print(f"DEBUG_TIME_MATCH: 学生 '{student.name}' (ID: {student.id}) vs 项目 '{item.title}' (ID: {item.id}) - 周小时数子得分: {score_hours:.2f}, 日期子得分: {score_dates:.2f}")
+        
+        combined_time_score = (score_hours * 0.6) + (score_dates * 0.4)
 
-    student_temporal_keywords = set()
-    if student.availability:
-        avail_lower = student.availability.lower()
-        if "暑假" in avail_lower or "夏季" in avail_lower: student_temporal_keywords.add("summer")
-        if "寒假" in avail_lower or "冬季" in avail_lower: student_temporal_keywords.add("winter")
-        if "学期内" in avail_lower: student_temporal_keywords.add("semester")  # 学期内 (Spring/Fall)
-        if "长期" in avail_lower or "long-term" in avail_lower: student_temporal_keywords.add("long_term")  # Long term
-        if "短期" in avail_lower or "short-term" in avail_lower: student_temporal_keywords.add(
-            "short_term")  # Short term
+    elif isinstance(item, Course):
+        # 如果传入的是课程，我们不进行复杂的比较，直接给一个较高的默认分数
+        # 因为时间对于课程来说通常不是一个硬性匹配条件
+        print(f"DEBUG_TIME_MATCH: 目标是课程 '{item.title}' (ID: {item.id})，应用默认时间匹配得分。")
+        combined_time_score = 0.9  # 返回一个较高的默认值 (0.0 - 1.0 之间)
+    
+    else:
+        # 对于其他未知类型，返回一个中性分数
+        combined_time_score = 0.5
 
-    project_has_dates = project.start_date and project.end_date and project.end_date > project.start_date
-    project_duration_months = (project.end_date - project.start_date).days / 30 if project_has_dates else None
-
-    if project_has_dates:
-        matched_period = False
-        project_start_month = project.start_date.month
-
-        # 检查项目开始月份是否与学生的周期关键词匹配
-        if "summer" in student_temporal_keywords and 6 <= project_start_month <= 8:
-            matched_period = True
-        elif "winter" in student_temporal_keywords and (project_start_month == 1 or project_start_month == 12):
-            matched_period = True
-        elif "semester" in student_temporal_keywords and not (
-                6 <= project_start_month <= 8 or project_start_month == 1 or project_start_month == 12):
-            matched_period = True
-
-        # 持续时间匹配 (粗略)
-        if "long_term" in student_temporal_keywords and project_duration_months is not None and project_duration_months >= 6:
-            matched_period = True
-        elif "short_term" in student_temporal_keywords and project_duration_months is not None and project_duration_months < 3:
-            matched_period = True
-
-        if matched_period:
-            score_dates = 1.0  # 良好期间匹配
-            print(f"DEBUG_TIME_MATCH: 日期匹配 - 项目有日期，学生时间关键词匹配。得分：+{score_dates:.2f}")
-        elif student_temporal_keywords:  # 学生有明确表述，但未直接匹配
-            score_dates = 0.5
-            print(f"DEBUG_TIME_MATCH: 日期匹配 - 项目有日期，学生时间关键词未直接匹配。得分：+{score_dates:.2f}")
-        else:  # 项目有日期，学生未明确周期
-            score_dates = 0.2
-            print(f"DEBUG_TIME_MATCH: 日期匹配 - 项目有日期，学生未明确周期。得分：+{score_dates:.2f}")
-    else:  # 项目没有明确的日期 (灵活)
-        if student_temporal_keywords:  # 学生明确了日期，项目灵活
-            score_dates = 0.7
-            print(f"DEBUG_TIME_MATCH: 日期匹配 - 项目无日期，学生有明确表述。得分：+{score_dates:.2f}")
-        else:  # 双方都未明确日期，中立
-            score_dates = 0.5
-            print(f"DEBUG_TIME_MATCH: 日期匹配 - 双方均未明确日期。得分：+{score_dates:.2f}")
-
-    print(
-        f"DEBUG_TIME_MATCH: 学生 '{student.name}' (ID: {student.id}) vs 项目 '{project.title}' (ID: {project.id}) - 周小时数子得分: {score_hours:.2f}, 日期子得分: {score_dates:.2f}")
-
-    # 结合分数并归一化到 0-1 范围，然后乘以一个总权重
-    combined_time_score = (score_hours * 0.6) + (score_dates * 0.4)  # 加权平均，范围 0-1
-
-    OVERALL_TIME_MATCH_WEIGHT = 3.0  # 时间匹配在总分中的重要性权重
+    OVERALL_TIME_MATCH_WEIGHT = 3.0
     return combined_time_score * OVERALL_TIME_MATCH_WEIGHT
-
 
 # --- 辅助函数：计算地理位置匹配分数 ---
 def _calculate_location_match_score(student_location: Optional[str], project_location: Optional[str]) -> float:
@@ -2944,7 +2928,7 @@ async def find_matching_projects_for_student(db: Session, student_id: int,
                 # 将学生自己的 API Key 传递给 _generate_match_rationale_llm
                 rationale = await _generate_match_rationale_llm(
                     student=student,
-                    project=rec["project"],
+                    target_item=rec["project"],
                     sim_score=rec["sim_score"],
                     proficiency_score=rec["proficiency_score"],
                     time_score=rec["time_score"],
