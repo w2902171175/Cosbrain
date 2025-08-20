@@ -4,7 +4,6 @@
 
 ![Logo](https://img.shields.io/badge/🎓-鸿庆书云-blue?style=for-the-badge)
 
-
 **基于AI技术的现代化智慧教育协作平台**
 
 *为师生提供智能匹配、知识管理、课程学习和实时协作的一站式教育解决方案*
