@@ -4,9 +4,10 @@
 
 ![Logo](https://img.shields.io/badge/🎓-鸿庆书云-blue?style=for-the-badge)
 
-**基于AI技术的现代化智慧教育协作平台**
+**云聚书，书载鸿，鸿成庆**
 
-*为师生提供智能匹配、知识管理、课程学习和实时协作的一站式教育解决方案*
+*基于AI技术的现代化智慧教育协作平台*
+
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?style=flat-square)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green.svg?style=flat-square)](https://fastapi.tiangolo.com)
@@ -227,97 +228,6 @@ Boto3风格API            # S3兼容对象存储接口
 
 平台采用PostgreSQL作为主数据库，集成pgvector扩展支持向量存储和语义搜索。数据库设计遵循标准化原则，确保数据一致性和查询性能。
 
-#### 📊 核心数据表（29个主要表）
-
-<details>
-<summary><b>👤 用户与权限系统</b></summary>
-
-- **`students`** - 用户基础信息、个人配置和学习档案
-- **`user_follows`** - 用户关注关系和社交网络
-- **`user_achievements`** - 用户成就记录和进度跟踪
-- **`point_transactions`** - 积分交易流水和余额管理
-
-</details>
-
-<details>
-<summary><b>🚀 项目协作系统</b></summary>
-
-- **`projects`** - 项目基本信息、状态和元数据
-- **`project_applications`** - 项目申请记录和审批流程
-- **`project_members`** - 项目成员关系和角色权限
-- **`project_files`** - 项目文件管理和版本控制
-- **`project_likes`** - 项目点赞和热度统计
-
-</details>
-
-<details>
-<summary><b>📚 知识管理系统</b></summary>
-
-- **`knowledge_bases`** - 知识库结构和权限配置
-- **`knowledge_articles`** - 知识文章内容和元数据
-- **`knowledge_documents`** - 文档管理和解析状态
-- **`knowledge_document_chunks`** - 文档分块和向量存储
-- **`folders`** - 文件夹层级结构管理
-
-</details>
-
-<details>
-<summary><b>🎓 课程学习系统</b></summary>
-
-- **`courses`** - 课程信息、大纲和配置
-- **`course_materials`** - 课程资料和下载管理
-- **`user_courses`** - 学习记录和进度跟踪
-- **`course_likes`** - 课程评价和推荐统计
-
-</details>
-
-<details>
-<summary><b>💬 实时通信系统</b></summary>
-
-- **`chat_rooms`** - 聊天室配置和状态管理
-- **`chat_messages`** - 消息内容和传输记录
-- **`chat_room_members`** - 成员关系和权限管理
-- **`chat_room_join_requests`** - 加入申请和审批流程
-
-</details>
-
-<details>
-<summary><b>🌐 社区论坛系统</b></summary>
-
-- **`forum_topics`** - 论坛话题和讨论内容
-- **`forum_comments`** - 评论回复和嵌套结构
-- **`forum_likes`** - 点赞互动和热度统计
-
-</details>
-
-<details>
-<summary><b>🤖 AI对话系统</b></summary>
-
-- **`ai_conversations`** - AI对话会话管理
-- **`ai_conversation_messages`** - 对话消息和上下文
-- **`ai_conversation_temporary_files`** - 临时文件和附件
-
-</details>
-
-<details>
-<summary><b>⚙️ 个人管理系统</b></summary>
-
-- **`notes`** - 个人笔记和备忘录
-- **`daily_records`** - 每日学习记录和总结
-- **`collected_contents`** - 收藏内容和分类管理
-- **`achievements`** - 成就定义和奖励规则
-
-</details>
-
-<details>
-<summary><b>🔧 配置管理系统</b></summary>
-
-- **`user_mcp_configs`** - MCP协议配置和模型管理
-- **`user_search_engine_configs`** - 搜索引擎个性化配置
-- **`user_tts_configs`** - 文本转语音服务配置
-
-</details>
-
 #### 🔍 性能优化
 
 - **索引策略**: 为高频查询字段建立复合索引，优化关联查询性能
@@ -329,125 +239,6 @@ Boto3风格API            # S3兼容对象存储接口
 
 基于FastAPI的现代化RESTful API设计，具有自动文档生成、类型验证和异步处理能力。
 
-#### 📋 API模块结构
-
-<details>
-<summary><b>🔐 认证授权模块</b></summary>
-
-```python
-# JWT令牌认证和权限控制
-POST /token                    # 用户登录，获取访问令牌
-POST /register                 # 用户注册
-GET  /me                       # 获取当前用户信息
-PUT  /me                       # 更新用户信息
-POST /refresh-token            # 刷新访问令牌
-```
-
-</details>
-
-<details>
-<summary><b>🎯 智能匹配模块</b></summary>
-
-```python
-# 基于向量相似度的智能推荐
-GET  /match/students           # 匹配相似学生
-GET  /match/projects          # 匹配适合项目
-GET  /match/courses           # 推荐相关课程
-POST /match/custom            # 自定义匹配查询
-```
-
-</details>
-
-<details>
-<summary><b>📚 知识管理模块</b></summary>
-
-```python
-# 知识库和文档管理
-GET    /knowledge-bases        # 获取知识库列表
-POST   /knowledge-bases        # 创建知识库
-GET    /knowledge-bases/{id}/articles  # 获取文章列表
-POST   /documents/upload       # 上传并解析文档
-GET    /documents/{id}/chunks  # 获取文档分块
-POST   /knowledge/search       # 语义搜索知识内容
-```
-
-</details>
-
-<details>
-<summary><b>💬 实时通信模块</b></summary>
-
-```python
-# WebSocket和聊天室管理
-WebSocket /ws/chat/{room_id}   # 实时聊天连接
-GET    /chat-rooms             # 获取聊天室列表
-POST   /chat-rooms             # 创建聊天室
-POST   /chat-rooms/{id}/join   # 申请加入聊天室
-GET    /chat-rooms/{id}/messages  # 获取历史消息
-POST   /chat-rooms/{id}/upload # 上传聊天文件
-```
-
-</details>
-
-<details>
-<summary><b>🎓 课程管理模块</b></summary>
-
-```python
-# 课程和学习管理
-GET    /courses                # 获取课程列表
-POST   /courses                # 创建新课程
-GET    /courses/{id}           # 获取课程详情
-POST   /courses/{id}/enroll    # 报名参加课程
-GET    /courses/{id}/materials # 获取课程资料
-POST   /courses/{id}/progress  # 更新学习进度
-```
-
-</details>
-
-<details>
-<summary><b>🚀 项目协作模块</b></summary>
-
-```python
-# 项目管理和团队协作
-GET    /projects               # 获取项目列表
-POST   /projects               # 创建新项目
-POST   /projects/{id}/apply    # 申请加入项目
-GET    /projects/{id}/members  # 获取项目成员
-POST   /projects/{id}/files    # 上传项目文件
-GET    /projects/{id}/applications  # 管理项目申请
-```
-
-</details>
-
-<details>
-<summary><b>🌐 社区论坛模块</b></summary>
-
-```python
-# 论坛话题和社交互动
-GET    /forum/topics           # 获取话题列表
-POST   /forum/topics           # 发布新话题
-GET    /forum/topics/{id}      # 获取话题详情
-POST   /forum/topics/{id}/comments  # 发表评论
-POST   /forum/topics/{id}/like # 点赞话题
-GET    /forum/comments/{id}/replies  # 获取回复列表
-```
-
-</details>
-
-<details>
-<summary><b>🤖 AI服务模块</b></summary>
-
-```python
-# AI对话和智能服务
-POST   /ai/chat                # AI对话接口
-GET    /ai/conversations       # 获取对话历史
-POST   /ai/conversations/{id}/continue  # 继续对话
-POST   /ai/tts                 # 文本转语音
-POST   /ai/search              # AI增强搜索
-GET    /ai/models              # 获取可用模型列表
-```
-
-</details>
-
 #### 🔧 API特性
 
 - **📖 自动文档**: OpenAPI 3.0标准，实时生成API文档
@@ -455,6 +246,140 @@ GET    /ai/models              # 获取可用模型列表
 - **⚡ 异步处理**: 全异步架构，支持高并发请求
 - **🔒 安全机制**: JWT认证、CORS配置、请求限流
 - **📊 监控日志**: 请求追踪、性能监控、错误报告
+
+#### � API 文档
+
+平台提供完整的RESTful API接口，支持自动文档生成和交互式测试。
+
+##### 🔗 文档访问
+
+| 文档类型 | 访问地址 | 特点 |
+|----------|----------|------|
+| **Swagger UI** | http://localhost:8000/docs | 交互式API测试，支持在线调用 |
+| **ReDoc** | http://localhost:8000/redoc | 美观的文档展示，适合阅读 |
+| **OpenAPI JSON** | http://localhost:8000/openapi.json | 机器可读的API规范 |
+
+##### 🚀 API 模块概览
+
+<details>
+<summary><b>🔐 认证授权 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `POST` | `/token` | 用户登录，获取JWT访问令牌 |
+| `POST` | `/register` | 用户注册，创建新账户 |
+| `GET` | `/me` | 获取当前用户详细信息 |
+| `PUT` | `/me` | 更新用户个人信息 |
+| `POST` | `/refresh-token` | 刷新过期的访问令牌 |
+
+</details>
+
+<details>
+<summary><b>🎯 智能匹配 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `GET` | `/match/students` | 基于技能和兴趣匹配相似学生 |
+| `GET` | `/match/projects` | 推荐适合的项目机会 |
+| `GET` | `/match/courses` | 个性化课程推荐 |
+| `POST` | `/match/custom` | 自定义匹配条件查询 |
+| `GET` | `/match/similar-users/{user_id}` | 查找相似用户 |
+
+</details>
+
+<details>
+<summary><b>📚 知识管理 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `GET` | `/knowledge-bases` | 获取所有知识库列表 |
+| `POST` | `/knowledge-bases` | 创建新的知识库 |
+| `GET` | `/knowledge-bases/{id}/articles` | 获取知识库下的文章 |
+| `POST` | `/knowledge-bases/{id}/articles` | 在知识库中创建文章 |
+| `POST` | `/documents/upload` | 上传并智能解析文档 |
+| `GET` | `/documents/{id}/chunks` | 获取文档分块内容 |
+| `POST` | `/knowledge/search` | 语义搜索知识内容 |
+| `GET` | `/knowledge/similar/{article_id}` | 查找相似文章 |
+
+</details>
+
+<details>
+<summary><b>💬 实时通信 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `WebSocket` | `/ws/chat/{room_id}` | 实时聊天WebSocket连接 |
+| `GET` | `/chat-rooms` | 获取用户的聊天室列表 |
+| `POST` | `/chat-rooms` | 创建新的聊天室 |
+| `POST` | `/chat-rooms/{id}/join` | 申请加入聊天室 |
+| `GET` | `/chat-rooms/{id}/messages` | 获取聊天历史消息 |
+| `POST` | `/chat-rooms/{id}/upload` | 上传聊天文件 |
+| `PUT` | `/chat-rooms/{id}/settings` | 更新聊天室设置 |
+
+</details>
+
+<details>
+<summary><b>🎓 课程管理 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `GET` | `/courses` | 获取课程列表，支持分页和筛选 |
+| `POST` | `/courses` | 创建新课程 |
+| `GET` | `/courses/{id}` | 获取课程详细信息 |
+| `POST` | `/courses/{id}/enroll` | 报名参加课程 |
+| `GET` | `/courses/{id}/materials` | 获取课程学习资料 |
+| `POST` | `/courses/{id}/materials` | 上传课程资料 |
+| `POST` | `/courses/{id}/progress` | 更新学习进度 |
+| `GET` | `/courses/{id}/students` | 获取课程学员列表 |
+
+</details>
+
+<details>
+<summary><b>🚀 项目协作 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `GET` | `/projects` | 获取项目列表 |
+| `POST` | `/projects` | 创建新项目 |
+| `GET` | `/projects/{id}` | 获取项目详情 |
+| `POST` | `/projects/{id}/apply` | 申请加入项目团队 |
+| `GET` | `/projects/{id}/members` | 获取项目成员列表 |
+| `POST` | `/projects/{id}/members` | 添加项目成员 |
+| `POST` | `/projects/{id}/files` | 上传项目文件 |
+| `GET` | `/projects/{id}/applications` | 管理项目申请 |
+
+</details>
+
+<details>
+<summary><b>🌐 社区论坛 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `GET` | `/forum/topics` | 获取论坛话题列表 |
+| `POST` | `/forum/topics` | 发布新话题 |
+| `GET` | `/forum/topics/{id}` | 获取话题详细内容 |
+| `POST` | `/forum/topics/{id}/comments` | 发表话题评论 |
+| `POST` | `/forum/topics/{id}/like` | 点赞/取消点赞话题 |
+| `GET` | `/forum/comments/{id}/replies` | 获取评论的回复列表 |
+| `POST` | `/forum/comments/{id}/reply` | 回复评论 |
+
+</details>
+
+<details>
+<summary><b>🤖 AI服务 API</b></summary>
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| `POST` | `/ai/chat` | AI对话接口，支持多轮对话 |
+| `GET` | `/ai/conversations` | 获取AI对话历史 |
+| `POST` | `/ai/conversations/{id}/continue` | 继续指定对话 |
+| `POST` | `/ai/tts` | 文本转语音服务 |
+| `POST` | `/ai/search` | AI增强的智能搜索 |
+| `GET` | `/ai/models` | 获取可用的AI模型列表 |
+| `POST` | `/ai/embeddings` | 生成文本向量嵌入 |
+
+</details>
+
 
 ## 🏗️ 项目结构
 
@@ -465,12 +390,6 @@ Cosbrain/                                    # 项目根目录
 ├── 📜 LICENSE                               # 自定义开源许可证
 ├── 🔧 alembic/                             # 数据库迁移工具
 │   └── env.py                              # Alembic环境配置
-├── 📊 migrations/                          # SQL迁移脚本集合
-│   ├── add_chat_message_deleted_at.sql     # 聊天消息软删除功能
-│   ├── add_vector_indexes.sql              # 向量索引优化
-│   ├── check_indexes.sql                   # 索引健康检查
-│   ├── make_forum_topics_title_nullable.sql # 论坛标题字段优化
-│   └── migrate_llm_model_id_to_multiple.sql # LLM模型多选支持
 └── 🚀 project/                             # 主要代码目录
     ├── 🎯 main.py                          # FastAPI应用入口(12,824行)
     ├── 🗄️ models.py                        # SQLAlchemy数据模型(29个表)
@@ -485,42 +404,16 @@ Cosbrain/                                    # 项目根目录
     ├── 📂 data/                            # 数据文件目录
     │   ├── projects.csv                    # 项目示例数据
     │   ├── students.csv                    # 学生示例数据
-    │   └── export/                         # 数据导出目录
-    │       ├── achievements_schema.csv     # 成就系统表结构
-    │       ├── achievements.csv            # 成就数据
-    │       ├── ai_conversation_*.csv       # AI对话相关数据
-    │       ├── chat_*.csv                  # 聊天系统数据
-    │       ├── course_*.csv                # 课程系统数据
-    │       ├── knowledge_*.csv             # 知识管理数据
-    │       └── ...                         # 其他业务数据文件
-    ├── 📚 后端api说明文档/                  # API文档目录(待完善)
-    └── 🗂️ __pycache__/                     # Python字节码缓存
-        ├── __init__.cpython-311.pyc        # Python 3.11编译缓存
-        ├── __init__.cpython-38.pyc         # Python 3.8编译缓存
-        ├── ai_core.cpython-*.pyc           # AI模块编译缓存
-        ├── database.cpython-*.pyc          # 数据库模块编译缓存
-        ├── main.cpython-*.pyc              # 主程序编译缓存
-        ├── models.cpython-*.pyc            # 数据模型编译缓存
-        └── ...                             # 其他模块编译缓存
+
 ```
 
-### 📊 代码统计
-
-| 模块 | 文件 | 代码行数 | 主要功能 |
-|------|------|----------|----------|
-| **main.py** | 1 | 12,824行 | API路由、业务逻辑、WebSocket处理 |
-| **models.py** | 1 | 1,076行 | 29个数据表模型定义 |
-| **schemas.py** | 1 | ~800行 | Pydantic数据验证模式 |
-| **ai_core.py** | 1 | ~500行 | AI模型集成和向量处理 |
-| **database.py** | 1 | ~200行 | 数据库连接和会话管理 |
-| **总计** | 5+ | 15,000+行 | 完整的后端API系统 |
 
 ### 🗃️ 数据文件
 
 平台包含完整的示例数据和导出功能：
-- **📈 业务数据**: 29个表的完整数据导出
+- **📈 业务数据**: 34个表的完整数据导出
 - **📋 表结构**: 每个表的schema文档
-- **🧪 测试数据**: projects.csv和students.csv示例数据
+- **🧪 测试数据**: projects.csv和students.csv等示例数据
 - **🔄 迁移脚本**: 数据库版本升级的SQL脚本
 
 ## 📦 快速开始
@@ -742,24 +635,8 @@ with SessionLocal() as db:
 "
 ```
 
-#### 7️⃣ 导入示例数据 (可选)
 
-```bash
-# 导入预设的示例数据
-python import_data.py
-
-# 验证数据导入
-python -c "
-from database import SessionLocal
-from models import Student, Project
-with SessionLocal() as db:
-    students = db.query(Student).count()
-    projects = db.query(Project).count()
-    print(f'✅ 导入数据: {students} 个用户, {projects} 个项目')
-"
-```
-
-#### 8️⃣ 启动服务
+####  7️⃣启动服务
 
 <details>
 <summary><b>🏃‍♂️ 开发模式启动</b></summary>
@@ -790,7 +667,7 @@ gunicorn project.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8
 
 </details>
 
-#### 9️⃣ 验证部署
+#### 8️⃣ 验证部署
 
 服务启动后，访问以下地址验证部署：
 
@@ -807,360 +684,6 @@ gunicorn project.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8
 - 29个数据表正确创建
 - AI模型加载无错误（如果配置了AI服务）
 
-## � API 文档
-
-平台提供完整的RESTful API接口，支持自动文档生成和交互式测试。
-
-### 🔗 文档访问
-
-| 文档类型 | 访问地址 | 特点 |
-|----------|----------|------|
-| **Swagger UI** | http://localhost:8000/docs | 交互式API测试，支持在线调用 |
-| **ReDoc** | http://localhost:8000/redoc | 美观的文档展示，适合阅读 |
-| **OpenAPI JSON** | http://localhost:8000/openapi.json | 机器可读的API规范 |
-
-### 🚀 API 模块概览
-
-<details>
-<summary><b>🔐 认证授权 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `POST` | `/token` | 用户登录，获取JWT访问令牌 |
-| `POST` | `/register` | 用户注册，创建新账户 |
-| `GET` | `/me` | 获取当前用户详细信息 |
-| `PUT` | `/me` | 更新用户个人信息 |
-| `POST` | `/refresh-token` | 刷新过期的访问令牌 |
-
-</details>
-
-<details>
-<summary><b>🎯 智能匹配 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/match/students` | 基于技能和兴趣匹配相似学生 |
-| `GET` | `/match/projects` | 推荐适合的项目机会 |
-| `GET` | `/match/courses` | 个性化课程推荐 |
-| `POST` | `/match/custom` | 自定义匹配条件查询 |
-| `GET` | `/match/similar-users/{user_id}` | 查找相似用户 |
-
-</details>
-
-<details>
-<summary><b>📚 知识管理 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/knowledge-bases` | 获取所有知识库列表 |
-| `POST` | `/knowledge-bases` | 创建新的知识库 |
-| `GET` | `/knowledge-bases/{id}/articles` | 获取知识库下的文章 |
-| `POST` | `/knowledge-bases/{id}/articles` | 在知识库中创建文章 |
-| `POST` | `/documents/upload` | 上传并智能解析文档 |
-| `GET` | `/documents/{id}/chunks` | 获取文档分块内容 |
-| `POST` | `/knowledge/search` | 语义搜索知识内容 |
-| `GET` | `/knowledge/similar/{article_id}` | 查找相似文章 |
-
-</details>
-
-<details>
-<summary><b>💬 实时通信 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `WebSocket` | `/ws/chat/{room_id}` | 实时聊天WebSocket连接 |
-| `GET` | `/chat-rooms` | 获取用户的聊天室列表 |
-| `POST` | `/chat-rooms` | 创建新的聊天室 |
-| `POST` | `/chat-rooms/{id}/join` | 申请加入聊天室 |
-| `GET` | `/chat-rooms/{id}/messages` | 获取聊天历史消息 |
-| `POST` | `/chat-rooms/{id}/upload` | 上传聊天文件 |
-| `PUT` | `/chat-rooms/{id}/settings` | 更新聊天室设置 |
-
-</details>
-
-<details>
-<summary><b>🎓 课程管理 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/courses` | 获取课程列表，支持分页和筛选 |
-| `POST` | `/courses` | 创建新课程 |
-| `GET` | `/courses/{id}` | 获取课程详细信息 |
-| `POST` | `/courses/{id}/enroll` | 报名参加课程 |
-| `GET` | `/courses/{id}/materials` | 获取课程学习资料 |
-| `POST` | `/courses/{id}/materials` | 上传课程资料 |
-| `POST` | `/courses/{id}/progress` | 更新学习进度 |
-| `GET` | `/courses/{id}/students` | 获取课程学员列表 |
-
-</details>
-
-<details>
-<summary><b>🚀 项目协作 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/projects` | 获取项目列表 |
-| `POST` | `/projects` | 创建新项目 |
-| `GET` | `/projects/{id}` | 获取项目详情 |
-| `POST` | `/projects/{id}/apply` | 申请加入项目团队 |
-| `GET` | `/projects/{id}/members` | 获取项目成员列表 |
-| `POST` | `/projects/{id}/members` | 添加项目成员 |
-| `POST` | `/projects/{id}/files` | 上传项目文件 |
-| `GET` | `/projects/{id}/applications` | 管理项目申请 |
-
-</details>
-
-<details>
-<summary><b>🌐 社区论坛 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/forum/topics` | 获取论坛话题列表 |
-| `POST` | `/forum/topics` | 发布新话题 |
-| `GET` | `/forum/topics/{id}` | 获取话题详细内容 |
-| `POST` | `/forum/topics/{id}/comments` | 发表话题评论 |
-| `POST` | `/forum/topics/{id}/like` | 点赞/取消点赞话题 |
-| `GET` | `/forum/comments/{id}/replies` | 获取评论的回复列表 |
-| `POST` | `/forum/comments/{id}/reply` | 回复评论 |
-
-</details>
-
-<details>
-<summary><b>🤖 AI服务 API</b></summary>
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `POST` | `/ai/chat` | AI对话接口，支持多轮对话 |
-| `GET` | `/ai/conversations` | 获取AI对话历史 |
-| `POST` | `/ai/conversations/{id}/continue` | 继续指定对话 |
-| `POST` | `/ai/tts` | 文本转语音服务 |
-| `POST` | `/ai/search` | AI增强的智能搜索 |
-| `GET` | `/ai/models` | 获取可用的AI模型列表 |
-| `POST` | `/ai/embeddings` | 生成文本向量嵌入 |
-
-</details>
-
-### 🔧 API 使用示例
-
-#### 认证流程
-```bash
-# 1. 用户登录
-curl -X POST "http://localhost:8000/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=demo@example.com&password=demo123"
-
-# 2. 使用令牌访问受保护的API
-curl -X GET "http://localhost:8000/me" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-#### 智能匹配示例
-```bash
-# 获取相似学生推荐
-curl -X GET "http://localhost:8000/match/students?limit=5" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
-# 项目推荐
-curl -X GET "http://localhost:8000/match/projects?skills=Python,AI&limit=10" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-#### 文件上传示例
-```bash
-# 上传文档到知识库
-curl -X POST "http://localhost:8000/documents/upload" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -F "file=@document.pdf" \
-  -F "knowledge_base_id=1"
-```
-
-#### WebSocket 连接示例
-```javascript
-// 连接聊天室WebSocket
-const ws = new WebSocket('ws://localhost:8000/ws/chat/1?token=YOUR_ACCESS_TOKEN');
-
-ws.onmessage = function(event) {
-    const message = JSON.parse(event.data);
-    console.log('收到消息:', message);
-};
-
-ws.send(JSON.stringify({
-    type: 'message',
-    content: 'Hello, World!',
-    room_id: 1
-}));
-```
-
-## ⚙️ 配置说明
-
-### 🔧 环境变量配置
-
-<details>
-<summary><b>📊 完整配置参数表</b></summary>
-
-| 变量名 | 描述 | 必需 | 默认值 | 示例 |
-|--------|------|------|--------|------|
-| **数据库配置** | | | | |
-| `DATABASE_URL` | PostgreSQL连接字符串 | ✅ | - | `postgresql://user:pass@localhost/db` |
-| **安全配置** | | | | |
-| `SECRET_KEY` | JWT签名密钥(至少32字符) | ✅ | - | `your-super-secret-32-char-key-here` |
-| `ALGORITHM` | JWT算法 | ❌ | `HS256` | `HS256` |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | 令牌过期时间(分钟) | ❌ | `30` | `1440` |
-| **AI服务配置** | | | | |
-| `OPENAI_API_KEY` | OpenAI API密钥 | ❌ | - | `sk-...` |
-| `OPENAI_API_BASE` | OpenAI API基础URL | ❌ | OpenAI官方 | `https://api.openai.com/v1` |
-| `OPENAI_MODEL` | 默认OpenAI模型 | ❌ | `gpt-3.5-turbo` | `gpt-4` |
-| **对象存储配置** | | | | |
-| `S3_ACCESS_KEY_ID` | S3访问密钥ID | ❌ | - | `AKIAIOSFODNN7EXAMPLE` |
-| `S3_SECRET_ACCESS_KEY` | S3密钥 | ❌ | - | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
-| `S3_ENDPOINT_URL` | S3端点URL | ❌ | - | `https://s3.amazonaws.com` |
-| `S3_BUCKET_NAME` | S3存储桶名称 | ❌ | - | `hongqing-files` |
-| `S3_BASE_URL` | CDN基础URL | ❌ | - | `https://cdn.example.com` |
-| **文件上传配置** | | | | |
-| `UPLOAD_DIR` | 本地文件上传目录 | ❌ | `./uploaded_files` | `./project/uploads` |
-| `TEMP_AUDIO_DIR` | 临时音频文件目录 | ❌ | `./temp_audio` | `./project/temp_audio` |
-| `MAX_FILE_SIZE` | 最大文件大小(字节) | ❌ | `10485760` | `52428800` (50MB) |
-| `ALLOWED_EXTENSIONS` | 允许的文件扩展名 | ❌ | 常见格式 | `.pdf,.docx,.xlsx,.pptx` |
-| **应用配置** | | | | |
-| `DEBUG` | 调试模式 | ❌ | `false` | `true` |
-| `LOG_LEVEL` | 日志级别 | ❌ | `INFO` | `DEBUG` |
-| `CORS_ORIGINS` | 跨域允许的源 | ❌ | `*` | `http://localhost:3000` |
-| `ENABLE_DOCS` | 启用API文档 | ❌ | `true` | `false` |
-
-</details>
-
-### 🤖 AI模型配置详解
-
-平台支持多种AI服务的灵活配置，用户可以根据需求选择不同的模型和服务提供商。
-
-#### 🧠 大语言模型 (LLM)
-
-<details>
-<summary><b>OpenAI GPT系列</b></summary>
-
-```env
-# OpenAI官方API
-OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4  # 或 gpt-3.5-turbo, gpt-4-turbo
-
-# 支持的模型列表
-# - gpt-3.5-turbo: 快速、经济的选择
-# - gpt-4: 更强的推理能力
-# - gpt-4-turbo: 更长的上下文窗口
-# - gpt-4o: 多模态支持
-```
-
-</details>
-
-<details>
-<summary><b>本地模型配置</b></summary>
-
-```python
-# 通过Transformers库加载本地模型
-LOCAL_MODEL_PATH=/path/to/your/model
-LOCAL_MODEL_TYPE=huggingface  # 或 onnx, tensorrt
-
-# 支持的本地模型示例
-# - microsoft/DialoGPT-medium
-# - microsoft/DialoGPT-large
-# - facebook/blenderbot-400M-distill
-# - 中文模型: THUDM/chatglm-6b
-```
-
-</details>
-
-#### 🔍 搜索引擎配置
-
-<details>
-<summary><b>支持的搜索引擎</b></summary>
-
-```env
-# Bing Search API
-BING_SEARCH_API_KEY=your-bing-api-key
-BING_SEARCH_ENDPOINT=https://api.cognitive.microsoft.com
-
-# Google Custom Search
-GOOGLE_API_KEY=your-google-api-key
-GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
-
-# Tavily AI Search
-TAVILY_API_KEY=your-tavily-api-key
-
-# DuckDuckGo (无需API密钥)
-# 自动支持，无需配置
-```
-
-</details>
-
-#### 🎙️ 文本转语音 (TTS)
-
-<details>
-<summary><b>TTS服务配置</b></summary>
-
-```env
-# Google TTS (gTTS)
-# 无需API密钥，但需要网络连接
-
-# Azure Cognitive Services
-AZURE_SPEECH_KEY=your-azure-speech-key
-AZURE_SPEECH_REGION=eastus
-
-# Amazon Polly
-AWS_ACCESS_KEY_ID=your-aws-access-key
-AWS_SECRET_ACCESS_KEY=your-aws-secret-key
-AWS_REGION=us-east-1
-
-# 支持的语言和语音
-# - 中文: zh-CN, zh-TW
-# - 英文: en-US, en-GB
-# - 多种其他语言
-```
-
-</details>
-
-### 🔌 MCP协议支持
-
-平台支持Model Context Protocol (MCP)标准，允许扩展AI模型的能力。
-
-```python
-# MCP配置示例
-MCP_ENABLED=true
-MCP_SERVERS_CONFIG={
-    "file_server": {
-        "command": "npx",
-        "args": ["@modelcontextprotocol/server-filesystem", "/path/to/files"],
-        "env": {}
-    },
-    "web_server": {
-        "command": "npx",
-        "args": ["@modelcontextprotocol/server-web"],
-        "env": {}
-    }
-}
-```
-
-### 🛡️ 安全最佳实践
-
-1. **密钥管理**:
-   - 使用强随机密钥 (至少32字符)
-   - 定期轮换API密钥
-   - 不要在代码中硬编码密钥
-
-2. **数据库安全**:
-   - 使用专用数据库用户
-   - 限制数据库权限
-   - 启用SSL连接
-
-3. **文件安全**:
-   - 限制文件上传大小和类型
-   - 扫描上传文件的恶意内容
-   - 使用沙箱环境处理文件
-
-4. **API安全**:
-   - 启用CORS保护
-   - 实施请求速率限制
-   - 记录和监控API访问
 
 ## 🚀 生产部署
 
@@ -1698,145 +1221,6 @@ open htmlcov/index.html  # macOS
 start htmlcov/index.html  # Windows
 ```
 
-### 🛠️ 开发工具配置
-
-#### 🎨 代码格式化
-
-<details>
-<summary><b>Black 配置 (pyproject.toml)</b></summary>
-
-```toml
-[tool.black]
-line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-  | migrations
-)/
-'''
-```
-
-</details>
-
-<details>
-<summary><b>isort 配置</b></summary>
-
-```toml
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 100
-known_first_party = ["project", "models", "schemas", "database"]
-known_third_party = ["fastapi", "sqlalchemy", "pydantic", "numpy"]
-```
-
-</details>
-
-<details>
-<summary><b>mypy 配置</b></summary>
-
-```toml
-[tool.mypy]
-python_version = "3.8"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
-
-[[tool.mypy.overrides]]
-module = [
-    "pgvector.*",
-    "sentence_transformers.*",
-    "transformers.*"
-]
-ignore_missing_imports = true
-```
-
-</details>
-
-#### 🔧 开发脚本
-
-创建 `scripts/dev.py` 开发助手脚本：
-
-```python
-#!/usr/bin/env python3
-"""开发助手脚本"""
-import subprocess
-import sys
-from pathlib import Path
-
-def format_code():
-    """格式化代码"""
-    print("🎨 格式化代码...")
-    subprocess.run(["black", "project/"], check=True)
-    subprocess.run(["isort", "project/"], check=True)
-    print("✅ 代码格式化完成")
-
-def lint_code():
-    """代码检查"""
-    print("🔍 进行代码检查...")
-    subprocess.run(["flake8", "project/"], check=True)
-    subprocess.run(["mypy", "project/"], check=True)
-    print("✅ 代码检查通过")
-
-def run_tests():
-    """运行测试"""
-    print("🧪 运行测试...")
-    subprocess.run([
-        "pytest", 
-        "--cov=project", 
-        "--cov-report=term-missing",
-        "-v"
-    ], check=True)
-    print("✅ 测试完成")
-
-def start_dev_server():
-    """启动开发服务器"""
-    print("🚀 启动开发服务器...")
-    subprocess.run([
-        "python", "-m", "uvicorn", 
-        "project.main:app", 
-        "--reload", 
-        "--host", "0.0.0.0", 
-        "--port", "8000",
-        "--log-level", "debug"
-    ])
-
-if __name__ == "__main__":
-    command = sys.argv[1] if len(sys.argv) > 1 else "help"
-    
-    commands = {
-        "format": format_code,
-        "lint": lint_code,
-        "test": run_tests,
-        "serve": start_dev_server,
-    }
-    
-    if command in commands:
-        commands[command]()
-    else:
-        print("可用命令: format, lint, test, serve")
-```
-
 ### 🔄 数据库迁移
 
 #### Alembic 迁移管理
@@ -1886,146 +1270,6 @@ def downgrade():
     op.drop_index('idx_knowledge_chunks_embedding_hnsw')
     op.drop_index('idx_knowledge_chunks_content_gin')
 ```
-
-### 🐛 调试工具
-
-#### 日志配置
-
-```python
-# project/logging_config.py
-import logging
-import sys
-from pathlib import Path
-
-def setup_logging(level: str = "INFO"):
-    """设置日志配置"""
-    
-    # 创建日志目录
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
-    # 配置格式
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # 控制台处理器
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    
-    # 文件处理器
-    file_handler = logging.FileHandler(log_dir / "app.log")
-    file_handler.setFormatter(formatter)
-    
-    # 错误文件处理器
-    error_handler = logging.FileHandler(log_dir / "error.log")
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-    
-    # 根日志器配置
-    root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, level.upper()))
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(error_handler)
-```
-
-#### 性能分析
-
-```python
-# 使用装饰器进行性能分析
-import time
-import functools
-import logging
-
-def timer(func):
-    """计时装饰器"""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        result = func(*args, **kwargs)
-        end = time.time()
-        logging.info(f"{func.__name__} 执行时间: {end - start:.4f}秒")
-        return result
-    return wrapper
-
-# 在API端点中使用
-@app.get("/api/example")
-@timer
-async def example_endpoint():
-    # 业务逻辑
-    pass
-```
-
-### 📋 Git 工作流
-
-#### 提交前检查脚本
-
-```bash
-#!/bin/bash
-# scripts/pre-commit.sh
-
-echo "🔍 运行提交前检查..."
-
-# 代码格式化
-echo "📝 格式化代码..."
-black project/
-isort project/
-
-# 代码检查
-echo "🔍 代码检查..."
-flake8 project/ || exit 1
-mypy project/ || exit 1
-
-# 运行测试
-echo "🧪 运行测试..."
-pytest --cov=project tests/ || exit 1
-
-echo "✅ 所有检查通过，可以提交代码"
-```
-
-#### Git Hooks 设置
-
-```bash
-# 设置 pre-commit hook
-cp scripts/pre-commit.sh .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```
-
-### 🔧 IDE 配置
-
-#### VS Code 配置
-
-<details>
-<summary><b>.vscode/settings.json</b></summary>
-
-```json
-{
-    "python.defaultInterpreterPath": "./venv/bin/python",
-    "python.linting.enabled": true,
-    "python.linting.flake8Enabled": true,
-    "python.linting.mypyEnabled": true,
-    "python.formatting.provider": "black",
-    "python.sortImports.args": ["--profile", "black"],
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-        "source.organizeImports": true
-    },
-    "files.exclude": {
-        "**/__pycache__": true,
-        "**/*.pyc": true
-    }
-}
-```
-
-</details>
-
-#### PyCharm 配置
-
-1. **解释器设置**: 选择项目虚拟环境
-2. **代码风格**: 配置Black格式化器
-3. **运行配置**: 创建FastAPI运行配置
-4. **数据库工具**: 连接PostgreSQL数据库
 
 ## 🐛 故障排除
 
@@ -2369,341 +1613,6 @@ echo "✅ 开发环境重置完成"
 
 我们热烈欢迎社区的贡献！无论是报告bug、提出新功能建议、改进文档还是提交代码，每一份贡献都让这个项目变得更好。
 
-### 🌟 贡献方式
-
-<table>
-<tr>
-<td width="50%">
-
-**🐛 问题报告**
-- 发现bug并提交issue
-- 提供详细的复现步骤
-- 包含环境信息和错误日志
-
-**💡 功能建议**
-- 提出新功能想法
-- 描述使用场景和预期效果
-- 参与功能设计讨论
-
-</td>
-<td width="50%">
-
-**📝 文档改进**
-- 修正文档错误
-- 添加使用示例
-- 翻译文档到其他语言
-
-**💻 代码贡献**
-- 修复bug和实现新功能
-- 性能优化和重构
-- 测试用例编写
-
-</td>
-</tr>
-</table>
-
-### 🔄 开发流程
-
-#### 1️⃣ 准备开发环境
-
-```bash
-# 1. Fork项目到您的GitHub账户
-# 在GitHub上点击Fork按钮
-
-# 2. 克隆您的Fork
-git clone https://github.com/YOUR_USERNAME/Cosbrain.git
-cd Cosbrain
-
-# 3. 添加上游仓库
-git remote add upstream https://github.com/w2902171175/Cosbrain.git
-
-# 4. 设置开发环境
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-#### 2️⃣ 创建功能分支
-
-```bash
-# 1. 同步最新代码
-git fetch upstream
-git checkout main
-git merge upstream/main
-
-# 2. 创建功能分支
-git checkout -b feature/your-awesome-feature
-# 或修复bug分支
-git checkout -b fix/issue-123
-
-# 3. 开始开发
-# ... 进行您的修改 ...
-```
-
-#### 3️⃣ 代码开发规范
-
-<details>
-<summary><b>🎨 代码风格规范</b></summary>
-
-**Python代码规范:**
-- 遵循 **PEP 8** 标准
-- 使用 **Black** 进行代码格式化
-- 使用 **isort** 组织导入语句
-- 行长度限制为 **100** 字符
-
-```bash
-# 格式化代码
-black project/
-isort project/
-
-# 检查代码风格
-flake8 project/
-mypy project/
-```
-
-**命名规范:**
-- 变量和函数: `snake_case`
-- 类名: `PascalCase`
-- 常量: `UPPER_SNAKE_CASE`
-- 私有变量: `_leading_underscore`
-
-</details>
-
-<details>
-<summary><b>📝 注释和文档</b></summary>
-
-**函数文档字符串:**
-```python
-def match_students_by_skills(
-    skills: List[str], 
-    limit: int = 10,
-    similarity_threshold: float = 0.7
-) -> List[StudentMatch]:
-    """
-    根据技能匹配相似学生
-    
-    Args:
-        skills: 技能关键词列表
-        limit: 返回结果数量限制
-        similarity_threshold: 相似度阈值 (0-1)
-    
-    Returns:
-        StudentMatch对象列表，按相似度降序排列
-        
-    Raises:
-        ValueError: 当技能列表为空时抛出
-        
-    Example:
-        >>> matches = match_students_by_skills(["Python", "AI"], limit=5)
-        >>> print(len(matches))
-        5
-    """
-```
-
-**API端点文档:**
-```python
-@app.post("/api/projects", response_model=ProjectResponse)
-async def create_project(
-    project: ProjectCreate,
-    current_user: Student = Depends(get_current_user)
-):
-    """
-    创建新项目
-    
-    - **name**: 项目名称 (必需)
-    - **description**: 项目描述
-    - **skills**: 所需技能列表
-    - **max_members**: 最大成员数量
-    
-    返回创建的项目详细信息
-    """
-```
-
-</details>
-
-<details>
-<summary><b>🧪 测试规范</b></summary>
-
-**测试文件组织:**
-```
-tests/
-├── test_auth.py          # 认证模块测试
-├── test_ai_core.py       # AI功能测试
-├── test_matching.py      # 匹配算法测试
-├── test_api/             # API测试
-│   ├── test_projects.py
-│   ├── test_courses.py
-│   └── test_chat.py
-└── conftest.py           # 测试配置和fixtures
-```
-
-**测试编写示例:**
-```python
-import pytest
-from fastapi.testclient import TestClient
-from project.main import app
-
-client = TestClient(app)
-
-def test_create_project():
-    """测试项目创建功能"""
-    project_data = {
-        "name": "测试项目",
-        "description": "这是一个测试项目",
-        "skills": ["Python", "FastAPI"]
-    }
-    
-    response = client.post("/api/projects", json=project_data)
-    
-    assert response.status_code == 201
-    assert response.json()["name"] == "测试项目"
-    assert "id" in response.json()
-
-@pytest.mark.asyncio
-async def test_ai_matching():
-    """测试AI匹配功能"""
-    from project.ai_core import match_students_by_vector
-    
-    # 准备测试数据
-    query_vector = [0.1, 0.2, 0.3]  # 示例向量
-    
-    # 执行匹配
-    results = await match_students_by_vector(query_vector, limit=5)
-    
-    # 验证结果
-    assert isinstance(results, list)
-    assert len(results) <= 5
-    assert all(hasattr(r, 'similarity') for r in results)
-```
-
-</details>
-
-#### 4️⃣ 提交代码
-
-<details>
-<summary><b>📝 提交信息规范</b></summary>
-
-**提交格式:**
-```
-<类型>(<范围>): <简短描述>
-
-<详细描述>
-
-<相关Issue>
-```
-
-**类型标识:**
-- `feat`: 新功能
-- `fix`: bug修复
-- `docs`: 文档更新
-- `style`: 代码格式化
-- `refactor`: 代码重构
-- `test`: 测试相关
-- `chore`: 构建、工具等
-
-**示例:**
-```bash
-# 好的提交信息
-git commit -m "feat(matching): 添加基于技能的学生匹配算法
-
-- 实现向量相似度计算
-- 添加匹配结果缓存机制
-- 支持自定义相似度阈值
-
-Closes #123"
-
-# 不好的提交信息
-git commit -m "修复bug"  # 太简略
-git commit -m "update code"  # 不清楚
-```
-
-</details>
-
-```bash
-# 1. 运行测试确保代码质量
-pytest --cov=project tests/
-black project/
-isort project/
-flake8 project/
-mypy project/
-
-# 2. 提交代码
-git add .
-git commit -m "feat(matching): 添加基于技能的学生匹配算法"
-
-# 3. 推送到您的Fork
-git push origin feature/your-awesome-feature
-```
-
-#### 5️⃣ 创建Pull Request
-
-1. **访问GitHub页面**，点击 "Compare & pull request"
-
-2. **填写PR信息**:
-   ```markdown
-   ## 📝 变更概述
-   简要描述此PR的目的和实现的功能
-   
-   ## 🔄 变更详情
-   - [ ] 添加新功能X
-   - [ ] 修复问题Y
-   - [ ] 优化性能Z
-   
-   ## 🧪 测试情况
-   - [ ] 单元测试通过
-   - [ ] 集成测试通过
-   - [ ] 手动测试验证
-   
-   ## 📸 截图/演示
-   （如果适用，添加截图或GIF演示）
-   
-   ## 🔗 相关Issue
-   Closes #123
-   Related to #456
-   ```
-
-3. **请求代码审查**，等待维护者反馈
-
-### 🔍 代码审查
-
-#### 审查清单
-
-**功能性:**
-- [ ] 功能是否按预期工作
-- [ ] 是否处理了边界情况
-- [ ] 错误处理是否完善
-
-**代码质量:**
-- [ ] 代码风格符合规范
-- [ ] 变量命名清晰易懂
-- [ ] 函数职责单一明确
-
-**性能:**
-- [ ] 是否存在性能问题
-- [ ] 数据库查询是否优化
-- [ ] 内存使用是否合理
-
-**安全性:**
-- [ ] 是否存在安全漏洞
-- [ ] 输入验证是否充分
-- [ ] 权限检查是否正确
-
-### 🏆 贡献者认可
-
-我们将在以下方式认可贡献者：
-
-- **Contributors 列表**: 在README中展示
-- **Release Notes**: 在版本发布中提及
-- **特殊徽章**: 为活跃贡献者提供特殊标识
-- **社区感谢**: 在社区中公开感谢
-
-### 📋 贡献者协议
-
-通过提交代码，您同意：
-1. 您拥有提交代码的合法权利
-2. 您的贡献将按照项目许可证发布
-3. 您同意项目维护者对代码进行必要修改
-
 ### 🎯 特殊贡献机会
 
 #### 🌟 优先级高的贡献
@@ -2739,560 +1648,6 @@ git push origin feature/your-awesome-feature
 
 **再次感谢您的贡献！** 🙏 每一份贡献都让这个项目变得更好，也让整个社区受益。
 
-## � 性能与扩展
-
-### ⚡ 性能优化策略
-
-#### 🗄️ 数据库层优化
-
-<details>
-<summary><b>索引优化策略</b></summary>
-
-```sql
--- 向量搜索优化
-CREATE INDEX CONCURRENTLY idx_knowledge_chunks_embedding_hnsw 
-ON knowledge_document_chunks 
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
-
--- 文本搜索优化  
-CREATE INDEX CONCURRENTLY idx_content_gin 
-ON knowledge_document_chunks 
-USING gin (to_tsvector('english', content));
-
--- 复合索引优化
-CREATE INDEX CONCURRENTLY idx_projects_skills_status 
-ON projects (skills, status, created_at DESC);
-
--- 外键关联优化
-CREATE INDEX CONCURRENTLY idx_chat_messages_room_time 
-ON chat_messages (room_id, created_at DESC);
-```
-
-</details>
-
-<details>
-<summary><b>查询优化</b></summary>
-
-```python
-# 使用查询预热和批量操作
-async def get_user_projects_optimized(user_id: int, db: Session):
-    """优化的用户项目查询"""
-    return db.query(Project)\
-        .options(
-            selectinload(Project.members),  # 预加载关联数据
-            selectinload(Project.applications)
-        )\
-        .filter(Project.creator_id == user_id)\
-        .order_by(Project.updated_at.desc())\
-        .limit(20)\
-        .all()
-
-# 使用原生SQL进行复杂查询
-async def get_popular_courses():
-    """获取热门课程的优化查询"""
-    query = """
-    SELECT c.*, COUNT(uc.user_id) as enrollment_count
-    FROM courses c
-    LEFT JOIN user_courses uc ON c.id = uc.course_id
-    WHERE c.status = 'published'
-    GROUP BY c.id
-    ORDER BY enrollment_count DESC, c.created_at DESC
-    LIMIT 10
-    """
-    return db.execute(text(query)).fetchall()
-```
-
-</details>
-
-<details>
-<summary><b>连接池配置</b></summary>
-
-```python
-# database.py 优化配置
-from sqlalchemy import create_engine
-from sqlalchemy.pool import QueuePool
-
-engine = create_engine(
-    DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=20,          # 连接池大小
-    max_overflow=30,       # 最大溢出连接数
-    pool_timeout=30,       # 获取连接超时时间
-    pool_recycle=3600,     # 连接回收时间(秒)
-    pool_pre_ping=True,    # 连接前检查
-    echo=False,            # 生产环境关闭SQL日志
-    future=True
-)
-```
-
-</details>
-
-#### 🚀 应用层优化
-
-<details>
-<summary><b>异步处理优化</b></summary>
-
-```python
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
-# 异步文件处理
-async def process_document_async(file_path: str):
-    """异步文档处理"""
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        # CPU密集型任务放到线程池
-        content = await loop.run_in_executor(
-            executor, extract_document_content, file_path
-        )
-        # 向量化也是CPU密集型
-        embeddings = await loop.run_in_executor(
-            executor, generate_embeddings, content
-        )
-    return content, embeddings
-
-# 批量异步操作
-async def process_multiple_documents(file_paths: List[str]):
-    """批量处理文档"""
-    tasks = [process_document_async(path) for path in file_paths]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    return results
-```
-
-</details>
-
-<details>
-<summary><b>缓存策略</b></summary>
-
-```python
-import redis
-from functools import wraps
-import json
-import pickle
-
-# Redis配置
-redis_client = redis.Redis(
-    host='localhost', 
-    port=6379, 
-    db=0,
-    decode_responses=True,
-    socket_keepalive=True,
-    socket_keepalive_options={}
-)
-
-# 缓存装饰器
-def cache_result(expire_time: int = 3600):
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # 生成缓存键
-            cache_key = f"{func.__name__}:{hash(str(args) + str(kwargs))}"
-            
-            # 尝试从缓存获取
-            cached = redis_client.get(cache_key)
-            if cached:
-                return pickle.loads(cached)
-            
-            # 执行函数并缓存结果
-            result = await func(*args, **kwargs)
-            redis_client.setex(
-                cache_key, 
-                expire_time, 
-                pickle.dumps(result)
-            )
-            return result
-        return wrapper
-    return decorator
-
-# 使用示例
-@cache_result(expire_time=1800)  # 缓存30分钟
-async def get_popular_courses():
-    """获取热门课程(带缓存)"""
-    # 业务逻辑...
-    pass
-```
-
-</details>
-
-<details>
-<summary><b>API响应优化</b></summary>
-
-```python
-from fastapi import BackgroundTasks
-from fastapi.responses import StreamingResponse
-import orjson  # 更快的JSON序列化
-
-# 使用更快的JSON响应
-class ORJSONResponse(Response):
-    media_type = "application/json"
-    
-    def render(self, content: Any) -> bytes:
-        return orjson.dumps(content)
-
-app = FastAPI(default_response_class=ORJSONResponse)
-
-# 后台任务处理
-@app.post("/documents/upload")
-async def upload_document(
-    file: UploadFile,
-    background_tasks: BackgroundTasks
-):
-    # 立即响应用户
-    file_id = save_file_metadata(file)
-    
-    # 后台处理文档解析
-    background_tasks.add_task(
-        process_document_background, 
-        file_id, 
-        file.filename
-    )
-    
-    return {"file_id": file_id, "status": "processing"}
-
-# 流式响应
-@app.get("/api/export/data")
-async def export_large_dataset():
-    """大数据集流式导出"""
-    def generate_data():
-        for chunk in get_data_chunks():
-            yield orjson.dumps(chunk) + b'\n'
-    
-    return StreamingResponse(
-        generate_data(),
-        media_type="application/json"
-    )
-```
-
-</details>
-
-### 📈 扩展架构
-
-#### 🏗️ 微服务化架构
-
-<details>
-<summary><b>服务拆分策略</b></summary>
-
-```yaml
-# docker-compose.microservices.yml
-version: '3.8'
-services:
-  # 用户认证服务
-  auth-service:
-    build: ./services/auth
-    ports: ["8001:8000"]
-    environment:
-      - DATABASE_URL=postgresql://auth_db
-      
-  # 知识管理服务  
-  knowledge-service:
-    build: ./services/knowledge
-    ports: ["8002:8000"]
-    depends_on: [vector-db, redis]
-    
-  # AI服务
-  ai-service:
-    build: ./services/ai
-    ports: ["8003:8000"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-              
-  # 聊天服务
-  chat-service:
-    build: ./services/chat
-    ports: ["8004:8000"]
-    depends_on: [redis, message-queue]
-    
-  # API网关
-  api-gateway:
-    image: nginx:alpine
-    ports: ["80:80"]
-    volumes:
-      - ./nginx/gateway.conf:/etc/nginx/nginx.conf
-    depends_on:
-      - auth-service
-      - knowledge-service
-      - ai-service
-      - chat-service
-```
-
-</details>
-
-<details>
-<summary><b>API网关配置</b></summary>
-
-```nginx
-# nginx/gateway.conf
-upstream auth_service {
-    server auth-service:8000;
-}
-
-upstream knowledge_service {
-    server knowledge-service:8000;
-}
-
-upstream ai_service {
-    server ai-service:8000;
-}
-
-upstream chat_service {
-    server chat-service:8000;
-}
-
-server {
-    listen 80;
-    
-    # 认证服务
-    location /api/auth/ {
-        proxy_pass http://auth_service/;
-    }
-    
-    # 知识管理服务
-    location /api/knowledge/ {
-        proxy_pass http://knowledge_service/;
-    }
-    
-    # AI服务
-    location /api/ai/ {
-        proxy_pass http://ai_service/;
-    }
-    
-    # 聊天服务
-    location /api/chat/ {
-        proxy_pass http://chat_service/;
-    }
-    
-    # WebSocket代理
-    location /ws/ {
-        proxy_pass http://chat_service;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-```
-
-</details>
-
-#### ⚖️ 负载均衡与高可用
-
-<details>
-<summary><b>Nginx负载均衡</b></summary>
-
-```nginx
-# 应用服务器集群
-upstream app_servers {
-    least_conn;  # 最少连接算法
-    server app1.hongqing.com:8000 weight=3 max_fails=2 fail_timeout=30s;
-    server app2.hongqing.com:8000 weight=3 max_fails=2 fail_timeout=30s;
-    server app3.hongqing.com:8000 weight=2 max_fails=2 fail_timeout=30s;
-    keepalive 32;
-}
-
-# 数据库读写分离
-upstream db_read_servers {
-    server db-read1.hongqing.com:5432;
-    server db-read2.hongqing.com:5432;
-    server db-read3.hongqing.com:5432;
-}
-
-# AI服务负载均衡
-upstream ai_servers {
-    server ai1.hongqing.com:8000 weight=1;
-    server ai2.hongqing.com:8000 weight=1;
-    server ai3.hongqing.com:8000 weight=2;  # GPU服务器权重更高
-}
-```
-
-</details>
-
-<details>
-<summary><b>数据库集群</b></summary>
-
-```yaml
-# PostgreSQL主从复制配置
-version: '3.8'
-services:
-  # 主数据库
-  postgres-master:
-    image: pgvector/pgvector:pg15
-    environment:
-      POSTGRES_REPLICATION_USER: replica
-      POSTGRES_REPLICATION_PASSWORD: replica_password
-    volumes:
-      - master_data:/var/lib/postgresql/data
-      - ./postgresql.conf:/etc/postgresql/postgresql.conf
-    command: >
-      postgres -c config_file=/etc/postgresql/postgresql.conf
-      
-  # 从数据库1
-  postgres-slave1:
-    image: pgvector/pgvector:pg15
-    environment:
-      PGUSER: postgres
-      POSTGRES_MASTER_SERVICE: postgres-master
-      POSTGRES_REPLICATION_USER: replica
-      POSTGRES_REPLICATION_PASSWORD: replica_password
-    volumes:
-      - slave1_data:/var/lib/postgresql/data
-    depends_on:
-      - postgres-master
-      
-  # 从数据库2  
-  postgres-slave2:
-    image: pgvector/pgvector:pg15
-    environment:
-      PGUSER: postgres
-      POSTGRES_MASTER_SERVICE: postgres-master
-      POSTGRES_REPLICATION_USER: replica
-      POSTGRES_REPLICATION_PASSWORD: replica_password
-    volumes:
-      - slave2_data:/var/lib/postgresql/data
-    depends_on:
-      - postgres-master
-```
-
-</details>
-
-#### 📊 监控与告警
-
-<details>
-<summary><b>Prometheus监控配置</b></summary>
-
-```yaml
-# prometheus.yml
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-rule_files:
-  - "alert_rules.yml"
-
-scrape_configs:
-  # 应用监控
-  - job_name: 'hongqing-app'
-    static_configs:
-      - targets: ['app1:8000', 'app2:8000', 'app3:8000']
-    metrics_path: '/metrics'
-    
-  # 数据库监控
-  - job_name: 'postgres'
-    static_configs:
-      - targets: ['postgres-exporter:9187']
-      
-  # Redis监控
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis-exporter:9121']
-      
-  # 系统监控
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
-
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ['alertmanager:9093']
-```
-
-</details>
-
-<details>
-<summary><b>Grafana仪表板</b></summary>
-
-```json
-{
-  "dashboard": {
-    "title": "鸿庆书云平台监控",
-    "panels": [
-      {
-        "title": "API请求量",
-        "type": "graph",
-        "targets": [
-          {
-            "expr": "rate(http_requests_total[5m])",
-            "legendFormat": "{{method}} {{endpoint}}"
-          }
-        ]
-      },
-      {
-        "title": "响应时间",
-        "type": "graph", 
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
-            "legendFormat": "95th percentile"
-          }
-        ]
-      },
-      {
-        "title": "数据库连接数",
-        "type": "stat",
-        "targets": [
-          {
-            "expr": "pg_stat_activity_count",
-            "legendFormat": "活跃连接"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-</details>
-
-### 🚀 性能基准测试
-
-#### 📊 压力测试
-
-```bash
-# 使用wrk进行API压力测试
-wrk -t12 -c400 -d30s --latency http://localhost:8000/api/health
-
-# 使用locust进行业务场景测试
-pip install locust
-
-# locustfile.py
-from locust import HttpUser, task, between
-
-class PlatformUser(HttpUser):
-    wait_time = between(1, 5)
-    
-    def on_start(self):
-        # 用户登录
-        response = self.client.post("/token", data={
-            "username": "test@example.com",
-            "password": "test123"
-        })
-        self.token = response.json()["access_token"]
-        self.headers = {"Authorization": f"Bearer {self.token}"}
-    
-    @task(3)
-    def search_knowledge(self):
-        self.client.post("/knowledge/search", 
-                        json={"query": "Python教程"},
-                        headers=self.headers)
-    
-    @task(2) 
-    def get_projects(self):
-        self.client.get("/projects", headers=self.headers)
-    
-    @task(1)
-    def ai_chat(self):
-        self.client.post("/ai/chat",
-                        json={"message": "你好，请介绍一下Python"},
-                        headers=self.headers)
-
-# 运行测试
-locust -f locustfile.py --host=http://localhost:8000
-```
 
 #### 📈 性能基准
 
@@ -3400,55 +1755,6 @@ locust -f locustfile.py --host=http://localhost:8000
 - 我们提供企业级定制服务和技术支持
 
 </details>
-
-## 🙏 致谢
-
-### 🌟 开源技术栈
-
-感谢以下优秀的开源项目，让这个平台得以实现：
-
-<table>
-<tr>
-<td width="50%">
-
-**🚀 核心框架**
-- [FastAPI](https://fastapi.tiangolo.com/) - 现代高性能Web框架
-- [PostgreSQL](https://www.postgresql.org/) - 强大的开源关系数据库
-- [SQLAlchemy](https://sqlalchemy.org/) - Python SQL工具包和ORM
-- [Pydantic](https://pydantic-docs.helpmanual.io/) - 数据验证和设置管理
-
-</td>
-<td width="50%">
-
-**🤖 AI/ML生态**
-- [pgvector](https://github.com/pgvector/pgvector) - PostgreSQL向量扩展
-- [Sentence Transformers](https://www.sbert.net/) - 语义文本嵌入
-- [Transformers](https://huggingface.co/transformers/) - 预训练模型库
-- [PyTorch](https://pytorch.org/) - 深度学习框架
-
-</td>
-</tr>
-<tr>
-<td>
-
-**🛠️ 开发工具**
-- [Uvicorn](https://www.uvicorn.org/) - ASGI服务器
-- [Alembic](https://alembic.sqlalchemy.org/) - 数据库迁移工具
-- [pytest](https://pytest.org/) - 测试框架
-- [Black](https://black.readthedocs.io/) - 代码格式化工具
-
-</td>
-<td>
-
-**📚 文档处理**
-- [python-docx](https://python-docx.readthedocs.io/) - Word文档处理
-- [PyPDF2](https://pypdf2.readthedocs.io/) - PDF文档解析
-- [openpyxl](https://openpyxl.readthedocs.io/) - Excel文件操作
-- [python-pptx](https://python-pptx.readthedocs.io/) - PowerPoint处理
-
-</td>
-</tr>
-</table>
 
 ### 👥 特别感谢
 
