@@ -327,13 +327,13 @@ class NoteBase(BaseModel):
         # 因此我们需要放宽验证条件，允许在没有 content 和 media_url 的情况下通过验证
         # 实际的内容验证将在 API 端点中进行
         
-        # 只有当明确提供了 media_type 但没有 media_url 时才报错
-        if self.media_type and not self.media_url:
-            raise ValueError(f"当 media_type 为 '{self.media_type}' 时，media_url 不能为空。")
-        
-        # 只有当明确提供了 media_url 但没有 media_type 时才报错
+        # 🔧 修复：对于文件上传场景，放宽media_type和media_url的验证
+        # 只有当明确提供了media_url但没有media_type时才报错（外部URL场景）
         if self.media_url and not self.media_type:
             raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+        
+        # 对于文件上传场景，允许提供media_type但暂时没有media_url
+        # 这种情况下，media_url会在文件上传后由API端点设置
         
         # 🔧 修复：先进行 folder_id 的转换，再进行关联关系验证
         if self.folder_id == 0:
@@ -1218,14 +1218,14 @@ class KnowledgeDocumentChunkResponse(BaseModel):
 
 # --- Course Schemas ---
 class CourseBase(BaseModel):
-    title: str
-    description: Optional[str] = None
-    instructor: Optional[str] = None
-    category: Optional[str] = None
-    total_lessons: Optional[int] = 0
-    avg_rating: Optional[float] = 0.0
-    cover_image_url: Optional[str] = Field(None, description="课程封面图片的URL链接")
-    required_skills: Optional[List[SkillWithProficiency]] = Field(None, description="课程所需基础技能列表及熟练度，或学习该课程所需前置技能")
+    title: str = Field(..., min_length=1, max_length=200, description="课程标题")
+    description: Optional[str] = Field(None, max_length=2000, description="课程描述")
+    instructor: Optional[str] = Field(None, max_length=100, description="讲师姓名")
+    category: Optional[str] = Field(None, max_length=50, description="课程分类")
+    total_lessons: Optional[int] = Field(0, ge=0, le=1000, description="总课时数")
+    avg_rating: Optional[float] = Field(0.0, ge=0.0, le=5.0, description="平均评分")
+    cover_image_url: Optional[str] = Field(None, max_length=500, description="课程封面图片的URL链接")
+    required_skills: Optional[List[SkillWithProficiency]] = Field(None, max_items=20, description="课程所需基础技能列表及熟练度，或学习该课程所需前置技能")
 
 class CourseCreate(CourseBase):
     pass
@@ -1244,14 +1244,14 @@ class CourseResponse(CourseBase):
 
 class CourseUpdate(BaseModel):
     """更新课程信息时的数据模型，所有字段均为可选"""
-    title: Optional[str] = None
-    description: Optional[str] = None
-    instructor: Optional[str] = None
-    category: Optional[str] = None
-    total_lessons: Optional[int] = None
-    avg_rating: Optional[float] = None
-    cover_image_url: Optional[str] = Field(None, description="课程封面图片的URL链接")
-    required_skills: Optional[List[SkillWithProficiency]] = Field(None, description="课程所需基础技能列表及熟练度，或学习该课程所需前置技能")
+    title: Optional[str] = Field(None, min_length=1, max_length=200, description="课程标题")
+    description: Optional[str] = Field(None, max_length=2000, description="课程描述")
+    instructor: Optional[str] = Field(None, max_length=100, description="讲师姓名")
+    category: Optional[str] = Field(None, max_length=50, description="课程分类")
+    total_lessons: Optional[int] = Field(None, ge=0, le=1000, description="总课时数")
+    avg_rating: Optional[float] = Field(None, ge=0.0, le=5.0, description="平均评分")
+    cover_image_url: Optional[str] = Field(None, max_length=500, description="课程封面图片的URL链接")
+    required_skills: Optional[List[SkillWithProficiency]] = Field(None, max_items=20, description="课程所需基础技能列表及熟练度，或学习该课程所需前置技能")
 
 
 # --- UserCourse Schemas ---
@@ -1276,16 +1276,16 @@ class UserCourseResponse(UserCourseBase):
 
 
 class CourseMaterialBase(BaseModel):
-    title: str = Field(..., description="课程材料标题")
+    title: str = Field(..., min_length=1, max_length=200, description="课程材料标题")
     type: Literal["file", "link", "text", "video", "image"] = Field(...,
                                                                     description="材料类型：'file', 'link', 'text', 'video', 'image'")
 
-    url: Optional[str] = Field(None, description="当类型为'link'时，提供外部链接URL。对于文件类型，此字段由服务器生成。")
-    content: Optional[str] = Field(None, description="当类型为'text'时，提供少量文本内容，或作为文件/链接/媒体的补充描述")
+    url: Optional[str] = Field(None, max_length=1000, description="当类型为'link'时，提供外部链接URL。对于文件类型，此字段由服务器生成。")
+    content: Optional[str] = Field(None, max_length=10000, description="当类型为'text'时，提供少量文本内容，或作为文件/链接/媒体的补充描述")
 
-    original_filename: Optional[str] = Field(None, description="原始上传文件名，由服务器生成")
-    file_type: Optional[str] = Field(None, description="文件MIME类型，由服务器生成")
-    size_bytes: Optional[int] = Field(None, description="文件大小（字节），由服务器生成")
+    original_filename: Optional[str] = Field(None, max_length=255, description="原始上传文件名，由服务器生成")
+    file_type: Optional[str] = Field(None, max_length=100, description="文件MIME类型，由服务器生成")
+    size_bytes: Optional[int] = Field(None, ge=0, le=100*1024*1024, description="文件大小（字节），由服务器生成，最大100MB")
 
     @field_validator('url', 'content', 'original_filename', 'file_type', 'size_bytes', mode='before')
     def validate_material_fields(cls, v, info):

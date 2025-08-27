@@ -10,8 +10,10 @@ from database import SessionLocal, engine, init_db, Base
 from models import Student, Project, Achievement
 
 # --- 1. 配置数据文件路径 ---
-STUDENTS_CSV_PATH = 'data/export/students.csv'
-PROJECTS_CSV_PATH = 'data/export/projects.csv'
+# 获取脚本所在目录，然后构建正确的数据文件路径
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STUDENTS_CSV_PATH = os.path.join(SCRIPT_DIR, 'data', 'export', 'students.csv')
+PROJECTS_CSV_PATH = os.path.join(SCRIPT_DIR, 'data', 'export', 'projects.csv')
 
 DEFAULT_ACHIEVEMENTS = [
     {

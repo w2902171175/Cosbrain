@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 import secrets
 from database import SessionLocal  # 确保 base.py 存在且 SessionLocal 已从中定义
 from models import Student  # 导入 Student 模型，用于用户认证
-import ai_core
 # --- JWT 认证配置 ---
 SECRET_KEY = os.getenv("SECRET_KEY", "your-very-secret-key-that-should-be-in-env-production")  # 从环境变量获取，避免硬编码
 ALGORITHM = "HS256"  # JWT签名算法
@@ -23,6 +22,17 @@ bearer_scheme = HTTPBearer(auto_error=False)  # auto_error=False 避免在依赖
 
 # --- 密码哈希上下文 ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+# --- 密码处理函数 ---
+def verify_password(plain_password, hashed_password):
+    """验证明文密码与哈希密码是否匹配"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password):
+    """生成密码哈希值"""
+    return pwd_context.hash(password)
 
 
 # --- 数据库会话依赖 ---
@@ -124,3 +134,206 @@ async def get_current_user_id(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="认证过程中发生服务器错误"
         )
+
+
+# --- 依赖项：验证用户是否为管理员 ---
+async def is_admin_user(current_user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    """
+    验证当前用户是否是系统管理员。如果不是，则抛出403 Forbidden异常。
+    返回完整的 Student 对象，方便后续操作。
+    """
+    print(f"DEBUG_ADMIN_AUTH: 验证用户 {current_user_id} 是否为管理员。")
+    user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not user or not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权操作，此功能仅限系统管理员。")
+    return user  # 返回整个用户对象，方便需要用户详情的接口
+
+
+# --- 通用依赖项：分页参数 ---
+def get_pagination_params(
+    page: int = 1,
+    page_size: int = 10,
+    max_page_size: int = 100
+):
+    """
+    通用分页参数依赖项
+    
+    Args:
+        page: 页码（从1开始）
+        page_size: 每页大小
+        max_page_size: 最大每页大小
+    
+    Returns:
+        dict: 包含分页参数的字典
+    """
+    page = max(1, page)  # 确保页码至少为1
+    page_size = min(page_size, max_page_size)  # 限制每页大小
+    offset = (page - 1) * page_size
+    
+    return {
+        "page": page,
+        "page_size": page_size,
+        "offset": offset,
+        "limit": page_size
+    }
+
+
+# --- 依赖项：获取当前用户对象 ---
+async def get_current_user(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+) -> Student:
+    """
+    获取当前登录用户的完整对象
+    
+    Args:
+        current_user_id: 当前用户ID
+        db: 数据库会话
+    
+    Returns:
+        Student: 用户对象
+        
+    Raises:
+        HTTPException: 如果用户不存在
+    """
+    user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    return user
+
+
+# --- 依赖项：可选的用户认证（用于允许匿名访问的接口） ---
+async def get_current_user_id_optional(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db)
+) -> Optional[int]:
+    """
+    可选的用户认证，如果没有提供token或token无效，返回None而不是抛出异常
+    用于那些允许匿名访问但为认证用户提供额外功能的接口
+    
+    Args:
+        credentials: 认证凭据
+        db: 数据库会话
+    
+    Returns:
+        Optional[int]: 用户ID或None
+    """
+    if not credentials:
+        return None
+    
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id_str: str = payload.get("sub")
+        
+        if user_id_str is None:
+            return None
+            
+        user_id = int(user_id_str)
+        return user_id
+        
+    except (JWTError, ValueError):
+        return None
+
+
+# --- 通用资源依赖项 ---
+
+def get_resource_dependency(model_class, error_message: str = None):
+    """
+    创建资源获取依赖项的工厂函数
+    
+    Args:
+        model_class: 模型类
+        error_message: 自定义错误信息
+    
+    Returns:
+        依赖项函数
+    """
+    def dependency(resource_id: int, db: Session = Depends(get_db)):
+        from utils import get_resource_or_404
+        return get_resource_or_404(db, model_class, resource_id, error_message)
+    return dependency
+
+
+def get_user_resource_dependency(model_class, user_field: str = "owner_id", error_message: str = None):
+    """
+    创建用户资源获取依赖项的工厂函数
+    
+    Args:
+        model_class: 模型类
+        user_field: 用户字段名
+        error_message: 自定义错误信息
+    
+    Returns:
+        依赖项函数
+    """
+    def dependency(resource_id: int, 
+                   current_user_id: int = Depends(get_current_user_id),
+                   db: Session = Depends(get_db)):
+        from utils import get_user_resource_or_404
+        return get_user_resource_or_404(db, model_class, resource_id, current_user_id, user_field, error_message)
+    return dependency
+
+
+# --- 权限检查依赖项 ---
+
+async def require_admin_user(current_user_id: int = Depends(get_current_user_id), 
+                           db: Session = Depends(get_db)) -> Student:
+    """
+    要求管理员权限的依赖项
+    
+    Args:
+        current_user_id: 当前用户ID
+        db: 数据库会话
+    
+    Returns:
+        Student: 管理员用户对象
+        
+    Raises:
+        HTTPException: 如果用户不是管理员
+    """
+    from utils import check_admin_permission
+    return check_admin_permission(db, current_user_id)
+
+
+def require_resource_owner(model_class, owner_field: str = "owner_id"):
+    """
+    创建需要资源所有者权限的依赖项工厂函数
+    
+    Args:
+        model_class: 模型类
+        owner_field: 所有者字段名
+    
+    Returns:
+        依赖项函数
+    """
+    def dependency(resource_id: int,
+                   current_user_id: int = Depends(get_current_user_id),
+                   db: Session = Depends(get_db)):
+        from utils import get_resource_or_404, check_resource_permission
+        resource = get_resource_or_404(db, model_class, resource_id)
+        check_resource_permission(resource, current_user_id, None, owner_field)
+        return resource
+    return dependency
+
+
+def require_resource_owner_or_admin(model_class, owner_field: str = "owner_id"):
+    """
+    创建需要资源所有者或管理员权限的依赖项工厂函数
+    
+    Args:
+        model_class: 模型类
+        owner_field: 所有者字段名
+    
+    Returns:
+        依赖项函数
+    """
+    def dependency(resource_id: int,
+                   current_user_id: int = Depends(get_current_user_id),
+                   db: Session = Depends(get_db)):
+        from utils import get_resource_or_404, check_resource_permission, get_user_by_id_or_404
+        resource = get_resource_or_404(db, model_class, resource_id)
+        admin_user = get_user_by_id_or_404(db, current_user_id)
+        check_resource_permission(resource, current_user_id, admin_user, owner_field)
+        return resource
+    return dependency

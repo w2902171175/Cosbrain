@@ -20,6 +20,7 @@ class ProjectApplication(Base):
     __table_args__ = (
         # 确保同一学生对同一项目只有一条待处理或已批准的申请记录
         UniqueConstraint("project_id", "student_id", name="_project_student_application_uc"),
+        {'extend_existing': True}  # 允许重新定义表结构，避免MetaData重复定义错误
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -44,6 +45,7 @@ class ProjectMember(Base):
     __table_args__ = (
         # 确保同一学生在同一项目下只有一条成员记录
         UniqueConstraint("project_id", "student_id", name="_project_student_member_uc"),
+        {'extend_existing': True}  # 允许重新定义表结构，避免MetaData重复定义错误
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -62,6 +64,7 @@ class ProjectMember(Base):
 
 class Student(Base):
     __tablename__ = "students"
+    __table_args__ = {'extend_existing': True}  # 允许重新定义表结构，避免MetaData重复定义错误
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=True)
