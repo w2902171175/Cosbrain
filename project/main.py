@@ -33,8 +33,10 @@ from models import (
 # 路由模块
 from routers import (
     admin, projects, dashboard, course_notes, quick_notes, auth, achievement_points, 
-    tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, collections, ai, recommend
+    tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, ai, recommend
 )
+# 导入收藏系统模块
+from routers.collections import collections_router, collections_advanced_router
 
 # 加载环境变量
 load_dotenv()
@@ -64,24 +66,26 @@ app.add_middleware(
 )
 
 # === 路由器注册 ===
-app.include_router(auth.router)
-app.include_router(admin.router)
-app.include_router(projects.router)
-app.include_router(course_notes.router)
-app.include_router(dashboard.router)
-app.include_router(quick_notes.router)
-app.include_router(achievement_points.router)
-app.include_router(tts.router)
-app.include_router(llm.router)
-app.include_router(mcp.router)
-app.include_router(search_engine.router)
-app.include_router(courses.router)
-app.include_router(knowledge.router)
-app.include_router(forum.router)
-app.include_router(chatrooms.router)
-app.include_router(collections.router)
-app.include_router(ai.router)
-app.include_router(recommend.router)
+app.include_router(auth)
+app.include_router(admin)
+app.include_router(projects)
+app.include_router(course_notes)
+app.include_router(dashboard)
+app.include_router(quick_notes)
+app.include_router(achievement_points)
+app.include_router(tts)
+app.include_router(llm)
+app.include_router(mcp)
+app.include_router(search_engine)
+app.include_router(courses)
+app.include_router(knowledge)
+app.include_router(forum)
+app.include_router(chatrooms)
+# 收藏系统 - 基于文件夹的新架构
+app.include_router(collections_router)  # 文件夹为中心的收藏系统
+app.include_router(collections_advanced_router)  # 高级功能（批量操作、统计等）
+app.include_router(ai)
+app.include_router(recommend)
 
 # === 认证配置 ===
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")  # 指向登录接口的URL
