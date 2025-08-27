@@ -184,10 +184,6 @@ async def get_project_applications(
         status_filter: Optional[Literal["pending", "approved", "rejected"]] = None
 ):
 
-    # --- 新增：强制类型转换为整数 ---
-    current_user_id_int = int(current_user_id)
-    # --------------------------------
-
     """
     项目创建者或系统管理员可以获取指定项目的申请列表。
     可根据 status_filter (pending, approved, rejected) 筛选。
@@ -206,7 +202,7 @@ async def get_project_applications(
     # --- 开始修改权限检查 ---
 
     # 检查1: 用户是否为项目创建者
-    is_creator = (db_project.creator_id == current_user_id_int)
+    is_creator = (db_project.creator_id == current_user_id)
 
     # 检查2: 用户是否为系统管理员
     is_system_admin = current_user_obj.is_admin
@@ -214,7 +210,7 @@ async def get_project_applications(
     # 检查3: 用户是否为该项目的管理员
     membership = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,
-        ProjectMember.student_id == current_user_id_int,
+        ProjectMember.student_id == current_user_id,
         ProjectMember.role == 'admin',  # 明确检查角色是否为 'admin'
         ProjectMember.status == 'active'
     ).first()
@@ -225,7 +221,7 @@ async def get_project_applications(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="无权查看该项目的申请列表。只有项目创建者、项目管理员或系统管理员可以。")
 
-    if not (db_project.creator_id == current_user_id_int or current_user_obj.is_admin):
+    if not (db_project.creator_id == current_user_id or current_user_obj.is_admin):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="无权查看该项目的申请列表。只有项目创建者或系统管理员可以。")
 
@@ -267,9 +263,7 @@ async def process_project_application(
     项目创建者、项目管理员或系统管理员可以批准或拒绝项目申请。
     如果申请被批准，用户将成为项目成员。
     """
-    # --- 1. 强制类型转换为整数 (关键修复点) ---
-    current_user_id_int = int(current_user_id)
-    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id_int} 尝试处理申请 {application_id} 为 '{process_data.status}'。")
+    print(f"DEBUG_PROJECT_APP: 用户 {current_user_id} 尝试处理申请 {application_id} 为 '{process_data.status}'。")
 
     # 2. 验证申请是否存在且为 'pending' 状态
     db_application = db.query(ProjectApplication).filter(ProjectApplication.id == application_id).first()
@@ -283,17 +277,17 @@ async def process_project_application(
     if not db_project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目未找到。")
 
-    current_user_obj = db.query(Student).filter(Student.id == current_user_id_int).first()  # 使用 int
+    current_user_obj = db.query(Student).filter(Student.id == current_user_id).first()
     if not current_user_obj:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
     # --- 4. 实现完整的三重权限检查 (关键修复点) ---
-    is_creator = (db_project.creator_id == current_user_id_int)  # 使用 int
+    is_creator = (db_project.creator_id == current_user_id)
     is_system_admin = current_user_obj.is_admin
 
     membership = db.query(ProjectMember).filter(
         ProjectMember.project_id == db_project.id,
-        ProjectMember.student_id == current_user_id_int,  # 使用 int
+        ProjectMember.student_id == current_user_id,
         ProjectMember.role == 'admin',
         ProjectMember.status == 'active'
     ).first()
@@ -306,7 +300,7 @@ async def process_project_application(
     # 5. 更新申请状态
     db_application.status = process_data.status
     db_application.processed_at = func.now()
-    db_application.processed_by_id = current_user_id_int  # 使用 int
+    db_application.processed_by_id = current_user_id
     db_application.message = process_data.process_message if process_data.process_message is not None else db_application.message
 
     db.add(db_application)
@@ -401,8 +395,6 @@ async def create_project(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    current_user_id_int = int(current_user_id)
-
     print(f"DEBUG_RECEIVE_PROJECT: 接收到 project_data_json: '{project_data_json}'")
     print(
         f"DEBUG_RECEIVE_COVER: 接收到 cover_image: {cover_image.filename if cover_image else 'None'}, size: {cover_image.size if cover_image else 'N/A'}")
@@ -411,7 +403,7 @@ async def create_project(
 
     try:
         project_data = schemas.ProjectCreate.model_validate_json(project_data_json)
-        print(f"DEBUG: 用户 {current_user_id_int} 尝试创建项目: {project_data.title}")
+        print(f"DEBUG: 用户 {current_user_id} 尝试创建项目: {project_data.title}")
     except json.JSONDecodeError as e:
         print(f"ERROR_JSON_DECODE: 项目数据 JSON 解析失败: {e}. 原始字符串: '{project_data_json}'")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"项目数据 JSON 格式不正确: {e}")
@@ -419,7 +411,7 @@ async def create_project(
         print(f"ERROR_PYDANTIC_VALIDATION: 项目数据 Pydantic 验证失败: {e}. 原始字符串: '{project_data_json}'")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"项目数据验证失败: {e}")
 
-    current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
     if not current_user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
@@ -527,7 +519,7 @@ async def create_project(
             end_date=project_data.end_date,
             estimated_weekly_hours=project_data.estimated_weekly_hours,
             location=project_data.location,
-            creator_id=current_user_id_int,
+            creator_id=current_user_id,
             cover_image_url=final_cover_image_url,
             cover_image_original_filename=final_cover_image_original_filename,
             cover_image_type=final_cover_image_type,
@@ -539,10 +531,10 @@ async def create_project(
         db.flush()  # Flush to get the ID for db_project, but don't commit yet to allow rollback of files
 
         # --- 新增逻辑：将创建者自动添加为项目的第一个成员 ---
-        print(f"DEBUG: 准备将创建者 {current_user_id_int} 自动添加为项目 {db_project.id} 的成员。")
+        print(f"DEBUG: 准备将创建者 {current_user_id} 自动添加为项目 {db_project.id} 的成员。")
         initial_member = ProjectMember(
             project_id=db_project.id,  # 使用刚生成的项目ID
-            student_id=current_user_id_int,  # 创建者的ID
+            student_id=current_user_id,  # 创建者的ID
             role="admin",  # 或者 "管理员", "负责人" 等，根据你的系统设计
             status="active",  # 状态设为活跃
             # join_date=datetime.utcnow()     # 如果你的模型有加入日期字段
@@ -593,7 +585,7 @@ async def create_project(
 
                 new_project_file = ProjectFile(
                     project_id=db_project.id,
-                    upload_by_id=current_user_id_int,
+                    upload_by_id=current_user_id,
                     file_name=file_obj.filename,
                     oss_object_name=current_oss_object_name_attach,
                     file_path=attachment_url,
@@ -732,8 +724,7 @@ async def update_project(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    current_user_id_int = int(current_user_id)
-    print(f"DEBUG_UPDATE_PROJECT: 用户 {current_user_id_int} 尝试更新项目 ID: {project_id}。")
+    print(f"DEBUG_UPDATE_PROJECT: 用户 {current_user_id} 尝试更新项目 ID: {project_id}。")
 
     # 简化版的更新逻辑，完整版本很长
     try:
@@ -741,11 +732,11 @@ async def update_project(
         if not db_project:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目未找到。")
 
-        current_user = db.query(Student).filter(Student.id == current_user_id_int).first()
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
         if not current_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
 
-        is_creator = (db_project.creator_id == current_user_id_int)
+        is_creator = (db_project.creator_id == current_user_id)
         is_system_admin = current_user.is_admin
 
         if not (is_creator or is_system_admin):

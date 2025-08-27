@@ -134,7 +134,7 @@ async def update_llm_config(
     return db_student
 
 @router.get("/llm/available-configs", summary="获取可用的LLM服务商配置信息")
-async def get_available_llm_configs():
+async def get_available_llm_configs_api():
     """
     获取所有可用的LLM服务商配置信息，包括默认模型和可用模型列表。
     用于前端展示给用户选择。
@@ -240,18 +240,18 @@ async def update_user_llm_model_ids(
     if not db_student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # 验证输入格式
+    if not isinstance(model_ids_update, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid format: expected object")
+
+    for provider, models in model_ids_update.items():
+        if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid format for provider '{provider}': expected list of strings"
+            )
+
     try:
-        # 验证输入格式
-        if not isinstance(model_ids_update, dict):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid format: expected object")
-
-        for provider, models in model_ids_update.items():
-            if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid format for provider '{provider}': expected list of strings"
-                )
-
         # 序列化并保存
         db_student.llm_model_ids = serialize_llm_model_ids(model_ids_update)
         db.add(db_student)
@@ -272,7 +272,7 @@ async def update_user_llm_model_ids(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新配置失败")
 
 @router.get("/llm/available-models", summary="获取可配置的LLM服务商及模型列表")
-async def get_available_llm_models():
+async def get_available_llm_models_api():
     """
     返回所有支持的LLM服务商类型及其默认模型和可用模型列表。
     """

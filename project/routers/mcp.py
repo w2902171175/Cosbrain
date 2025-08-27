@@ -175,8 +175,8 @@ async def create_mcp_config(
         'protocol_type': db_config.protocol_type,
         'is_active': db_config.is_active,
         'description': db_config.description,
-        'created_at': db_config.created_at,
-        'updated_at': db_config.updated_at,
+        'created_at': db_config.created_at or datetime.now(),
+        'updated_at': db_config.updated_at or db_config.created_at or datetime.now(),
         'api_key_encrypted': None  # 明确设置为None
     }
 
@@ -211,8 +211,8 @@ async def get_all_mcp_configs(
             'protocol_type': config.protocol_type,
             'is_active': config.is_active,
             'description': config.description,
-            'created_at': config.created_at,
-            'updated_at': config.updated_at,
+            'created_at': config.created_at or datetime.now(),
+            'updated_at': config.updated_at or config.created_at or datetime.now(),
             'api_key_encrypted': None  # 明确设置为None，确保不泄露
         }
         result_configs.append(schemas.UserMcpConfigResponse(**config_dict))
@@ -284,8 +284,8 @@ async def update_mcp_config(
         'protocol_type': db_config.protocol_type,
         'is_active': db_config.is_active,
         'description': db_config.description,
-        'created_at': db_config.created_at,
-        'updated_at': db_config.updated_at,
+        'created_at': db_config.created_at or datetime.now(),
+        'updated_at': db_config.updated_at or datetime.now(),
         'api_key_encrypted': None  # 明确设置为None
     }
 
@@ -337,7 +337,8 @@ async def check_mcp_config_status(
                 status="failure",
                 message=f"无法解密API密钥，请检查密钥是否正确或重新配置。错误: {e}",
                 service_name=db_config.name,
-                config_id=config_id
+                config_id=config_id,
+                timestamp=datetime.now()
             )
 
     status_response = await check_mcp_api_connectivity(db_config.base_url, db_config.protocol_type,
