@@ -24,9 +24,9 @@ import requests, secrets, json, os, uuid, asyncio, httpx, re, traceback, time
 
 # 导入数据库和模型
 from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, KnowledgeArticle, Course, UserCourse, CollectionItem, \
-    DailyRecord, Folder, CollectedContent, ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow, \
-    UserMcpConfig, UserSearchEngineConfig, KnowledgeDocument, KnowledgeDocumentChunk, ChatRoomMember, \
+from models import Student, Project, Note, KnowledgeBase, Course, UserCourse, CollectionItem, \
+    Folder, CollectedContent, ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow, \
+    UserMcpConfig, UserSearchEngineConfig, ChatRoomMember, \
     ChatRoomJoinRequest, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, \
     AIConversationMessage, ProjectApplication, ProjectMember, KnowledgeBaseFolder, AIConversationTemporaryFile, \
     CourseLike, ProjectLike, ProjectFile
@@ -723,7 +723,8 @@ async def _determine_target_folder(
             "project": "项目收藏",
             "course": "课程收藏", 
             "forum_topic": "论坛收藏",
-            "knowledge_article": "知识收藏"
+            "note": "笔记收藏",
+            "chat_message": "聊天收藏"
         }
         auto_folder_name = type_mapping.get(shared_item_type, "其他收藏")
     elif file:
@@ -907,10 +908,7 @@ async def _extract_shared_item_info(db: Session, item_type: str, item_id: int) -
         "course": Course,
         "forum_topic": ForumTopic,
         "note": Note,
-        "daily_record": DailyRecord,
-        "knowledge_article": KnowledgeArticle,
-        "chat_message": ChatMessage,
-        "knowledge_document": KnowledgeDocument
+        "chat_message": ChatMessage
     }
     
     source_model = model_map.get(item_type)

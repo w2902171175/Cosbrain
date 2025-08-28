@@ -119,27 +119,9 @@ __all__ = [
     "WebSearchResponse",
     "WebSearchRequest",
     
-    # 知识库相关
-    "KnowledgeBaseBase",
-    "KnowledgeBaseCreate",
-    "KnowledgeBaseResponse",
-    
-    # 知识库文件夹相关
-    "KnowledgeBaseFolderBase",
-    "KnowledgeBaseFolderCreate",
-    "KnowledgeBaseFolderResponse",
-    "KnowledgeBaseFolderContentResponse",
-    
-    # 知识库文章相关
-    "KnowledgeArticleBase",
-    "KnowledgeArticleCreate",
-    "KnowledgeArticleResponse",
-    
-    # 知识库文档相关
-    "KnowledgeDocumentBase",
-    "KnowledgeDocumentCreate",
-    "KnowledgeDocumentResponse",
-    "KnowledgeDocumentChunkResponse",
+    # 注意：知识库相关的Schemas已经移动到独立的knowledge_schemas.py文件
+    # 如需使用，请直接从 schemas.knowledge_schemas 导入
+    # 例如：from schemas.knowledge_schemas import KnowledgeBaseSimpleResponse
     
     # 课程相关
     "CourseBase",

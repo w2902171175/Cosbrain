@@ -550,7 +550,7 @@ class ForumTopicBase(BaseModel):
     title: Optional[str] = None
     content: str
     shared_item_type: Optional[Literal[
-        "note", "daily_record", "course", "project", "knowledge_article", "knowledge_base", "collected_content"]] = Field(
+        "note", "course", "project", "chat_message", "knowledge_base", "collected_content"]] = Field(
         None, description="如果分享平台内部内容，记录其类型")
     shared_item_id: Optional[int] = Field(None, description="如果分享平台内部内容，记录其ID")
     tags: Optional[str] = None
@@ -877,220 +877,8 @@ class WebSearchRequest(BaseModel):
     limit: int = 5
 
 
-# --- KnowledgeBase Schemas ---
-class KnowledgeBaseBase(BaseModel):
-    name: str
-    description: Optional[str] = None
-    access_type: Optional[str] = "private"
-
-
-class KnowledgeBaseCreate(KnowledgeBaseBase):
-    pass
-
-
-class KnowledgeBaseResponse(KnowledgeBaseBase):
-    id: int
-    owner_id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            datetime: lambda dt: dt.isoformat() if dt is not None else None
-        }
-
-
-# --- KnowledgeBaseFolder Schemas (已更新软链接字段，并修正命名) ---
-class KnowledgeBaseFolderBase(BaseModel):
-    name: str = Field(..., description="文件夹名称")
-    description: Optional[str] = Field(None, description="文件夹描述")
-    parent_id: Optional[int] = Field(None, description="父文件夹ID。传入0表示顶级文件夹（即parent_id为NULL）")
-    order: Optional[int] = Field(None, description="排序")
-    linked_folder_type: Optional[Literal["note_folder", "collected_content_folder"]] = Field(None, description="链接到的外部文件夹类型：'note_folder'（课程笔记文件夹）或'collected_content_folder'（收藏文件夹）")
-    linked_folder_id: Optional[int] = Field(None, description="链接到的外部文件夹ID")
-
-    @model_validator(mode='after')
-    def convert_zero_to_none(self) -> 'KnowledgeBaseFolderBase':
-        if self.parent_id == 0:
-            self.parent_id = None
-        return self
-
-    @model_validator(mode='after')
-    def validate_linked_folder(self) -> 'KnowledgeBaseFolderBase':
-        if self.linked_folder_type and self.linked_folder_id is None:
-            raise ValueError("linked_folder_type 存在时，linked_folder_id 不能为空。")
-        if self.linked_folder_id is not None and not self.linked_folder_type:
-            raise ValueError("linked_folder_id 存在时，linked_folder_type 不能为空，且必须为 'note_folder' 或 'collected_content_folder'。")
-        if self.linked_folder_type and self.linked_folder_id is not None:
-            if self.parent_id is not None:
-                raise ValueError("软链接文件夹只能是顶级文件夹，不能指定父文件夹。")
-        if not self.linked_folder_type and not self.name: # A regular folder (not a linked folder) must have a name
-            raise ValueError("非软链接文件夹必须设置名称。")
-        return self
-
-
-class KnowledgeBaseFolderCreate(KnowledgeBaseFolderBase):
-    pass
-
-
-class KnowledgeBaseFolderResponse(KnowledgeBaseFolderBase):
-    id: int
-    kb_id: int
-    owner_id: int
-    item_count: Optional[int] = Field(None, description="文件夹下直属文章和文档的数量")
-
-    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
-    def parent_folder_name(self) -> Optional[str]:
-        return getattr(self, '_parent_folder_name_for_response', None)
-
-    @property
-    def knowledge_base_name(self) -> Optional[str]:
-        return getattr(self, '_kb_name_for_response', None)
-
-    @property
-    def linked_object_names(self) -> Optional[List[str]]:
-        return getattr(self, '_linked_object_names_for_response', None)
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-        populate_by_name = True
-
-
-# --- KnowledgeBaseFolderContentResponse (用于软链接文件夹内容) ---
-class KnowledgeBaseFolderContentResponse(BaseModel): # 注意这里是 BaseModel，因为它不完全继承 KnowledgeBaseFolderBase 的所有字段，而是包含其所需字段并添加新的
-    # 显式声明所有字段，并确保其 @property 的正确性
-    id: int
-    kb_id: int
-    owner_id: int
-    name: str # 文件夹名称是必填的
-
-    # 以下是可选字段，它们可能存在于数据库中
-    description: Optional[str] = None
-    parent_id: Optional[int] = None
-    order: Optional[int] = None
-    linked_folder_type: Optional[Literal["note_folder", "collected_content_folder"]] = None
-    linked_folder_id: Optional[int] = None
-
-    # 动态填充的字段 (通过 ORM 对象的私有属性设置，通过 @property 暴露)
-    item_count: Optional[int] = Field(None, description="文件夹下直属文章和文档的数量")
-
-    # 注意：这些 @property 定义要与 main.py 中 ORM 对象赋值的属性名保持一致 (带下划线)
-    @property
-    def parent_folder_name(self) -> Optional[str]:
-        return getattr(self, '_parent_folder_name_for_response', None)
-
-    @property
-    def knowledge_base_name(self) -> Optional[str]:
-        return getattr(self, '_kb_name_for_response', None)
-
-    @property
-    def linked_object_names(self) -> Optional[List[str]]:
-        return getattr(self, '_linked_object_names_for_response', None)
-
-    contents: Optional[List[Any]] = Field(None, description="软链接文件夹内实际包含的内容列表（例如笔记或收藏）")
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-        populate_by_name = True
-
-
-# --- KnowledgeArticle Schemas (重新添加) ---
-class KnowledgeArticleBase(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    version: Optional[str] = "1.0"
-    tags: Optional[str] = None
-    kb_folder_id: Optional[int] = Field(None, description="所属知识库文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
-
-    @model_validator(mode='after')
-    def convert_zero_to_none(self) -> 'KnowledgeArticleBase':
-        if self.kb_folder_id == 0:
-            self.kb_folder_id = None
-        return self
-
-class KnowledgeArticleCreate(KnowledgeArticleBase):
-    kb_id: int # KB ID is essential for creation context
-
-class KnowledgeArticleResponse(KnowledgeArticleBase):
-    id: int
-    kb_id: int
-    author_id: int
-    combined_text: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
-    def kb_folder_name(self) -> Optional[str]:
-        return getattr(self, '_kb_folder_name_for_response', None)
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-        populate_by_name = True
-
-
-# --- KnowledgeDocument (for uploaded files) Schemas (保留包含 kb_folder_id 的版本) ---
-class KnowledgeDocumentBase(BaseModel):
-    file_name: str
-    file_path: Optional[str] = None
-    file_type: Optional[str] = None
-    status: Optional[str] = "processing"
-    processing_message: Optional[str] = None
-    total_chunks: Optional[int] = 0
-    kb_folder_id: Optional[int] = Field(None, description="所属知识库文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
-
-    @model_validator(mode='after')
-    def convert_zero_to_none_kb_doc(self) -> 'KnowledgeDocumentBase':
-        if self.kb_folder_id == 0:
-            self.kb_folder_id = None
-        return self
-
-
-class KnowledgeDocumentCreate(BaseModel):
-    kb_id: int
-    file_name: str
-    kb_folder_id: Optional[int] = Field(None, description="所属知识库文件夹ID。传入0表示顶级文件夹（即folder_id为NULL）")
-
-    @model_validator(mode='after')
-    def convert_zero_to_none_kb_doc_create(self) -> 'KnowledgeDocumentCreate':
-        if self.kb_folder_id == 0:
-            self.kb_folder_id = None
-        return self
-
-
-class KnowledgeDocumentResponse(KnowledgeDocumentBase):
-    id: int
-    kb_id: int
-    owner_id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    @property # Pydantic v2 @property 支持，这里将其暴露为不带下划线的公共属性
-    def kb_folder_name(self) -> Optional[str]:
-        return getattr(self, '_kb_folder_name_for_response', None)
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-        populate_by_name = True
-
-
-# --- KnowledgeDocumentChunk (for RAG) Schemas ---
-class KnowledgeDocumentChunkResponse(BaseModel):
-    id: int
-    document_id: int
-    owner_id: int
-    kb_id: int
-    chunk_index: int
-    content: str
-    combined_text: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+# 注意：知识库相关的Schemas已经移动到 schemas/knowledge_schemas.py 文件中
+# 如需使用知识库功能，请从 schemas.knowledge_schemas 导入相应的Schema类
 
 
 # --- Course Schemas ---
@@ -1593,8 +1381,8 @@ class CollectedContentBaseNew(BaseModel):
     title: Optional[str] = Field(None, max_length=200, description="标题")
     type: Optional[Literal[
         "document", "video", "audio", "note", "link", "file", "image",
-        "forum_topic", "course", "project", "knowledge_article",
-        "daily_record", "code", "bookmark", "contact", "location"
+        "forum_topic", "course", "project", "chat_message",
+        "code", "bookmark", "contact", "location"
     ]] = Field(None, description="内容类型")
     url: Optional[str] = Field(None, description="URL地址")
     content: Optional[str] = Field(None, description="内容描述")

@@ -888,6 +888,22 @@ class KnowledgeDocument(Base):
     file_name = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
     file_type = Column(String, nullable=True)
+    
+    # 新增字段：内容类型分类
+    content_type = Column(String, nullable=False, default="file", 
+                         comment="内容类型: file, image, video, url, website")
+    
+    # 新增字段：用于网址和网站类型
+    url = Column(Text, nullable=True, comment="网址URL（用于url和website类型）")
+    website_title = Column(String, nullable=True, comment="网站标题")
+    website_description = Column(Text, nullable=True, comment="网站描述")
+    
+    # 新增字段：文件大小和其他元数据
+    file_size = Column(BigInteger, nullable=True, comment="文件大小（字节）")
+    mime_type = Column(String, nullable=True, comment="MIME类型")
+    
+    # 新增字段：缩略图（用于图片和视频）
+    thumbnail_path = Column(String, nullable=True, comment="缩略图路径")
 
     status = Column(String, default="processing")
     processing_message = Column(Text, nullable=True)

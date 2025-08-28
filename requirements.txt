@@ -22,6 +22,10 @@ pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.5.0
 
+# 图片和文档处理
+Pillow==10.3.0
+requests==2.31.0
+
 # AI和机器学习
 sentence-transformers==2.5.1
 transformers==4.38.2
