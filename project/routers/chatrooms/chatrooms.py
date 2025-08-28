@@ -1,19 +1,21 @@
 # project/routers/chatrooms/chatrooms.py
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, File, UploadFile, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any, Literal, Union
 from sqlalchemy.sql import func
 from sqlalchemy import and_, or_
 from jose import JWTError, jwt
-import uuid, os, asyncio, json
+import uuid, os, asyncio, json, mimetypes, base64
+from datetime import datetime
+import io
 
 # 导入数据库和模型
 from database import get_db
-from models import Student, Project, Course, ChatRoom, ChatMessage, ChatRoomMember, ChatRoomJoinRequest, Achievement, UserAchievement, PointTransaction
-from dependencies import get_current_user_id, SECRET_KEY, ALGORITHM
-import schemas
+from models.models import Student, Project, Course, ChatRoom, ChatMessage, ChatRoomMember, ChatRoomJoinRequest, Achievement, UserAchievement, PointTransaction
+from dependencies.dependencies import get_current_user_id, SECRET_KEY, ALGORITHM
+import schemas.schemas as schemas
 import oss_utils
 
 # 创建路由器
@@ -1057,32 +1059,39 @@ async def _check_and_award_achievements(db: Session, user_id: int):
           summary="在指定聊天室发送新消息")
 async def send_chat_message(
         room_id: int,
-        # 移除 message_data: schemas.ChatMessageCreate = Depends()，我们将手动从 Form 参数构建它
         content_text: Optional[str] = Form(None, description="消息文本内容，当message_type为'text'时为必填"),
-        # 使用 From 明确接收表单字段
-        message_type: Literal["text", "image", "file", "video", "system_notification"] = Form("text",
-                                                                                              description="消息类型"),
-        # 使用 From
-        media_url: Optional[str] = Form(None, description="媒体文件OSS URL或外部链接"),  # 使用 From
-        file: Optional[UploadFile] = File(None, description="上传文件、图片或视频作为消息"),
+        message_type: Literal["text", "image", "file", "video", "audio", "system_notification"] = Form("text", description="消息类型"),
+        media_url: Optional[str] = Form(None, description="媒体文件OSS URL或外部链接"),
+        file: Optional[UploadFile] = File(None, description="上传文件、图片、视频或音频"),
+        # 新增：多文件上传支持（仿微信相册选择多张图片）
+        files: Optional[List[UploadFile]] = File(None, description="批量上传文件（最多9个）"),
+        # 新增：语音消息支持
+        audio_duration: Optional[float] = Form(None, description="音频时长（秒）"),
+        # 新增：文件元数据
+        file_size: Optional[int] = Form(None, description="文件大小（字节）"),
+        reply_to_message_id: Optional[int] = Form(None, description="回复的消息ID"),
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
     在指定聊天室中发送一条新消息。
-    只有活跃成员和群主可以发送消息。
-    支持发送文本、图片、文件、视频。
+    支持多种消息类型：
+    - 文本消息
+    - 图片/视频（单个或多个，仿微信相册）
+    - 文件（支持 txt, md, html, pdf, docx, pptx, xlsx, .py 等）
+    - 音频消息（仿微信按住说话）
+    - 回复消息
     """
     print(f"DEBUG: 用户 {current_user_id} 在聊天室 {room_id} 发送消息。类型: {message_type}")
 
     # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
-    oss_object_name_for_rollback = None
+    uploaded_files_for_rollback = []
 
     try:
         # 1. 验证聊天室是否存在
         db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
         if not db_room:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat room not found.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
 
         # 2. 权限检查：发送者是否是活跃成员或群主
         is_creator = (db_room.creator_id == current_user_id)
@@ -1096,137 +1105,610 @@ async def send_chat_message(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                 detail="您无权在该聊天室发送消息。请先加入聊天室。")
 
-        # 3. 验证发送者用户是否存在 (get_current_user_id 已经验证了，这里是双重检查)
+        # 3. 验证发送者用户是否存在
         db_sender = db.query(Student).filter(Student.id == current_user_id).first()
         if not db_sender:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到。")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到")
 
-        final_media_url = media_url  # 初始化为 Form 接收到的 media_url
-        final_content_text = content_text  # 初始化为 Form 接收到的 content_text
-        final_message_type = message_type  # 初始化为 Form 接收到的 message_type
+        # 4. 验证回复消息是否存在（如果指定了回复）
+        if reply_to_message_id:
+            reply_message = db.query(ChatMessage).filter(
+                ChatMessage.id == reply_to_message_id,
+                ChatMessage.room_id == room_id,
+                ChatMessage.deleted_at.is_(None)
+            ).first()
+            if not reply_message:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回复的消息不存在")
 
-        # 4. 处理文件上传（如果提供了文件）
-        if file:
-            # 检查 message_type 是否与文件上传一致
-            if final_message_type not in ["file", "image", "video"]:  # 补充了 video 类型检查
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                    detail="当上传文件时，message_type 必须为 'file', 'image' 或 'video'。")
+        # 定义支持的文件类型
+        SUPPORTED_FILE_TYPES = {
+            # 文档类型
+            '.txt': 'text/plain',
+            '.md': 'text/markdown', 
+            '.html': 'text/html',
+            '.pdf': 'application/pdf',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.py': 'text/x-python',
+            '.js': 'application/javascript',
+            '.json': 'application/json',
+            '.xml': 'application/xml',
+            '.csv': 'text/csv',
+            # 音频类型
+            '.mp3': 'audio/mpeg',
+            '.wav': 'audio/wav',
+            '.m4a': 'audio/mp4',
+            '.aac': 'audio/aac',
+            '.ogg': 'audio/ogg',
+            '.webm': 'audio/webm',  # 用于录音
+            # 图片类型
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+            # 视频类型
+            '.mp4': 'video/mp4',
+            '.avi': 'video/x-msvideo',
+            '.mov': 'video/quicktime',
+            '.wmv': 'video/x-ms-wmv',
+            '.flv': 'video/x-flv',
+            '.mkv': 'video/x-matroska'
+        }
+
+        messages_to_create = []  # 存储要创建的消息列表（支持多文件时创建多条消息）
+
+        # 5. 处理多文件上传（批量上传，如微信相册选择多张图片）
+        if files and len(files) > 0:
+            if len(files) > 9:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="一次最多上传9个文件")
+            
+            for idx, upload_file in enumerate(files):
+                if not upload_file.filename:
+                    continue
+                    
+                file_ext = os.path.splitext(upload_file.filename)[1].lower()
+                if file_ext not in SUPPORTED_FILE_TYPES:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"不支持的文件类型: {file_ext}。支持的类型: {', '.join(SUPPORTED_FILE_TYPES.keys())}"
+                    )
+
+                file_bytes = await upload_file.read()
+                content_type = upload_file.content_type or SUPPORTED_FILE_TYPES.get(file_ext, 'application/octet-stream')
+
+                # 根据文件类型确定消息类型和OSS路径
+                if content_type.startswith('image/'):
+                    msg_type = "image"
+                    oss_path_prefix = "chat_images"
+                elif content_type.startswith('video/'):
+                    msg_type = "video"  
+                    oss_path_prefix = "chat_videos"
+                elif content_type.startswith('audio/'):
+                    msg_type = "audio"
+                    oss_path_prefix = "chat_audios"
+                else:
+                    msg_type = "file"
+                    oss_path_prefix = "chat_files"
+
+                # 上传到OSS
+                object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_ext}"
+                uploaded_files_for_rollback.append(object_name)
+                
+                try:
+                    media_url = await oss_utils.upload_file_to_oss(
+                        file_bytes=file_bytes,
+                        object_name=object_name,
+                        content_type=content_type
+                    )
+                    print(f"DEBUG: 文件 '{upload_file.filename}' 上传成功，URL: {media_url}")
+                    
+                    # 创建消息数据
+                    message_content = content_text if idx == 0 and content_text else f"文件: {upload_file.filename}"
+                    if content_type.startswith('image/'):
+                        message_content = f"图片: {upload_file.filename}"
+                    elif content_type.startswith('video/'):
+                        message_content = f"视频: {upload_file.filename}"
+                    elif content_type.startswith('audio/'):
+                        message_content = f"音频: {upload_file.filename}"
+                    
+                    messages_to_create.append({
+                        'content_text': message_content,
+                        'message_type': msg_type,
+                        'media_url': media_url,
+                        'file_size': len(file_bytes),
+                        'original_filename': upload_file.filename,
+                        'audio_duration': audio_duration if msg_type == "audio" else None
+                    })
+                    
+                except Exception as e:
+                    print(f"ERROR: 上传文件 {upload_file.filename} 失败: {e}")
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                                      detail=f"文件上传失败: {upload_file.filename}")
+
+        # 6. 处理单个文件上传
+        elif file and file.filename:
+            file_ext = os.path.splitext(file.filename)[1].lower()
+            if file_ext not in SUPPORTED_FILE_TYPES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"不支持的文件类型: {file_ext}。支持的类型: {', '.join(SUPPORTED_FILE_TYPES.keys())}"
+                )
 
             file_bytes = await file.read()
-            file_extension = os.path.splitext(file.filename)[1]
-            content_type = file.content_type
+            content_type = file.content_type or SUPPORTED_FILE_TYPES.get(file_ext, 'application/octet-stream')
 
-            # 根据文件类型确定OSS存储路径前缀
-            oss_path_prefix = "chat_files"  # 默认文件
+            # 根据文件类型确定消息类型和OSS路径
             if content_type.startswith('image/'):
+                final_message_type = "image"
                 oss_path_prefix = "chat_images"
             elif content_type.startswith('video/'):
-                oss_path_prefix = "chat_videos"
+                final_message_type = "video"
+                oss_path_prefix = "chat_videos" 
+            elif content_type.startswith('audio/'):
+                final_message_type = "audio"
+                oss_path_prefix = "chat_audios"
+            else:
+                final_message_type = "file"
+                oss_path_prefix = "chat_files"
 
-            current_oss_object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_extension}"
-            oss_object_name_for_rollback = current_oss_object_name  # 记录用于回滚
+            object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_ext}"
+            uploaded_files_for_rollback.append(object_name)
 
             try:
                 final_media_url = await oss_utils.upload_file_to_oss(
                     file_bytes=file_bytes,
-                    object_name=current_oss_object_name,
+                    object_name=object_name,
                     content_type=content_type
                 )
-                print(f"DEBUG: 文件 '{file.filename}' (类型: {content_type}) 上传到OSS成功，URL: {final_media_url}")
+                print(f"DEBUG: 文件 '{file.filename}' 上传成功，URL: {final_media_url}")
 
-                # 如果内容文本为空，将文件名或简短描述作为内容
-                if not final_content_text and file.filename:
-                    final_content_text = f"文件: {file.filename}"
+                # 设置消息内容
+                if not content_text:
                     if content_type.startswith('image/'):
                         final_content_text = f"图片: {file.filename}"
                     elif content_type.startswith('video/'):
                         final_content_text = f"视频: {file.filename}"
+                    elif content_type.startswith('audio/'):
+                        final_content_text = f"音频: {file.filename}"
+                    else:
+                        final_content_text = f"文件: {file.filename}"
+                else:
+                    final_content_text = content_text
 
-                # 确保当有文件时，message_type 确实反映文件类型
-                if content_type.startswith('image/') and final_message_type != "image":
-                    final_message_type = "image"
-                elif content_type.startswith('video/') and final_message_type != "video":
-                    final_message_type = "video"
-                elif final_message_type not in ["file", "image", "video"]:
-                    final_message_type = "file"
+                messages_to_create.append({
+                    'content_text': final_content_text,
+                    'message_type': final_message_type,
+                    'media_url': final_media_url,
+                    'file_size': len(file_bytes),
+                    'original_filename': file.filename,
+                    'audio_duration': audio_duration if final_message_type == "audio" else None
+                })
 
-
-            except HTTPException as e:  # oss_utils.upload_file_to_oss 会抛出 HTTPException
-                print(f"ERROR: 上传文件到OSS失败: {e.detail}")
-                raise e  # 直接重新抛出，让FastAPI处理
             except Exception as e:
-                print(f"ERROR: 上传文件到OSS时发生未知错误: {e}")
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                    detail=f"文件上传到云存储失败: {e}")
-        else:  # 没有上传文件
-            # 这里的明确校验逻辑可以简化，因为 Pydantic 模型会处理
-            pass
+                print(f"ERROR: 上传文件失败: {e}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传失败: {e}")
 
-        # 5. 手动创建 ChatMessageCreate 实例，触发 Pydantic 校验
-        try:
-            message_data_validated = schemas.ChatMessageCreate(
-                content_text=final_content_text,
-                message_type=final_message_type,
-                media_url=final_media_url
+        # 7. 处理纯文本消息或系统通知
+        else:
+            if message_type == "text" and not content_text:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文本消息内容不能为空")
+            
+            messages_to_create.append({
+                'content_text': content_text,
+                'message_type': message_type,
+                'media_url': media_url,
+                'file_size': file_size,
+                'original_filename': None,
+                'audio_duration': audio_duration if message_type == "audio" else None
+            })
+
+        # 8. 批量创建消息记录
+        created_messages = []
+        for msg_data in messages_to_create:
+            db_message = ChatMessage(
+                room_id=room_id,
+                sender_id=current_user_id,
+                content_text=msg_data['content_text'],
+                message_type=msg_data['message_type'],
+                media_url=msg_data['media_url'],
+                reply_to_message_id=reply_to_message_id,
+                file_size=msg_data['file_size'],
+                original_filename=msg_data['original_filename'],
+                audio_duration=msg_data['audio_duration']
             )
-        except ValueError as e:
-            # 如果 Pydantic 校验失败，捕获并转换为 HTTPException
-            print(f"ERROR_VALIDATION: 聊天消息数据校验失败: {e}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"消息数据格式不正确: {e}")
+            db.add(db_message)
+            created_messages.append(db_message)
 
-        # 6. 使用校验后的数据创建消息记录
-        db_message = ChatMessage(
-            room_id=room_id,
-            sender_id=current_user_id,
-            content_text=message_data_validated.content_text,
-            message_type=message_data_validated.message_type,
-            media_url=message_data_validated.media_url
-        )
-
-        db.add(db_message)
-        # 更新聊天室的 updated_at，作为最后活跃时间
+        # 更新聊天室的 updated_at
         db_room.updated_at = func.now()
         db.add(db_room)
-        db.flush()  # 刷新以便后续操作可以访问 db_message 的 ID
+        db.flush()  # 刷新以便后续操作可以访问消息的 ID
 
-        # 触发成就检查 (例如，聊天消息发送数量类的成就)
-        if db_sender:
-            chat_message_points = 1  # 每发送一条聊天消息奖励1积分
-            await _award_points(
-                db=db,
-                user=db_sender,
-                amount=chat_message_points,
-                reason=f"发送聊天消息：'{message_data_validated.content_text[:20]}...'",
-                transaction_type="EARN",
-                related_entity_type="chat_message",
-                related_entity_id=db_message.id
-            )
-            await _check_and_award_achievements(db, current_user_id)
-            print(
-                f"DEBUG_POINTS_ACHIEVEMENT: 用户 {current_user_id} 发送聊天消息，获得 {chat_message_points} 积分并检查成就 (待提交)。")
+        # 9. 积分奖励和成就检查
+        chat_message_points = len(created_messages)  # 每条消息1积分
+        await _award_points(
+            db=db,
+            user=db_sender,
+            amount=chat_message_points,
+            reason=f"发送{len(created_messages)}条聊天消息",
+            transaction_type="EARN",
+            related_entity_type="chat_message",
+            related_entity_id=created_messages[0].id if created_messages else None
+        )
+        await _check_and_award_achievements(db, current_user_id)
 
         db.commit()  # 提交所有
-        db.refresh(db_message)
+        
+        # 10. 填充 sender_name 并返回结果
+        for msg in created_messages:
+            db.refresh(msg)
+            msg.sender_name = db_sender.name
 
-        # 填充 sender_name
-        db_message.sender_name = db_sender.name
+        print(f"DEBUG: 聊天室 {room_id} 收到 {len(created_messages)} 条消息")
+        
+        # 如果是单条消息，返回消息对象；如果是多条消息，返回第一条
+        return created_messages[0] if created_messages else None
 
-        print(f"DEBUG: 聊天室 {room_id} 收到消息 (ID: {db_message.id})。")
-        return db_message
-
-    except HTTPException as e:  # 捕获FastAPI的异常，包括OSS上传时抛出的
+    except HTTPException as e:
         db.rollback()
-        if oss_object_name_for_rollback:
-            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
-            print(f"DEBUG: HTTP exception, attempting to delete OSS file: {oss_object_name_for_rollback}")
+        # 清理已上传的文件
+        for file_key in uploaded_files_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(file_key))
         raise e
     except Exception as e:
         db.rollback()
-        if oss_object_name_for_rollback:
-            asyncio.create_task(oss_utils.delete_file_from_oss(oss_object_name_for_rollback))
-            print(f"DEBUG: Unknown error, attempting to delete OSS file: {oss_object_name_for_rollback}")
-        print(f"ERROR_DB: 发送聊天消息发生未知错误: {e}")
+        # 清理已上传的文件
+        for file_key in uploaded_files_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(file_key))
+        print(f"ERROR: 发送聊天消息失败: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"发送消息失败: {e}")
+
+
+@router.post("/chatrooms/{room_id}/upload-audio/", response_model=schemas.ChatMessageResponse,
+          summary="上传音频消息（仿微信语音）")
+async def upload_audio_message(
+        room_id: int,
+        audio_file: UploadFile = File(..., description="音频文件（支持mp3, wav, m4a, aac, ogg, webm格式）"),
+        duration: Optional[float] = Form(None, description="音频时长（秒）"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    上传音频消息，模拟微信语音功能。
+    支持格式：mp3, wav, m4a, aac, ogg, webm
+    """
+    try:
+        # 验证音频文件格式
+        if not audio_file.filename:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="音频文件名不能为空")
+        
+        file_ext = os.path.splitext(audio_file.filename)[1].lower()
+        SUPPORTED_AUDIO_FORMATS = ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.webm']
+        
+        if file_ext not in SUPPORTED_AUDIO_FORMATS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"不支持的音频格式: {file_ext}。支持的格式: {', '.join(SUPPORTED_AUDIO_FORMATS)}"
+            )
+
+        # 验证权限
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        is_creator = (db_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在该聊天室发送消息")
+
+        # 上传音频文件
+        file_bytes = await audio_file.read()
+        object_name = f"chat_audios/{uuid.uuid4().hex}{file_ext}"
+        
+        try:
+            media_url = await oss_utils.upload_file_to_oss(
+                file_bytes=file_bytes,
+                object_name=object_name,
+                content_type=audio_file.content_type or 'audio/mpeg'
+            )
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"音频上传失败: {e}")
+
+        # 创建音频消息
+        db_message = ChatMessage(
+            room_id=room_id,
+            sender_id=current_user_id,
+            content_text=f"语音消息",
+            message_type="audio",
+            media_url=media_url,
+            file_size=len(file_bytes),
+            original_filename=audio_file.filename,
+            audio_duration=duration
+        )
+        
+        db.add(db_message)
+        db_room.updated_at = func.now()
+        db.add(db_room)
+        db.commit()
+        db.refresh(db_message)
+
+        # 填充发送者姓名
+        sender = db.query(Student).filter(Student.id == current_user_id).first()
+        db_message.sender_name = sender.name if sender else "未知用户"
+
+        return db_message
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 上传音频消息失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传音频消息失败: {e}")
+
+
+@router.post("/chatrooms/{room_id}/upload-gallery/", response_model=List[schemas.ChatMessageResponse],
+          summary="批量上传图片/视频（仿微信相册选择）")
+async def upload_gallery_media(
+        room_id: int,
+        files: List[UploadFile] = File(..., description="图片或视频文件列表（最多9个）"),
+        caption: Optional[str] = Form(None, description="图片/视频描述文字"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    批量上传图片或视频，模拟微信相册选择功能。
+    最多支持一次上传9个文件。
+    """
+    uploaded_files_for_rollback = []
+    
+    try:
+        if len(files) > 9:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="一次最多上传9个文件")
+        
+        if len(files) == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="至少需要选择一个文件")
+
+        # 验证权限
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        is_creator = (db_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在该聊天室发送消息")
+
+        # 验证文件格式
+        SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+        SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv']
+        
+        created_messages = []
+        
+        for idx, file in enumerate(files):
+            if not file.filename:
+                continue
+                
+            file_ext = os.path.splitext(file.filename)[1].lower()
+            
+            # 判断文件类型
+            if file_ext in SUPPORTED_IMAGE_FORMATS:
+                message_type = "image"
+                oss_path_prefix = "chat_images"
+            elif file_ext in SUPPORTED_VIDEO_FORMATS:
+                message_type = "video"
+                oss_path_prefix = "chat_videos"
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"不支持的文件格式: {file_ext}。支持的格式: {', '.join(SUPPORTED_IMAGE_FORMATS + SUPPORTED_VIDEO_FORMATS)}"
+                )
+
+            # 上传文件
+            file_bytes = await file.read()
+            object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_ext}"
+            uploaded_files_for_rollback.append(object_name)
+            
+            try:
+                media_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes,
+                    object_name=object_name,
+                    content_type=file.content_type or ('image/jpeg' if message_type == 'image' else 'video/mp4')
+                )
+            except Exception as e:
+                # 如果某个文件上传失败，清理已上传的文件
+                for obj_name in uploaded_files_for_rollback:
+                    asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                                  detail=f"文件 {file.filename} 上传失败: {e}")
+
+            # 创建消息
+            content_text = caption if idx == 0 and caption else f"{message_type}: {file.filename}"
+            
+            db_message = ChatMessage(
+                room_id=room_id,
+                sender_id=current_user_id,
+                content_text=content_text,
+                message_type=message_type,
+                media_url=media_url,
+                file_size=len(file_bytes),
+                original_filename=file.filename
+            )
+            
+            db.add(db_message)
+            created_messages.append(db_message)
+
+        # 更新聊天室时间并提交
+        db_room.updated_at = func.now()
+        db.add(db_room)
+        db.commit()
+        
+        # 刷新消息并填充发送者姓名
+        sender = db.query(Student).filter(Student.id == current_user_id).first()
+        sender_name = sender.name if sender else "未知用户"
+        
+        for msg in created_messages:
+            db.refresh(msg)
+            msg.sender_name = sender_name
+
+        return created_messages
+
+    except HTTPException:
+        db.rollback()
+        # 清理已上传的文件
+        for obj_name in uploaded_files_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+        raise
+    except Exception as e:
+        db.rollback()
+        # 清理已上传的文件
+        for obj_name in uploaded_files_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+        print(f"ERROR: 批量上传媒体文件失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"批量上传失败: {e}")
+
+
+@router.post("/chatrooms/{room_id}/upload-documents/", response_model=List[schemas.ChatMessageResponse],
+          summary="上传文档文件（支持多种办公和代码文件格式）")
+async def upload_document_files(
+        room_id: int,
+        files: List[UploadFile] = File(..., description="文档文件列表"),
+        description: Optional[str] = Form(None, description="文件描述"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    上传文档文件，支持：
+    - 文档类型：txt, md, html, pdf, docx, pptx, xlsx
+    - 代码文件：py, js, json, xml, csv 等
+    """
+    uploaded_files_for_rollback = []
+    
+    try:
+        if len(files) > 10:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="一次最多上传10个文档文件")
+
+        # 验证权限
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        is_creator = (db_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在该聊天室发送消息")
+
+        # 支持的文档格式
+        SUPPORTED_DOC_FORMATS = {
+            '.txt': 'text/plain',
+            '.md': 'text/markdown', 
+            '.html': 'text/html',
+            '.pdf': 'application/pdf',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.py': 'text/x-python',
+            '.js': 'application/javascript',
+            '.json': 'application/json',
+            '.xml': 'application/xml',
+            '.csv': 'text/csv',
+            '.zip': 'application/zip',
+            '.rar': 'application/x-rar-compressed'
+        }
+        
+        created_messages = []
+        
+        for idx, file in enumerate(files):
+            if not file.filename:
+                continue
+                
+            file_ext = os.path.splitext(file.filename)[1].lower()
+            
+            if file_ext not in SUPPORTED_DOC_FORMATS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"不支持的文档格式: {file_ext}。支持的格式: {', '.join(SUPPORTED_DOC_FORMATS.keys())}"
+                )
+
+            # 上传文件
+            file_bytes = await file.read()
+            object_name = f"chat_files/{uuid.uuid4().hex}{file_ext}"
+            uploaded_files_for_rollback.append(object_name)
+            
+            try:
+                media_url = await oss_utils.upload_file_to_oss(
+                    file_bytes=file_bytes,
+                    object_name=object_name,
+                    content_type=file.content_type or SUPPORTED_DOC_FORMATS[file_ext]
+                )
+            except Exception as e:
+                # 清理已上传的文件
+                for obj_name in uploaded_files_for_rollback:
+                    asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                                  detail=f"文件 {file.filename} 上传失败: {e}")
+
+            # 创建消息
+            content_text = description if idx == 0 and description else f"文档: {file.filename}"
+            
+            db_message = ChatMessage(
+                room_id=room_id,
+                sender_id=current_user_id,
+                content_text=content_text,
+                message_type="file",
+                media_url=media_url,
+                file_size=len(file_bytes),
+                original_filename=file.filename
+            )
+            
+            db.add(db_message)
+            created_messages.append(db_message)
+
+        # 更新聊天室时间并提交
+        db_room.updated_at = func.now()
+        db.add(db_room)
+        db.commit()
+        
+        # 刷新消息并填充发送者姓名
+        sender = db.query(Student).filter(Student.id == current_user_id).first()
+        sender_name = sender.name if sender else "未知用户"
+        
+        for msg in created_messages:
+            db.refresh(msg)
+            msg.sender_name = sender_name
+
+        return created_messages
+
+    except HTTPException:
+        db.rollback()
+        # 清理已上传的文件
+        for obj_name in uploaded_files_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+        raise
+    except Exception as e:
+        db.rollback()
+        # 清理已上传的文件
+        for obj_name in uploaded_files_for_rollback:
+            asyncio.create_task(oss_utils.delete_file_from_oss(obj_name))
+        print(f"ERROR: 上传文档文件失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传文档失败: {e}")
 
 
 @router.get("/chatrooms/{room_id}/messages/", response_model=List[schemas.ChatMessageResponse],
@@ -1235,12 +1717,13 @@ async def get_chat_messages(
         room_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        limit: int = 50,  # 限制返回消息数量
-        offset: int = 0  # 偏移量，用于分页加载
+        limit: int = Query(50, description="限制返回消息数量"),
+        offset: int = Query(0, description="偏移量，用于分页加载"),
+        message_type: Optional[str] = Query(None, description="按消息类型过滤")
 ):
     """
     获取指定聊天室的历史消息。
-    所有活跃成员 (包括群主和管理员) 以及系统管理员都可以查看。
+    支持分页加载和按类型过滤。
     """
     print(f"DEBUG: 获取聊天室 {room_id} 的历史消息，用户 {current_user_id}。")
 
@@ -1254,7 +1737,7 @@ async def get_chat_messages(
         if not db_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
 
-        # 2. 权限检查：用户是否是群主、活跃成员或系统管理员**
+        # 2. 权限检查：用户是否是群主、活跃成员或系统管理员
         is_creator = (db_room.creator_id == current_user_id)
         is_active_member = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
@@ -1265,28 +1748,52 @@ async def get_chat_messages(
         if not (is_creator or is_active_member or current_user.is_admin):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权查看该聊天室的历史消息。")
 
-        # 3. 查询消息（过滤掉被删除的消息）
-        messages = db.query(ChatMessage).filter(
+        # 3. 构建查询（过滤掉被删除的消息）
+        query = db.query(ChatMessage).filter(
             ChatMessage.room_id == room_id,
             ChatMessage.deleted_at.is_(None)  # 只获取未删除的消息
-        ).order_by(ChatMessage.sent_at.asc()) \
+        )
+        
+        # 按消息类型过滤
+        if message_type:
+            query = query.filter(ChatMessage.message_type == message_type)
+        
+        # 预加载回复消息的信息
+        query = query.options(joinedload(ChatMessage.reply_to))
+        
+        # 排序和分页
+        messages = query.order_by(ChatMessage.sent_at.desc()) \
             .offset(offset).limit(limit).all()
 
-        # 4. 填充 sender_name
+        # 4. 填充 sender_name 和 reply_to_message
         response_messages = []
         # 预加载所有发送者信息，以避免 N+1 查询问题
-        sender_ids = list(set([msg.sender_id for msg in messages]))  # 获取所有不重复的发送者ID
-        senders_map = {s.id: s.name for s in db.query(Student).filter(Student.id.in_(sender_ids)).all()}
+        sender_ids = list(set([msg.sender_id for msg in messages if msg.sender_id]))
+        if messages:
+            # 包括被回复消息的发送者
+            reply_sender_ids = [msg.reply_to.sender_id for msg in messages if msg.reply_to and msg.reply_to.sender_id]
+            sender_ids.extend(reply_sender_ids)
+            sender_ids = list(set(sender_ids))
+        
+        senders_map = {s.id: s.name for s in db.query(Student).filter(Student.id.in_(sender_ids)).all()} if sender_ids else {}
 
         for msg in messages:
             msg.sender_name = senders_map.get(msg.sender_id, "未知用户")
+            
+            # 填充回复消息信息
+            if msg.reply_to:
+                msg.reply_to.sender_name = senders_map.get(msg.reply_to.sender_id, "未知用户")
+                msg.reply_to_message = msg.reply_to
+            
             response_messages.append(msg)
 
-        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(messages)} 条历史消息。")
+        # 反转顺序，使最新的消息在最后（符合聊天界面习惯）
+        response_messages.reverse()
+
+        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(response_messages)} 条历史消息。")
         return response_messages
 
     except HTTPException as e:
-        # 重新抛出HTTP异常
         raise e
     except Exception as e:
         print(f"ERROR: 获取聊天消息时发生错误: {e}")
@@ -1294,6 +1801,270 @@ async def get_chat_messages(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="获取聊天消息失败，请稍后重试。"
         )
+
+
+@router.put("/chatrooms/{room_id}/messages/{message_id}/recall", 
+         response_model=schemas.ChatMessageResponse,
+         summary="撤回消息（仿微信撤回功能）")
+async def recall_message(
+        room_id: int,
+        message_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    撤回消息功能，类似微信。
+    只有消息发送者可以撤回，且有时间限制（2分钟内）。
+    """
+    try:
+        # 查询要撤回的消息
+        db_message = db.query(ChatMessage).filter(
+            ChatMessage.id == message_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+
+        if not db_message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息未找到或已被删除")
+
+        # 权限检查：只有消息发送者可以撤回
+        if db_message.sender_id != current_user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只能撤回自己发送的消息")
+
+        # 时间限制检查：2分钟内可撤回
+        from datetime import timedelta
+        time_limit = timedelta(minutes=2)
+        if datetime.now() - db_message.sent_at > time_limit:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="消息发送超过2分钟，无法撤回")
+
+        # 更新消息为撤回状态
+        db_message.content_text = "消息已撤回"
+        db_message.message_type = "system_notification"
+        db_message.media_url = None  # 清除媒体链接
+        db_message.edited_at = func.now()
+        
+        db.add(db_message)
+        db.commit()
+        db.refresh(db_message)
+
+        # 填充发送者姓名
+        sender = db.query(Student).filter(Student.id == current_user_id).first()
+        db_message.sender_name = sender.name if sender else "未知用户"
+
+        return db_message
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 撤回消息失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"撤回消息失败: {e}")
+
+
+@router.put("/chatrooms/{room_id}/messages/{message_id}/pin",
+         summary="置顶/取消置顶消息")
+async def toggle_pin_message(
+        room_id: int,
+        message_id: int,
+        pin: bool = Query(..., description="true为置顶，false为取消置顶"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    置顶或取消置顶消息。
+    只有群主和管理员可以执行此操作。
+    """
+    try:
+        # 权限检查
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        is_creator = (db_room.creator_id == current_user_id)
+        member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first()
+        is_admin = member and member.role == "admin"
+
+        if not (is_creator or is_admin):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有群主和管理员可以置顶消息")
+
+        # 查询消息
+        db_message = db.query(ChatMessage).filter(
+            ChatMessage.id == message_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+
+        if not db_message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息未找到")
+
+        # 更新置顶状态
+        db_message.is_pinned = pin
+        db.add(db_message)
+        db.commit()
+
+        return {"message": f"消息已{'置顶' if pin else '取消置顶'}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 置顶消息操作失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"置顶操作失败: {e}")
+
+
+@router.post("/chatrooms/{room_id}/messages/{message_id}/forward",
+          response_model=schemas.ChatMessageResponse,
+          summary="转发消息到其他聊天室")
+async def forward_message(
+        room_id: int,
+        message_id: int,
+        target_room_id: int = Form(..., description="目标聊天室ID"),
+        additional_text: Optional[str] = Form(None, description="转发时添加的额外文字"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    转发消息到其他聊天室。
+    """
+    try:
+        # 验证源消息
+        source_message = db.query(ChatMessage).filter(
+            ChatMessage.id == message_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+
+        if not source_message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="源消息未找到")
+
+        # 验证源聊天室权限
+        source_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not source_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="源聊天室未找到")
+
+        is_source_creator = (source_room.creator_id == current_user_id)
+        is_source_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_source_creator or is_source_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问源聊天室")
+
+        # 验证目标聊天室权限
+        target_room = db.query(ChatRoom).filter(ChatRoom.id == target_room_id).first()
+        if not target_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标聊天室未找到")
+
+        is_target_creator = (target_room.creator_id == current_user_id)
+        is_target_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == target_room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_target_creator or is_target_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在目标聊天室发送消息")
+
+        # 创建转发消息
+        forward_content = f"[转发] {source_message.content_text}"
+        if additional_text:
+            forward_content = f"{additional_text}\n\n{forward_content}"
+
+        forwarded_message = ChatMessage(
+            room_id=target_room_id,
+            sender_id=current_user_id,
+            content_text=forward_content,
+            message_type=source_message.message_type,
+            media_url=source_message.media_url,
+            file_size=source_message.file_size,
+            original_filename=source_message.original_filename,
+            audio_duration=source_message.audio_duration
+        )
+
+        db.add(forwarded_message)
+        target_room.updated_at = func.now()
+        db.add(target_room)
+        db.commit()
+        db.refresh(forwarded_message)
+
+        # 填充发送者姓名
+        sender = db.query(Student).filter(Student.id == current_user_id).first()
+        forwarded_message.sender_name = sender.name if sender else "未知用户"
+
+        return forwarded_message
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 转发消息失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"转发消息失败: {e}")
+
+
+@router.get("/chatrooms/{room_id}/media", response_model=List[schemas.ChatMessageResponse],
+         summary="获取聊天室中的所有媒体文件")
+async def get_chat_media(
+        room_id: int,
+        media_type: Optional[str] = Query(None, description="媒体类型过滤：image/video/audio/file"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        limit: int = Query(50, description="限制返回数量"),
+        offset: int = Query(0, description="偏移量")
+):
+    """
+    获取聊天室中的所有媒体文件，用于媒体浏览。
+    """
+    try:
+        # 权限检查
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        is_creator = (db_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该聊天室内容")
+
+        # 构建查询
+        query = db.query(ChatMessage).filter(
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None),
+            ChatMessage.media_url.isnot(None)  # 只获取有媒体的消息
+        )
+
+        # 按媒体类型过滤
+        if media_type:
+            query = query.filter(ChatMessage.message_type == media_type)
+
+        # 执行查询
+        media_messages = query.order_by(ChatMessage.sent_at.desc()) \
+            .offset(offset).limit(limit).all()
+
+        # 填充发送者姓名
+        sender_ids = list(set([msg.sender_id for msg in media_messages]))
+        senders_map = {s.id: s.name for s in db.query(Student).filter(Student.id.in_(sender_ids)).all()} if sender_ids else {}
+
+        for msg in media_messages:
+            msg.sender_name = senders_map.get(msg.sender_id, "未知用户")
+
+        return media_messages
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: 获取聊天室媒体文件失败: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"获取媒体文件失败: {e}")
 
 
 @router.delete("/chatrooms/{room_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT,
@@ -1380,61 +2151,60 @@ async def websocket_endpoint(
         token: str = Query(..., description="用户JWT认证令牌"),
         db: Session = Depends(get_db)
 ):
+    """
+    WebSocket 聊天接口，支持实时消息推送。
+    支持的消息类型：
+    - 文本消息
+    - 状态消息（用户加入/离开）
+    - 系统通知
+    - 媒体文件消息通知
+    """
     print(f"DEBUG_WS: 尝试连接房间 {room_id}。")
     current_email = None
-    current_payload_sub_str = None  # 用于存储从 JWT 'sub' 出来的字符串
+    current_payload_sub_str = None
     current_user_db = None
+    current_user_id_int = None
+    
     try:
         # 解码 JWT 令牌以获取用户身份
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-
-        # 从 'sub' 获取的是用户ID的字符串表示
         current_payload_sub_str: str = payload.get("sub")
         if current_payload_sub_str is None:
             raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION,
                                       reason="Invalid authentication token (subject missing).")
 
-        # 将字符串ID转换为整数，然后用它查询用户
-        # 假设 sub 字段存储的是用户ID
+        # 将字符串ID转换为整数
         try:
             current_user_id_int = int(current_payload_sub_str)
         except ValueError:
             raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid user ID format in token.")
 
-        # 从数据库中根据用户 ID 获取用户信息
+        # 从数据库中获取用户信息
         current_user_db = db.query(Student).filter(Student.id == current_user_id_int).first()
         if current_user_db is None:
-            # 这通常不应该发生，除非数据库用户被删除了
             raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="User not found in database.")
 
-        # 为了调试打印，获取用户的真实邮箱，虽然不用于认证
         current_email = current_user_db.email
 
-    # 将 jwt.PyJWTError 改为 JWTError
     except (JWTError, WebSocketDisconnect) as auth_error:
-        # 捕获 JWT 解析错误和主动抛出的 WebSocketDisconnect
-        print(f"ERROR_WS_AUTH: WebSocket 认证失败: {type(auth_error).__name__}: {auth_error}")  # 打印错误类型
+        print(f"ERROR_WS_AUTH: WebSocket 认证失败: {type(auth_error).__name__}: {auth_error}")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"Authentication failed: {auth_error}")
         return
     except Exception as e:
-        # 捕获其他非预期的认证异常
-        print(f"ERROR_WS_AUTH: WebSocket 认证内部错误: {type(e).__name__}: {e}")  # 打印错误类型
+        print(f"ERROR_WS_AUTH: WebSocket 认证内部错误: {type(e).__name__}: {e}")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Authentication internal error.")
         return
 
     print(f"DEBUG_WS: 用户 {current_user_id_int} (邮箱: {current_email}) 尝试连接聊天室 {room_id}。")
 
+    # 验证聊天室权限
     chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if not chat_room:
         print(f"WARNING_WS: 用户 {current_user_id_int} 尝试连接不存在的聊天室 {room_id}。")
         await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="聊天室不存在。")
         return
 
-    # 调试打印：查看权限相关的原始值和比较结果
-    print(
-        f"DEBUG_PERM_WS: current_user_id_int={current_user_id_int} (type={type(current_user_id_int)}), chat_room.creator_id={chat_room.creator_id} (type={type(chat_room.creator_id)})")
-
-    # 核心权限：验证用户是否为该聊天室的创建者或活跃成员
+    # 权限检查
     is_creator = (chat_room.creator_id == current_user_id_int)
     is_active_member = db.query(ChatRoomMember).filter(
         ChatRoomMember.room_id == room_id,
@@ -1443,7 +2213,6 @@ async def websocket_endpoint(
     ).first() is not None
 
     print(f"DEBUG_PERM_WS: is_creator={is_creator}, is_active_member={is_active_member}")
-    print(f"DEBUG_PERM_WS: Final WS permission: {is_creator or is_active_member}")
 
     if not (is_creator or is_active_member):
         print(f"WARNING_WS: 用户 {current_user_id_int} 无权连接聊天室 {room_id}。")
@@ -1455,68 +2224,154 @@ async def websocket_endpoint(
         print(f"DEBUG_WS: 用户 {current_user_id_int} 已成功连接到聊天室 {room_id}。")
 
         # 发送欢迎消息给新连接的用户
-        await manager.send_personal_message(
-            json.dumps({"type": "status", "content": f"欢迎用户 {current_user_db.name} 加入聊天室 {chat_room.name}！"}),
-            websocket)
+        welcome_message = {
+            "type": "system",
+            "content": f"欢迎 {current_user_db.name} 加入聊天室 {chat_room.name}！",
+            "timestamp": datetime.now().isoformat()
+        }
+        await manager.send_personal_message(json.dumps(welcome_message), websocket)
+
+        # 向房间内其他用户广播用户加入消息
+        join_notification = {
+            "type": "user_joined",
+            "user_id": current_user_id_int,
+            "user_name": current_user_db.name,
+            "content": f"{current_user_db.name} 加入了聊天室",
+            "timestamp": datetime.now().isoformat()
+        }
+        await manager.broadcast(json.dumps(join_notification), room_id)
 
         while True:
-            # 接收 JSON 格式消息 (假设前端发送 {"content": "..."} 类型)
+            # 接收客户端消息
             data = await websocket.receive_json()
-            message_content = data.get("content")
+            message_type = data.get("type", "chat")
+            
+            if message_type == "chat":
+                # 处理聊天消息
+                message_content = data.get("content")
+                reply_to_id = data.get("reply_to_message_id")
 
-            if not message_content or not isinstance(message_content, str):
-                await websocket.send_json({"error": "Invalid message format. 'content' (string) is required."})
-                continue
+                if not message_content or not isinstance(message_content, str):
+                    await websocket.send_json({"error": "Invalid message format. 'content' (string) is required."})
+                    continue
 
-            # 再次检查权限 (防止在连接期间权限被撤销)
-            re_check_active_member = db.query(ChatRoomMember).filter(
-                ChatRoomMember.room_id == room_id,
-                ChatRoomMember.member_id == current_user_id_int,
-                ChatRoomMember.status == "active"
-            ).first()
-            re_check_creator = (chat_room.creator_id == current_user_id_int)
+                # 再次检查权限
+                re_check_active_member = db.query(ChatRoomMember).filter(
+                    ChatRoomMember.room_id == room_id,
+                    ChatRoomMember.member_id == current_user_id_int,
+                    ChatRoomMember.status == "active"
+                ).first()
+                re_check_creator = (chat_room.creator_id == current_user_id_int)
 
-            if not (re_check_creator or re_check_active_member):
-                print(f"WARNING_WS: 用户 {current_user_id_int} 在聊天室 {room_id} 发送消息时已失去权限。连接将被关闭。")
-                await websocket.send_json(
-                    {"error": "No permission to send messages. You may have been removed or left the chat."})
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="失去发送消息权限。")
-                break  # 用户无权发送，断开循环
+                if not (re_check_creator or re_check_active_member):
+                    print(f"WARNING_WS: 用户 {current_user_id_int} 发送消息时已失去权限。")
+                    await websocket.send_json({"error": "No permission to send messages."})
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="失去发送消息权限。")
+                    break
 
-            db_message = ChatMessage(
-                room_id=room_id,
-                sender_id=current_user_id_int,
-                content_text=message_content,
-                message_type="text"  # 默认为文本
-            )
-            db.add(db_message)
-            db.commit()  # 立即提交
-            db.refresh(db_message)  # 刷新以获取ID和时间戳
+                # 验证回复消息
+                reply_to_message = None
+                if reply_to_id:
+                    reply_to_message = db.query(ChatMessage).filter(
+                        ChatMessage.id == reply_to_id,
+                        ChatMessage.room_id == room_id,
+                        ChatMessage.deleted_at.is_(None)
+                    ).first()
 
-            # 广播包含发送者名称和时间戳的 JSON 消息
-            message_to_broadcast = {
-                "type": "chat_message",
-                "id": db_message.id,
-                "room_id": room_id,
-                "sender_id": current_user_id_int,
-                "sender_name": current_user_db.name,  # 直接使用已获取的用户名
-                "content": message_content,
-                "sent_at": db_message.sent_at.isoformat()  # ISO 8601 格式
-            }
-            await manager.broadcast(json.dumps(message_to_broadcast), room_id)
-            print(f"DEBUG_WS: 聊天室 {room_id} 广播消息: {current_user_db.name}: {message_content[:50]}...")
+                # 创建消息记录
+                db_message = ChatMessage(
+                    room_id=room_id,
+                    sender_id=current_user_id_int,
+                    content_text=message_content,
+                    message_type="text",
+                    reply_to_message_id=reply_to_id if reply_to_message else None
+                )
+                db.add(db_message)
+                
+                # 更新聊天室活跃时间
+                chat_room.updated_at = func.now()
+                db.add(chat_room)
+                
+                db.commit()
+                db.refresh(db_message)
+
+                # 构建广播消息
+                broadcast_message = {
+                    "type": "chat_message",
+                    "id": db_message.id,
+                    "room_id": room_id,
+                    "sender_id": current_user_id_int,
+                    "sender_name": current_user_db.name,
+                    "content": message_content,
+                    "message_type": "text",
+                    "sent_at": db_message.sent_at.isoformat(),
+                    "reply_to_message_id": reply_to_id,
+                    "reply_to_message": {
+                        "id": reply_to_message.id,
+                        "content": reply_to_message.content_text[:50] + "..." if len(reply_to_message.content_text) > 50 else reply_to_message.content_text,
+                        "sender_name": reply_to_message.sender.name
+                    } if reply_to_message else None
+                }
+                
+                await manager.broadcast(json.dumps(broadcast_message), room_id)
+                print(f"DEBUG_WS: 聊天室 {room_id} 广播消息: {current_user_db.name}: {message_content[:50]}...")
+
+            elif message_type == "typing":
+                # 处理正在输入状态
+                typing_message = {
+                    "type": "typing",
+                    "user_id": current_user_id_int,
+                    "user_name": current_user_db.name,
+                    "is_typing": data.get("is_typing", True),
+                    "timestamp": datetime.now().isoformat()
+                }
+                # 广播给除自己外的其他用户
+                for user_id, connection in manager.active_connections.get(room_id, {}).items():
+                    if user_id != current_user_id_int:
+                        try:
+                            await connection.send_text(json.dumps(typing_message))
+                        except:
+                            pass
+
+            elif message_type == "file_upload_notification":
+                # 处理文件上传完成通知
+                file_info = data.get("file_info", {})
+                notification_message = {
+                    "type": "file_uploaded",
+                    "user_id": current_user_id_int,
+                    "user_name": current_user_db.name,
+                    "file_info": file_info,
+                    "timestamp": datetime.now().isoformat()
+                }
+                await manager.broadcast(json.dumps(notification_message), room_id)
+
+            elif message_type == "heartbeat":
+                # 心跳检测
+                await websocket.send_json({"type": "heartbeat_response", "timestamp": datetime.now().isoformat()})
+
+            else:
+                await websocket.send_json({"error": f"Unknown message type: {message_type}"})
 
     except WebSocketDisconnect:
-        # 用户正常断开连接（或服务器主动关闭）
-        print(f"DEBUG_WS: 用户 {current_user_id_int} 从聊天室 {room_id} 断开连接 (WebSocketDisconnect)。")
+        print(f"DEBUG_WS: 用户 {current_user_id_int} 从聊天室 {room_id} 断开连接。")
+        
+        # 广播用户离开消息
+        if current_user_id_int and current_user_db:
+            leave_notification = {
+                "type": "user_left",
+                "user_id": current_user_id_int,
+                "user_name": current_user_db.name,
+                "content": f"{current_user_db.name} 离开了聊天室",
+                "timestamp": datetime.now().isoformat()
+            }
+            await manager.broadcast(json.dumps(leave_notification), room_id)
+            
     except Exception as e:
-        # 捕获其他意外错误
         print(f"ERROR_WS: 用户 {current_user_id_int} 在聊天室 {room_id} WebSocket 处理异常: {e}")
-        # 如果连接仍然开启，尝试发送错误消息并关闭
         if websocket.client_state == 1:  # WebSocketState.CONNECTED
             await websocket.send_json({"error": f"服务器内部错误: {e}"})
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"服务器内部错误: {e}")
     finally:
-        # 确保在任何情况下都从管理器中移除连接
+        # 确保从管理器中移除连接
         if current_user_id_int is not None:
             manager.disconnect(room_id, current_user_id_int)

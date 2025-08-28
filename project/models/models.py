@@ -407,16 +407,34 @@ class ChatMessage(Base):
     room_id = Column(Integer, ForeignKey("chat_rooms.id"), nullable=False)
     sender_id = Column(Integer, ForeignKey("students.id"), nullable=False)
 
-    content_text = Column(Text, nullable=False)
+    content_text = Column(Text, nullable=True)  # 改为可空，因为某些消息类型可能只有媒体
     message_type = Column(String, default="text")
 
     media_url = Column(String, nullable=True, comment="媒体文件OSS URL或外部链接")
-
+    
+    # 新增字段：支持回复消息
+    reply_to_message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=True, comment="回复的消息ID")
+    
+    # 新增字段：文件元数据
+    file_size = Column(Integer, nullable=True, comment="文件大小（字节）")
+    original_filename = Column(String, nullable=True, comment="原始文件名")
+    
+    # 新增字段：音频消息支持
+    audio_duration = Column(Float, nullable=True, comment="音频时长（秒）")
+    
+    # 新增字段：消息状态和优先级
+    message_status = Column(String, default="sent", comment="消息状态：sent/delivered/read")
+    is_pinned = Column(Boolean, default=False, comment="是否置顶消息")
+    
     sent_at = Column(DateTime, server_default=func.now())
     deleted_at = Column(DateTime, nullable=True, comment="消息删除时间，为空表示未删除")
+    edited_at = Column(DateTime, nullable=True, comment="消息编辑时间")
 
     room = relationship("ChatRoom", back_populates="messages")
     sender = relationship("Student", back_populates="sent_messages")
+    
+    # 自引用关系：回复消息
+    reply_to = relationship("ChatMessage", remote_side=[id], backref="replies")
 
 
 class ChatRoomMember(Base):

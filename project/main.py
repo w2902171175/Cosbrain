@@ -18,14 +18,14 @@ from sqlalchemy.sql import func
 # === 项目内部导入 ===
 # 核心模块
 from database import get_db
-from dependencies import (
+from dependencies.dependencies import (
     SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token, get_current_user_id, verify_password, get_password_hash, is_admin_user
 )
-from utils import _award_points, _check_and_award_achievements, _get_text_part
+from utils.utils import _award_points, _check_and_award_achievements, _get_text_part
 
 # 数据模型
-from models import (
+from models.models import (
     Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, 
     ChatMessage, Achievement, UserAchievement, PointTransaction
 )

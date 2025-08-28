@@ -6,12 +6,12 @@ from typing import List, Optional
 
 # 导入数据库和模型
 from database import get_db
-from models import UserTTSConfig
-from schemas import UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
-from dependencies import get_current_user_id
+from models.models import UserTTSConfig
+from schemas.schemas import UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
+from dependencies.dependencies import get_current_user_id
 
 from jose import JWTError, jwt
-from dependencies import SECRET_KEY, ALGORITHM
+from dependencies.dependencies import SECRET_KEY, ALGORITHM
 from ai_providers.security_utils import encrypt_key
 
 router = APIRouter(

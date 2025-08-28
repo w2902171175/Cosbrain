@@ -7,10 +7,10 @@ from typing import Literal, Optional
 
 # 使用正确的相对导入
 from database import get_db
-from models import Student, Achievement, PointTransaction, KnowledgeArticle, KnowledgeDocument, KnowledgeDocumentChunk, Note
-from dependencies import get_current_user_id, is_admin_user
-from utils import _award_points
-import schemas
+from models.models import Student, Achievement, PointTransaction, KnowledgeArticle, KnowledgeDocument, KnowledgeDocumentChunk, Note
+from dependencies.dependencies import get_current_user_id, is_admin_user
+from utils.utils import _award_points
+import schemas.schemas as schemas
 
 router = APIRouter(prefix="/admin", tags=["管理员"])
 

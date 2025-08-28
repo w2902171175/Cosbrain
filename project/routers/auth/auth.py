@@ -11,12 +11,12 @@ from sqlalchemy import and_, or_
 
 # 导入数据库和模型
 from database import get_db
-from models import Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, ChatMessage, PointTransaction, Achievement, UserAchievement
-from dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context, bearer_scheme, create_access_token, get_current_user_id
-from utils import (_get_text_part, _award_points, _check_and_award_achievements, check_unique_field, 
+from models.models import Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, ChatMessage, PointTransaction, Achievement, UserAchievement
+from dependencies.dependencies import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context, bearer_scheme, create_access_token, get_current_user_id
+from utils.utils import (_get_text_part, _award_points, _check_and_award_achievements, check_unique_field, 
                   process_skills_field, build_user_combined_text, update_embedding_safe, 
                   debug_operation, commit_or_rollback, get_user_by_id_or_404, update_fields_from_dict)
-import schemas
+import schemas.schemas as schemas
 from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_user_model_for_provider
 from ai_providers.embedding_provider import get_embeddings_from_api
 from ai_providers.security_utils import decrypt_key

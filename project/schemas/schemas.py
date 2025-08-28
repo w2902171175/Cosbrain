@@ -512,19 +512,25 @@ class ChatRoomResponse(ChatRoomBase):
 # --- ChatMessage Schemas ---
 class ChatMessageBase(BaseModel):
     content_text: Optional[str] = None
-    message_type: Literal["text", "image", "file", "video", "system_notification"] = "text"
+    message_type: Literal["text", "image", "file", "video", "audio", "system_notification"] = "text"
     media_url: Optional[str] = Field(None, description="媒体文件OSS URL或外部链接")
+    reply_to_message_id: Optional[int] = Field(None, description="回复的消息ID")
+    file_size: Optional[int] = Field(None, description="文件大小（字节）")
+    original_filename: Optional[str] = Field(None, description="原始文件名")
+    audio_duration: Optional[float] = Field(None, description="音频时长（秒）")
+    is_pinned: Optional[bool] = Field(False, description="是否置顶消息")
 
     @model_validator(mode='after')
     def check_content_or_media(self) -> 'ChatMessageBase':
         if self.message_type == "text":
             if not self.content_text:
                 raise ValueError("当 message_type 为 'text' 时，content_text (消息内容) 不能为空。")
-            if self.media_url:
-                raise ValueError("当 message_type 为 'text' 时，media_url 不应被提供。")
-        elif self.message_type in ["image", "file", "video"]:
+        elif self.message_type in ["image", "file", "video", "audio"]:
             if not self.media_url:
                 raise ValueError(f"当 message_type 为 '{self.message_type}' 时，media_url (媒体文件URL) 不能为空。")
+        elif self.message_type == "system_notification":
+            if not self.content_text:
+                raise ValueError("系统通知消息必须有文本内容。")
         return self
 
 
@@ -538,7 +544,12 @@ class ChatMessageResponse(ChatMessageBase):
     sender_id: int
     sent_at: datetime
     deleted_at: Optional[datetime] = None
+    edited_at: Optional[datetime] = None
+    message_status: Optional[str] = Field("sent", description="消息状态")
     sender_name: Optional[str] = None
+    
+    # 回复消息的详情
+    reply_to_message: Optional['ChatMessageResponse'] = Field(None, description="被回复的消息详情")
 
     class Config:
         from_attributes = True

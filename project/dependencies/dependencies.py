@@ -10,7 +10,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 import secrets
 from database import SessionLocal  # 确保 base.py 存在且 SessionLocal 已从中定义
-from models import Student  # 导入 Student 模型，用于用户认证
+from models.models import Student  # 导入 Student 模型，用于用户认证
 # --- JWT 认证配置 ---
 SECRET_KEY = os.getenv("SECRET_KEY", "your-very-secret-key-that-should-be-in-env-production")  # 从环境变量获取，避免硬编码
 ALGORITHM = "HS256"  # JWT签名算法
