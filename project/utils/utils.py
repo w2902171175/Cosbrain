@@ -1,5 +1,6 @@
 # project/utils/utils.py
 
+import logging
 from datetime import datetime
 from typing import Any, Optional, Literal, List, Dict
 from sqlalchemy.orm import Session, Query
@@ -11,6 +12,8 @@ from project.models import Student, Project, UserCourse, ForumTopic, ForumCommen
 from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
 from project.ai_providers.embedding_provider import get_embeddings_from_api
 from project.ai_providers.security_utils import decrypt_key
+
+logger = logging.getLogger(__name__)
 
 
 def _get_text_part(value: Any) -> str:
@@ -60,8 +63,8 @@ async def _award_points(
     )
     db.add(transaction)
 
-    print(
-        f"DEBUG_POINTS_PENDING: 用户 {user.id} 积分变动：{amount}，当前总积分（提交前）：{user.total_points}，原因：{reason}。")
+    logger.debug(
+        f"用户 {user.id} 积分变动：{amount}，当前总积分（提交前）：{user.total_points}，原因：{reason}")
 
 
 async def _check_and_award_achievements(db: Session, user_id: int):
@@ -69,10 +72,10 @@ async def _check_and_award_achievements(db: Session, user_id: int):
     检查用户是否达到了任何成就条件，并授予未获得的成就。
     此函数会定期或在关键事件后调用。它只添加对象到会话，不进行commit。
     """
-    print(f"DEBUG_ACHIEVEMENT: 检查用户 {user_id} 的成就。")
+    logger.debug(f"检查用户 {user_id} 的成就")
     user = db.query(Student).filter(Student.id == user_id).first()
     if not user:
-        print(f"WARNING_ACHIEVEMENT: 用户 {user_id} 不存在。")
+        logger.warning(f"用户 {user_id} 不存在")
         return
 
     # 获取所有活跃且未被该用户获取的成就定义
@@ -88,11 +91,11 @@ async def _check_and_award_achievements(db: Session, user_id: int):
     )
 
     unearned_achievements = unearned_achievements_query.all()
-    print(
-        f"DEBUG_ACHIEVEMENT_RAW_QUERY: Raw query result for unearned achievements for user {user_id}: {unearned_achievements}")
+    logger.debug(
+        f"用户 {user_id} 未获得的成就数量: {len(unearned_achievements)}")
 
     if not unearned_achievements:
-        print(f"DEBUG_ACHIEVEMENT: 用户 {user_id} 没有未获得的活跃成就。")
+        logger.debug(f"用户 {user_id} 没有未获得的活跃成就")
         return
 
     # 预先计算用户相关数据，避免在循环中重复查询
@@ -121,15 +124,15 @@ async def _check_and_award_achievements(db: Session, user_id: int):
         "LOGIN_COUNT": user.login_count
     }
 
-    print(f"DEBUG_ACHIEVEMENT_DATA: User {user_id} counts: {user_data_for_achievements}")
+    logger.debug(f"用户 {user_id} 统计数据: {user_data_for_achievements}")
 
     awarded_count = 0
     for achievement in unearned_achievements:
         is_achieved = False
         criteria_value = achievement.criteria_value
 
-        print(
-            f"DEBUG_ACHIEVEMENT_CHECK: Checking achievement '{achievement.name}' (Criteria: {achievement.criteria_type}={criteria_value}) for user {user_id}")
+        logger.debug(
+            f"检查成就 '{achievement.name}' (条件: {achievement.criteria_type}={criteria_value}) for user {user_id}")
 
         if achievement.criteria_type == "PROJECT_COMPLETED_COUNT":
             if user_data_for_achievements["PROJECT_COMPLETED_COUNT"] >= criteria_value:
@@ -151,16 +154,14 @@ async def _check_and_award_achievements(db: Session, user_id: int):
             crit_val_float = float(criteria_value)
             user_count_float = float(user_login_count_val)
 
-            print(
-                f"DEBUG_ACHIEVEMENT_LOGIN_VALUE_TYPE: Achievement '{achievement.name}' criteria_value = {crit_val_float} (Type: {type(crit_val_float)})")
-            print(
-                f"DEBUG_ACHIEVEMENT_LOGIN_VALUE_TYPE: User LOGIN_COUNT = {user_count_float} (Type: {type(user_count_float)})")
+            logger.debug(
+                f"成就 '{achievement.name}' 要求登录次数: {crit_val_float}, 用户当前登录次数: {user_count_float}")
 
             if user_count_float >= crit_val_float:
                 is_achieved = True
 
-            print(
-                f"DEBUG_ACHIEVEMENT_LOGIN_CHECK: Comparison result: {user_count_float} >= {crit_val_float} is {is_achieved}")
+            logger.debug(
+                f"登录成就检查结果: {user_count_float} >= {crit_val_float} = {is_achieved}")
         elif achievement.criteria_type == "DAILY_LOGIN_STREAK":
             # 保持 is_achieved 为 False (除非额外开发连续登录计数器)。
             pass
@@ -184,11 +185,11 @@ async def _check_and_award_achievements(db: Session, user_id: int):
                     related_entity_id=achievement.id
                 )
 
-            print(
-                f"SUCCESS_ACHIEVEMENT_PENDING: 用户 {user_id} 获得成就: {achievement.name}！奖励 {achievement.reward_points} 积分 (待提交)。")
+            logger.info(
+                f"用户 {user_id} 获得成就: {achievement.name}，奖励 {achievement.reward_points} 积分")
             awarded_count += 1
     if awarded_count > 0:
-        print(f"INFO_ACHIEVEMENT: 用户 {user_id} 本次共获得 {awarded_count} 个成就 (待提交)。")
+        logger.info(f"用户 {user_id} 本次共获得 {awarded_count} 个成就")
 
 
 # --- 通用工具函数 ---
@@ -267,7 +268,7 @@ async def generate_embedding_safe(combined_text: str, user_id: int = None, provi
             return GLOBAL_PLACEHOLDER_ZERO_VECTOR
             
     except Exception as e:
-        print(f"ERROR_EMBEDDING: 生成嵌入向量失败: {e}")
+        logger.error(f"生成嵌入向量失败: {e}")
         return GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
 
@@ -456,7 +457,7 @@ def commit_or_rollback(db: Session, operation_name: str = "操作"):
         db.commit()
     except Exception as e:
         db.rollback()
-        print(f"ERROR_DB: {operation_name}失败: {e}")
+        logger.error(f"{operation_name}失败: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
                           detail=f"{operation_name}失败")
 
@@ -556,9 +557,9 @@ def debug_log(message: str, **kwargs):
     """
     if kwargs:
         formatted_kwargs = ", ".join([f"{k}: {v}" for k, v in kwargs.items()])
-        print(f"DEBUG: {message} - {formatted_kwargs}")
+        logger.debug(f"{message} - {formatted_kwargs}")
     else:
-        print(f"DEBUG: {message}")
+        logger.debug(message)
 
 
 def debug_operation(operation: str, user_id: int = None, resource_id: int = None, 

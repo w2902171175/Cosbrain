@@ -60,7 +60,7 @@ asyncio-mqtt==0.16.1
 
 # 缓存和性能优化
 redis==5.0.1
-python-magic==0.4.27
+python-magic-bin==0.4.14  # Windows兼容的文件类型检测
 bleach==6.1.0
 
 # 开发和调试工具（可选）
@@ -68,3 +68,12 @@ pytest==8.0.2
 pytest-asyncio==0.23.7
 
 boto3==1.37.38
+
+# 安全增强依赖（已安装）
+filetype==1.2.0  # 文件类型检测增强
+plyara==2.1.1     # YARA规则解析器
+
+# 高级安全依赖（需要编译器，Windows上较复杂）
+# yara-python==4.3.1  # 恶意软件检测引擎
+# 安装说明：需要先安装 Visual Studio Build Tools
+# 下载地址：https://visualstudio.microsoft.com/visual-cpp-build-tools/
