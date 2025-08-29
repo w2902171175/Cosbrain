@@ -8,6 +8,7 @@ import os
 import sys
 import logging
 from typing import Optional
+from pathlib import Path
 
 # 添加项目根目录到Python路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -456,13 +457,34 @@ def setup_logging():
     """设置日志"""
     config = get_config()
     
+    # 确保日志目录存在
+    log_dir = Path("logs/production")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 配置日志格式
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # 配置处理器
+    handlers = [logging.StreamHandler()]
+    
+    if config.environment == 'production':
+        # 生产环境使用文件日志，支持轮转
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            log_dir / 'production_utils.log',
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5,
+            encoding='utf-8'
+        )
+        file_handler.setFormatter(formatter)
+        handlers.append(file_handler)
+    
     logging.basicConfig(
         level=getattr(logging, config.log_level.upper()),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('production_utils.log') if config.environment == 'production' else logging.NullHandler()
-        ]
+        handlers=handlers
     )
 
 # 模块初始化
