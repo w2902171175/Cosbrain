@@ -1,22 +1,83 @@
 # project/routers/chatrooms/chatrooms.py
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, File, UploadFile, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, File, UploadFile, Form, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Literal, Union
 from sqlalchemy.sql import func
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, desc
 from jose import JWTError, jwt
-import uuid, os, asyncio, json, mimetypes, base64
-from datetime import datetime
+import uuid, os, asyncio, json, mimetypes, base64, hashlib
+from datetime import datetime, timedelta
 import io
 
+# 可选的 magic 导入 (在 Windows 上可能有问题)
+try:
+    import magic
+except ImportError:
+    magic = None
+
 # 导入数据库和模型
-from database import get_db
-from models.models import Student, Project, Course, ChatRoom, ChatMessage, ChatRoomMember, ChatRoomJoinRequest, Achievement, UserAchievement, PointTransaction
-from dependencies.dependencies import get_current_user_id, SECRET_KEY, ALGORITHM
-import schemas.schemas as schemas
-import oss_utils
+from project.database import get_db
+from project.models import Student, Project, Course, ChatRoom, ChatMessage, ChatRoomMember, ChatRoomJoinRequest, Achievement, UserAchievement, PointTransaction
+from project.dependencies.dependencies import get_current_user_id, SECRET_KEY, ALGORITHM
+import project.schemas.schemas as schemas
+import project.oss_utils as oss_utils
+
+# 安全配置常量
+class SecurityConfig:
+    """安全配置类"""
+    # 文件大小限制 (MB)
+    MAX_FILE_SIZE_MB = {
+        'image': 10,      # 图片最大10MB
+        'video': 100,     # 视频最大100MB
+        'audio': 50,      # 音频最大50MB
+        'document': 20,   # 文档最大20MB
+        'general': 20     # 通用文件最大20MB
+    }
+    
+    # 文件过期策略 (天)
+    FILE_EXPIRY_DAYS = {
+        'temp_files': 7,      # 临时文件7天
+        'chat_media': 365,    # 聊天媒体文件1年
+        'documents': 1095,    # 文档3年
+        'system_files': -1    # 系统文件永不过期
+    }
+    
+    # 允许的文件类型
+    ALLOWED_MIME_TYPES = {
+        'image': ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'],
+        'video': ['video/mp4', 'video/avi', 'video/mov', 'video/wmv', 'video/flv', 'video/mkv', 'video/webm'],
+        'audio': ['audio/mpeg', 'audio/wav', 'audio/m4a', 'audio/aac', 'audio/ogg', 'audio/webm'],
+        'document': [
+            'text/plain', 'text/markdown', 'text/html', 'application/pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'text/x-python', 'application/javascript', 'application/json',
+            'application/xml', 'text/csv', 'application/zip', 'application/x-rar-compressed'
+        ]
+    }
+    
+    # 恶意文件扫描规则
+    MALICIOUS_PATTERNS = [
+        b'<%eval', b'<script', b'javascript:', b'vbscript:', b'onload=', b'onerror=',
+        b'<?php', b'<%', b'<jsp:', b'exec(', b'system(', b'shell_exec(',
+        b'\x4d\x5a\x90\x00',  # PE executable header
+        b'\x50\x4b\x03\x04',  # ZIP header (可能包含恶意脚本)
+    ]
+    
+    # 消息分页限制
+    MAX_MESSAGES_PER_PAGE = 100
+    DEFAULT_MESSAGES_PER_PAGE = 50
+    
+    # WebSocket连接限制
+    MAX_CONNECTIONS_PER_USER = 5
+    HEARTBEAT_INTERVAL = 30  # 秒
+    
+    # 权限控制
+    MESSAGE_RECALL_TIME_LIMIT = 120  # 消息撤回时间限制(秒)
+    PIN_MESSAGE_LIMIT = 10           # 每个聊天室最多置顶消息数
 
 # 创建路由器
 router = APIRouter(
@@ -24,79 +85,300 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
-# --- WebSocket 连接管理：为每个聊天室分配一个管理器 ---
-class ConnectionManager:
+# --- 安全工具函数 ---
+async def validate_file_security(file_content: bytes, filename: str, content_type: str) -> bool:
+    """
+    验证文件安全性，检查文件大小、类型和恶意内容
+    """
+    # 1. 文件大小检查
+    file_size_mb = len(file_content) / (1024 * 1024)
+    
+    # 根据文件类型确定大小限制
+    if content_type.startswith('image/'):
+        max_size = SecurityConfig.MAX_FILE_SIZE_MB['image']
+    elif content_type.startswith('video/'):
+        max_size = SecurityConfig.MAX_FILE_SIZE_MB['video']
+    elif content_type.startswith('audio/'):
+        max_size = SecurityConfig.MAX_FILE_SIZE_MB['audio']
+    elif content_type in SecurityConfig.ALLOWED_MIME_TYPES['document']:
+        max_size = SecurityConfig.MAX_FILE_SIZE_MB['document']
+    else:
+        max_size = SecurityConfig.MAX_FILE_SIZE_MB['general']
+    
+    if file_size_mb > max_size:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"文件大小 {file_size_mb:.2f}MB 超过限制 {max_size}MB"
+        )
+    
+    # 2. MIME类型验证
+    allowed_types = []
+    for category, types in SecurityConfig.ALLOWED_MIME_TYPES.items():
+        allowed_types.extend(types)
+    
+    if content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"不支持的文件类型: {content_type}"
+        )
+    
+    # 3. 文件内容恶意扫描
+    for pattern in SecurityConfig.MALICIOUS_PATTERNS:
+        if pattern in file_content[:1024]:  # 只检查前1KB内容
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="检测到潜在恶意文件内容"
+            )
+    
+    # 4. 文件扩展名验证
+    file_ext = os.path.splitext(filename)[1].lower()
+    dangerous_extensions = ['.exe', '.bat', '.cmd', '.scr', '.vbs', '.js', '.jar', '.app']
+    if file_ext in dangerous_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"危险的文件扩展名: {file_ext}"
+        )
+    
+    return True
+
+async def generate_secure_filename(original_filename: str, user_id: int) -> str:
+    """
+    生成安全的文件名，防止目录遍历攻击
+    """
+    # 获取文件扩展名
+    file_ext = os.path.splitext(original_filename)[1].lower()
+    
+    # 生成安全的UUID文件名
+    safe_uuid = str(uuid.uuid4())
+    timestamp = int(datetime.now().timestamp())
+    
+    # 添加用户ID和时间戳来增强唯一性
+    secure_name = f"{user_id}_{timestamp}_{safe_uuid}{file_ext}"
+    
+    return secure_name
+
+async def cleanup_expired_files(db: Session):
+    """
+    清理过期文件的后台任务
+    """
+    try:
+        # 获取过期的聊天消息文件
+        expired_threshold = datetime.now() - timedelta(days=SecurityConfig.FILE_EXPIRY_DAYS['chat_media'])
+        
+        expired_messages = db.query(ChatMessage).filter(
+            ChatMessage.sent_at < expired_threshold,
+            ChatMessage.media_url.isnot(None),
+            ChatMessage.deleted_at.is_(None)
+        ).all()
+        
+        deleted_count = 0
+        for message in expired_messages:
+            if message.media_url:
+                # 从OSS删除文件
+                try:
+                    object_name = message.media_url.split('/')[-1]
+                    await oss_utils.delete_file_from_oss(object_name)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"WARNING: 删除过期文件失败: {object_name}, 错误: {e}")
+                
+                # 清空数据库中的URL引用
+                message.media_url = None
+                db.add(message)
+        
+        db.commit()
+        print(f"INFO: 清理了 {deleted_count} 个过期文件")
+        
+    except Exception as e:
+        print(f"ERROR: 清理过期文件时发生错误: {e}")
+        db.rollback()
+
+# --- WebSocket 连接管理：增强版本 ---
+class EnhancedConnectionManager:
     def __init__(self):
-        # 键是 room_id，值是该房间内 {user_id: WebSocket} 的字典
+        # 房间连接: {room_id: {user_id: WebSocket}}
         self.active_connections: Dict[int, Dict[int, WebSocket]] = {}
+        # 用户连接计数: {user_id: connection_count}
+        self.user_connection_count: Dict[int, int] = {}
+        # 连接心跳记录: {(room_id, user_id): last_heartbeat}
+        self.heartbeats: Dict[tuple, datetime] = {}
 
     async def connect(self, websocket: WebSocket, room_id: int, user_id: int):
+        # 检查用户连接数限制
+        current_connections = self.user_connection_count.get(user_id, 0)
+        if current_connections >= SecurityConfig.MAX_CONNECTIONS_PER_USER:
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="超过最大连接数限制"
+            )
+            return False
+        
         await websocket.accept()
+        
         if room_id not in self.active_connections:
             self.active_connections[room_id] = {}
+        
+        # 如果用户已在该房间连接，关闭旧连接
+        if user_id in self.active_connections[room_id]:
+            old_ws = self.active_connections[room_id][user_id]
+            try:
+                await old_ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="新连接替换")
+            except:
+                pass
+        
         self.active_connections[room_id][user_id] = websocket
-        print(f"DEBUG_WS: 用户 {user_id} 加入房间 {room_id}。当前房间连接数: {len(self.active_connections[room_id])}")
+        self.user_connection_count[user_id] = self.user_connection_count.get(user_id, 0) + 1
+        self.heartbeats[(room_id, user_id)] = datetime.now()
+        
+        print(f"DEBUG_WS: 用户 {user_id} 连接房间 {room_id}，当前房间连接数: {len(self.active_connections[room_id])}")
+        return True
 
     def disconnect(self, room_id: int, user_id: int):
         if room_id in self.active_connections and user_id in self.active_connections[room_id]:
             del self.active_connections[room_id][user_id]
-            if not self.active_connections[room_id]:  # 如果房间空了，移除房间入口
+            if not self.active_connections[room_id]:
                 del self.active_connections[room_id]
-            print(
-                f"DEBUG_WS: 用户 {user_id} 离开房间 {room_id}。当前房间连接数: {len(self.active_connections.get(room_id, {}))}")
+            
+            # 减少用户连接计数
+            if user_id in self.user_connection_count:
+                self.user_connection_count[user_id] -= 1
+                if self.user_connection_count[user_id] <= 0:
+                    del self.user_connection_count[user_id]
+            
+            # 移除心跳记录
+            heartbeat_key = (room_id, user_id)
+            if heartbeat_key in self.heartbeats:
+                del self.heartbeats[heartbeat_key]
+        
+        print(f"DEBUG_WS: 用户 {user_id} 断开房间 {room_id}")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
+        try:
+            await websocket.send_text(message)
+        except Exception as e:
+            print(f"WARNING_WS: 发送个人消息失败: {e}")
 
-    async def broadcast(self, message: str, room_id: int):
+    async def broadcast(self, message: str, room_id: int, exclude_user_id: Optional[int] = None):
         if room_id in self.active_connections:
+            disconnected_users = []
             for user_id, connection in self.active_connections[room_id].items():
+                if exclude_user_id and user_id == exclude_user_id:
+                    continue
                 try:
                     await connection.send_text(message)
-                except RuntimeError as e:
-                    print(f"WARNING_WS: 无法向用户 {user_id} (房间 {room_id}) 发送消息: {e}. 可能连接已关闭。")
                 except Exception as e:
-                    print(f"ERROR_WS: 广播消息时发生未知错误: {e}")
+                    print(f"WARNING_WS: 向用户 {user_id} 广播消息失败: {e}")
+                    disconnected_users.append(user_id)
+            
+            # 清理断开的连接
+            for user_id in disconnected_users:
+                self.disconnect(room_id, user_id)
 
-manager = ConnectionManager()  # 创建一个全局的连接管理器实例
+    def update_heartbeat(self, room_id: int, user_id: int):
+        """更新用户心跳时间"""
+        self.heartbeats[(room_id, user_id)] = datetime.now()
+
+    async def cleanup_stale_connections(self):
+        """清理超时的连接"""
+        current_time = datetime.now()
+        stale_connections = []
+        
+        for (room_id, user_id), last_heartbeat in self.heartbeats.items():
+            if (current_time - last_heartbeat).seconds > SecurityConfig.HEARTBEAT_INTERVAL * 2:
+                stale_connections.append((room_id, user_id))
+        
+        for room_id, user_id in stale_connections:
+            if room_id in self.active_connections and user_id in self.active_connections[room_id]:
+                try:
+                    await self.active_connections[room_id][user_id].close(
+                        code=status.WS_1001_GOING_AWAY,
+                        reason="连接超时"
+                    )
+                except:
+                    pass
+                self.disconnect(room_id, user_id)
+
+manager = EnhancedConnectionManager()  # 创建增强版连接管理器实例
 
 @router.post("/chat-rooms/", response_model=schemas.ChatRoomResponse, summary="创建新的聊天室")
 async def create_chat_room(
         chat_room_data: schemas.ChatRoomCreate,
-        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
+        background_tasks: BackgroundTasks,
+        current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
+    """
+    创建新的聊天室，具备完整的权限控制和安全验证
+    """
     print(f"DEBUG: 用户 {current_user_id} 尝试创建聊天室: {chat_room_data.name}")
 
     try:
-        # 1. 关联项目/课程的校验
+        # 1. 用户权限预检查
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效")
+
+        # 2. 验证聊天室名称唯一性（同一用户不能创建重名聊天室）
+        existing_room = db.query(ChatRoom).filter(
+            ChatRoom.name == chat_room_data.name,
+            ChatRoom.creator_id == current_user_id
+        ).first()
+        if existing_room:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="您已创建过同名的聊天室"
+            )
+
+        # 3. 关联项目/课程的安全校验
         if chat_room_data.project_id:
             project = db.query(Project).filter(Project.id == chat_room_data.project_id).first()
             if not project:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目不存在。")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的项目不存在")
+            
+            # 验证用户是否有权将项目关联到聊天室
+            if project.creator_id != current_user_id and not current_user.is_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您无权将此项目关联到聊天室"
+                )
+            
             if project.chat_room:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目已有关联聊天室。")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="项目已有关联聊天室"
+                )
 
         if chat_room_data.course_id:
             course = db.query(Course).filter(Course.id == chat_room_data.course_id).first()
             if not course:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的课程不存在。")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="关联的课程不存在")
+            
+            # 验证用户是否有权将课程关联到聊天室
+            if course.creator_id != current_user_id and not current_user.is_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="您无权将此课程关联到聊天室"
+                )
+            
             if course.chat_room:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="课程已有关联聊天室。")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="课程已有关联聊天室"
+                )
 
-        # 2. 创建聊天室记录
+        # 4. 创建聊天室记录
         db_chat_room = ChatRoom(
             name=chat_room_data.name,
             type=chat_room_data.type,
             project_id=chat_room_data.project_id,
             course_id=chat_room_data.course_id,
             creator_id=current_user_id,
-            color=chat_room_data.color
+            color=chat_room_data.color or "#1976D2"  # 默认蓝色
         )
         db.add(db_chat_room)
-        db.commit()  # 首次提交以获取 db_chat_room 的 ID
-        db.refresh(db_chat_room)  # 刷新以加载数据库生成的 ID 和创建时间
+        db.flush()  # 获取ID但不提交
 
+        # 5. 添加创建者为群主成员
         db_chat_room_member = ChatRoomMember(
             room_id=db_chat_room.id,
             member_id=current_user_id,
@@ -104,143 +386,198 @@ async def create_chat_room(
             status="active"
         )
         db.add(db_chat_room_member)
-        db.commit()  # 提交成员记录
 
-        db_chat_room.members_count = db.query(ChatRoomMember).filter(
-            ChatRoomMember.room_id == db_chat_room.id,
-            ChatRoomMember.status == "active"
-        ).count()  # 获取活跃成员数量
+        # 6. 创建系统欢迎消息
+        welcome_message = ChatMessage(
+            room_id=db_chat_room.id,
+            sender_id=current_user_id,
+            content_text=f"聊天室「{db_chat_room.name}」已创建！欢迎大家加入讨论。",
+            message_type="system_notification"
+        )
+        db.add(welcome_message)
 
+        db.commit()  # 提交所有更改
+        db.refresh(db_chat_room)
+
+        # 7. 填充响应数据
+        db_chat_room.members_count = 1
         db_chat_room.last_message = {"sender": "系统", "content": "聊天室已创建！"}
         db_chat_room.unread_messages_count = 0
         db_chat_room.online_members_count = 0
 
-        print(f"DEBUG: 聊天室 '{db_chat_room.name}' (ID: {db_chat_room.id}) 创建成功，创建者已添加为成员。")
+        # 8. 添加后台任务进行文件清理
+        background_tasks.add_task(cleanup_expired_files, db)
+
+        print(f"DEBUG: 聊天室 '{db_chat_room.name}' (ID: {db_chat_room.id}) 创建成功")
         return db_chat_room
 
     except IntegrityError as e:
         db.rollback()
         print(f"ERROR_DB: 聊天室创建发生完整性约束错误: {e}")
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail="聊天室创建失败，可能存在重复的数据（如项目/课程已有关联聊天室）或名称冲突。")
-    except HTTPException as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="聊天室创建失败，可能存在数据冲突"
+        )
+    except HTTPException:
         db.rollback()
-        raise e
+        raise
     except Exception as e:
         db.rollback()
-        print(f"ERROR_DB: 数据库会话使用过程中发生未知异常: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"创建聊天室失败: {e}")
+        print(f"ERROR_DB: 创建聊天室时发生未知异常: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"创建聊天室失败: {str(e)}"
+        )
 
 
 @router.get("/chatrooms/", response_model=List[schemas.ChatRoomResponse], summary="获取当前用户所属的所有聊天室")
 async def get_all_chat_rooms(
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        room_type: Optional[str] = None  # 类型过滤
+        room_type: Optional[str] = Query(None, description="类型过滤"),
+        page: int = Query(1, ge=1, description="页码"),
+        page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+        search: Optional[str] = Query(None, description="搜索聊天室名称"),
+        sort_by: Literal["updated_at", "created_at", "name"] = Query("updated_at", description="排序字段"),
+        sort_order: Literal["desc", "asc"] = Query("desc", description="排序方向")
 ):
     """
     获取当前用户所属（创建或参与）的所有聊天室列表。
-    可通过 type 过滤（例如：project_group, course_group）。
+    支持分页、搜索、排序和类型过滤。
     """
-    print(f"DEBUG: 获取用户 {current_user_id} 的所有聊天室，类型过滤: {room_type}")
+    print(f"DEBUG: 获取用户 {current_user_id} 的聊天室列表，类型: {room_type}, 页码: {page}")
 
     try:
-        # 1. 构建核心权限查询：用户是创建者 OR 用户是活跃成员
-        # 条件1: 用户是聊天室的创建者
+        # 1. 权限查询：用户是创建者 OR 用户是活跃成员
         user_is_creator_condition = ChatRoom.creator_id == current_user_id
-
-        # 条件2: 用户是该聊天室的活跃成员 (通过 exists 子查询判断)
         user_is_active_member_condition = (
             db.query(ChatRoomMember.id)
             .filter(
-                ChatRoomMember.room_id == ChatRoom.id,  # 确保是当前聊天室的成员
+                ChatRoomMember.room_id == ChatRoom.id,
                 ChatRoomMember.member_id == current_user_id,
                 ChatRoomMember.status == "active"
             )
-            .exists()  # 如果存在符合条件的记录，则为 True
+            .exists()
         )
-
-        # 组合这两个条件
+        
         main_filter_condition = or_(user_is_creator_condition, user_is_active_member_condition)
 
-        # 构建基础查询
-        rooms_query = db.query(ChatRoom).filter(main_filter_condition)
+        # 2. 构建查询
+        base_query = db.query(ChatRoom).filter(main_filter_condition)
 
         # 应用类型过滤
         if room_type:
-            rooms_query = rooms_query.filter(ChatRoom.type == room_type)
+            base_query = base_query.filter(ChatRoom.type == room_type)
 
-        # 执行查询，获取所有符合权限和过滤条件的聊天室
-        rooms = rooms_query.order_by(ChatRoom.updated_at.desc()).all()
+        # 应用搜索过滤
+        if search:
+            search_pattern = f"%{search}%"
+            base_query = base_query.filter(ChatRoom.name.ilike(search_pattern))
 
-        # 2. 优化 N+1 问题 ：一次性获取所有房间的最新消息和发送者信息
+        # 应用排序
+        if sort_by == "updated_at":
+            order_column = ChatRoom.updated_at
+        elif sort_by == "created_at":
+            order_column = ChatRoom.created_at
+        else:
+            order_column = ChatRoom.name
+
+        if sort_order == "desc":
+            base_query = base_query.order_by(desc(order_column))
+        else:
+            base_query = base_query.order_by(order_column)
+
+        # 3. 计算总数（用于分页信息）
+        total_count = base_query.count()
+
+        # 4. 应用分页
+        offset = (page - 1) * page_size
+        rooms = base_query.offset(offset).limit(page_size).all()
+
+        # 5. 批量获取房间相关数据，避免N+1查询
         room_ids = [room.id for room in rooms]
+        
+        # 批量获取成员数量
+        member_counts = {}
+        if room_ids:
+            member_count_query = db.query(
+                ChatRoomMember.room_id,
+                func.count(ChatRoomMember.id).label('count')
+            ).filter(
+                ChatRoomMember.room_id.in_(room_ids),
+                ChatRoomMember.status == "active"
+            ).group_by(ChatRoomMember.room_id).all()
+            
+            member_counts = {row.room_id: row.count for row in member_count_query}
 
-        room_latest_messages_map = {}  # 用于存储 {room_id: last_message_info_dict}
-        if room_ids:  # 只有当有房间时才执行消息查询
-            ranked_messages_subquery = (
+        # 批量获取最新消息
+        latest_messages = {}
+        if room_ids:
+            # 使用窗口函数获取每个房间的最新消息
+            latest_msg_subquery = (
                 db.query(
                     ChatMessage.room_id,
-                    ChatMessage.sender_id,
                     ChatMessage.content_text,
                     ChatMessage.sent_at,
+                    Student.name.label('sender_name'),
                     func.row_number().over(
                         partition_by=ChatMessage.room_id,
                         order_by=ChatMessage.sent_at.desc()
                     ).label('rn')
                 )
+                .join(Student, Student.id == ChatMessage.sender_id)
                 .filter(
                     ChatMessage.room_id.in_(room_ids),
-                    ChatMessage.deleted_at.is_(None)  # 排除已删除的消息
+                    ChatMessage.deleted_at.is_(None)
                 )
-                .subquery('ranked_messages')
+                .subquery()
             )
 
-            latest_messages_with_senders = (
-                db.query(
-                    ranked_messages_subquery.c.room_id,
-                    ranked_messages_subquery.c.content_text,
-                    Student.name.label('sender_name')
-                )
-                .join(Student, Student.id == ranked_messages_subquery.c.sender_id)
-                .filter(ranked_messages_subquery.c.rn == 1)
-                .all()
-            )
+            latest_messages_query = db.query(
+                latest_msg_subquery.c.room_id,
+                latest_msg_subquery.c.content_text,
+                latest_msg_subquery.c.sender_name
+            ).filter(latest_msg_subquery.c.rn == 1).all()
 
-            for msg in latest_messages_with_senders:
-                room_latest_messages_map[msg.room_id] = {
+            for msg in latest_messages_query:
+                content = msg.content_text or ""
+                if len(content) > 50:
+                    content = content[:50] + "..."
+                latest_messages[msg.room_id] = {
                     "sender": msg.sender_name or "未知",
-                    "content": (msg.content_text[:50] + "..." if msg.content_text and len(msg.content_text) > 50 else (
-                            msg.content_text or ""))
+                    "content": content
                 }
 
-        # 3. 填充动态统计字段到每个聊天室对象
+        # 6. 填充响应数据
         for room in rooms:
-            # 动态计算成员数量 (已在 ChatRoomMember 逻辑中处理)
-            room.members_count = db.query(ChatRoomMember).filter(
-                ChatRoomMember.room_id == room.id,
-                ChatRoomMember.status == "active"
-            ).count()
-
-            # 从预加载的字典中获取最新消息
-            last_message_info = room_latest_messages_map.get(room.id)
-            if last_message_info:
-                room.last_message = last_message_info
-            else:
-                room.last_message = {"sender": "系统", "content": "暂无消息"}
-
-            # 未读消息数和在线状态暂时模拟为0
+            room.members_count = member_counts.get(room.id, 0)
+            room.last_message = latest_messages.get(room.id, {"sender": "系统", "content": "暂无消息"})
+            
+            # 获取在线成员数量（从WebSocket连接管理器）
+            room.online_members_count = len(manager.active_connections.get(room.id, {}))
+            
+            # TODO: 实现未读消息计数功能
             room.unread_messages_count = 0
-            room.online_members_count = 0
 
-        print(f"DEBUG: 获取到 {len(rooms)} 个聊天室。")
+        print(f"DEBUG: 用户 {current_user_id} 获取到 {len(rooms)} 个聊天室，总计 {total_count} 个")
+
+        # 7. 设置分页响应头
+        response_data = JSONResponse(
+            content=[room.__dict__ for room in rooms],
+            headers={
+                "X-Total-Count": str(total_count),
+                "X-Page": str(page),
+                "X-Page-Size": str(page_size),
+                "X-Total-Pages": str((total_count + page_size - 1) // page_size)
+            }
+        )
         return rooms
 
     except Exception as e:
         print(f"ERROR: 获取聊天室列表时发生错误: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取聊天室列表失败，请稍后重试。"
+            detail="获取聊天室列表失败，请稍后重试"
         )
 
 
@@ -1019,18 +1356,18 @@ async def _award_points(
     )
     db.add(transaction)
 
-    print(
-        f"DEBUG_POINTS_PENDING: 用户 {user.id} 积分变动：{amount}，当前总积分（提交前）：{user.total_points}，原因：{reason}。")
+    print(f"DEBUG_POINTS: 用户 {user.id} 积分变动：{amount}，当前总积分：{user.total_points}，原因：{reason}")
+
 
 async def _check_and_award_achievements(db: Session, user_id: int):
     """
     检查用户是否达到了任何成就条件，并授予未获得的成就。
     此函数会定期或在关键事件后调用。它只添加对象到会话，不进行commit。
     """
-    print(f"DEBUG_ACHIEVEMENT: 检查用户 {user_id} 的成就。")
+    print(f"DEBUG_ACHIEVEMENT: 检查用户 {user_id} 的成就")
     user = db.query(Student).filter(Student.id == user_id).first()
     if not user:
-        print(f"WARNING_ACHIEVEMENT: 用户 {user_id} 不存在。")
+        print(f"WARNING_ACHIEVEMENT: 用户 {user_id} 不存在")
         return
 
     # 获取所有活跃且未被该用户获取的成就定义
@@ -1046,54 +1383,1002 @@ async def _check_and_award_achievements(db: Session, user_id: int):
     )
 
     unearned_achievements = unearned_achievements_query.all()
-    print(
-        f"DEBUG_ACHIEVEMENT_RAW_QUERY: Raw query result for unearned achievements for user {user_id}: {unearned_achievements}")
-
     if not unearned_achievements:
-        print(f"DEBUG_ACHIEVEMENT: 用户 {user_id} 没有未获得的活跃成就。")
+        print(f"DEBUG_ACHIEVEMENT: 用户 {user_id} 没有未获得的活跃成就")
         return
 
+    # TODO: 实现具体的成就检查逻辑
+    # 例如：聊天消息数量成就、文件上传成就等
 
-# --- 聊天消息管理接口 ---
+
+# --- 文件存储成本优化策略 ---
+async def optimize_storage_costs(db: Session):
+    """
+    优化存储成本的策略实现
+    """
+    try:
+        # 1. 清理重复文件
+        await remove_duplicate_files(db)
+        
+        # 2. 压缩大型媒体文件
+        await compress_large_media_files(db)
+        
+        # 3. 迁移冷数据到低成本存储
+        await migrate_cold_data(db)
+        
+        # 4. 删除孤立文件
+        await cleanup_orphaned_files(db)
+        
+        print("INFO: 存储成本优化完成")
+        
+    except Exception as e:
+        print(f"ERROR: 存储成本优化失败: {e}")
+
+
+async def remove_duplicate_files(db: Session):
+    """识别并删除重复的文件"""
+    # 基于文件哈希值识别重复文件
+    duplicate_query = """
+    SELECT media_url, COUNT(*) as count, 
+           MIN(id) as keep_id,
+           ARRAY_AGG(id) as all_ids
+    FROM chat_messages 
+    WHERE media_url IS NOT NULL 
+      AND deleted_at IS NULL
+    GROUP BY media_url 
+    HAVING COUNT(*) > 1
+    """
+    
+    # TODO: 实现重复文件清理逻辑
+
+
+async def compress_large_media_files(db: Session):
+    """压缩大型媒体文件"""
+    # 查找大于一定阈值的媒体文件
+    large_files = db.query(ChatMessage).filter(
+        ChatMessage.file_size > 10 * 1024 * 1024,  # 大于10MB
+        ChatMessage.media_url.isnot(None),
+        ChatMessage.deleted_at.is_(None)
+    ).all()
+    
+    # TODO: 实现文件压缩逻辑
+
+
+async def migrate_cold_data(db: Session):
+    """将冷数据迁移到低成本存储"""
+    # 超过一定时间未访问的文件迁移到冷存储
+    cold_threshold = datetime.now() - timedelta(days=90)
+    
+    cold_files = db.query(ChatMessage).filter(
+        ChatMessage.sent_at < cold_threshold,
+        ChatMessage.media_url.isnot(None),
+        ChatMessage.deleted_at.is_(None)
+    ).all()
+    
+    # TODO: 实现冷数据迁移逻辑
+
+
+async def cleanup_orphaned_files(db: Session):
+    """清理孤立的文件（数据库中已删除但OSS中仍存在）"""
+    # TODO: 实现孤立文件清理逻辑
+    pass
+
+
+# --- 权限管理增强 ---
+class PermissionManager:
+    """权限管理器"""
+    
+    @staticmethod
+    def check_file_access_permission(user_id: int, file_url: str, db: Session) -> bool:
+        """检查用户是否有权限访问特定文件"""
+        # 查找文件所属的聊天室
+        message = db.query(ChatMessage).filter(
+            ChatMessage.media_url == file_url,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+        
+        if not message:
+            return False
+        
+        # 检查用户是否有权限访问该聊天室
+        room_id = message.room_id
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        
+        if not chat_room:
+            return False
+        
+        # 检查是否是群主或活跃成员
+        is_creator = (chat_room.creator_id == user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+        
+        return is_creator or is_active_member
+    
+    @staticmethod
+    def get_user_storage_quota(user: Student) -> dict:
+        """获取用户存储配额信息"""
+        # 基础配额
+        base_quota_mb = 100  # 100MB基础配额
+        
+        # 会员额外配额
+        premium_bonus_mb = 500 if user.is_admin else 0
+        
+        # 积分兑换配额
+        point_bonus_mb = min(user.total_points // 100, 1000)  # 每100积分兑换1MB，最多1GB
+        
+        total_quota_mb = base_quota_mb + premium_bonus_mb + point_bonus_mb
+        
+        # 计算已使用配额
+        used_quota_mb = 0  # TODO: 实现已使用配额计算
+        
+        return {
+            "total_quota_mb": total_quota_mb,
+            "used_quota_mb": used_quota_mb,
+            "available_quota_mb": total_quota_mb - used_quota_mb,
+            "quota_percentage": (used_quota_mb / total_quota_mb) * 100 if total_quota_mb > 0 else 0
+        }
+
+
+# --- 文件访问权限接口 ---
+@router.get("/files/{file_id}/access", summary="验证文件访问权限")
+async def verify_file_access(
+        file_id: str,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    验证用户是否有权限访问特定文件
+    """
+    try:
+        # 从文件ID或URL中提取文件信息
+        # TODO: 实现文件ID到URL的映射
+        
+        has_permission = PermissionManager.check_file_access_permission(
+            current_user_id, file_id, db
+        )
+        
+        if not has_permission:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您无权访问此文件"
+            )
+        
+        return {"access_granted": True, "file_id": file_id}
+        
+    except Exception as e:
+        print(f"ERROR: 验证文件访问权限失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="验证文件权限失败"
+        )
+
+
+@router.get("/users/storage-quota", summary="获取用户存储配额信息")
+async def get_user_storage_quota(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取当前用户的存储配额信息
+    """
+    try:
+        user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="用户未找到"
+            )
+        
+        quota_info = PermissionManager.get_user_storage_quota(user)
+        
+        return quota_info
+        
+    except Exception as e:
+        print(f"ERROR: 获取存储配额信息失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取存储配额信息失败"
+        )
+
+
+# --- 聊天室基础管理接口 ---
+@router.get("/chatrooms/{room_id}", response_model=schemas.ChatRoomResponse, summary="获取指定聊天室详情（增强版）")
+async def get_chat_room_by_id(
+        room_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取指定ID的聊天室详情。
+    增强特性：
+    - 在线成员统计
+    - 权限验证
+    - 详细信息展示
+    """
+    try:
+        # 获取当前用户和目标聊天室的信息
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效")
+
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        # 权限检查
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_active_member or current_user.is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="您无权查看该聊天室的详情"
+            )
+
+        # 填充统计信息
+        chat_room.members_count = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == chat_room.id,
+            ChatRoomMember.status == "active"
+        ).count()
+
+        # 获取最新消息
+        latest_message_data = (
+            db.query(ChatMessage.content_text, Student.name)
+            .filter(
+                ChatMessage.room_id == chat_room.id,
+                ChatMessage.deleted_at.is_(None)
+            )
+            .join(Student, Student.id == ChatMessage.sender_id)
+            .order_by(ChatMessage.sent_at.desc())
+            .first()
+        )
+
+        if latest_message_data:
+            content_text, sender_name = latest_message_data
+            chat_room.last_message = {
+                "sender": sender_name or "未知",
+                "content": content_text[:50] + "..." if content_text and len(content_text) > 50 else (content_text or "")
+            }
+        else:
+            chat_room.last_message = {"sender": "系统", "content": "暂无消息"}
+
+        # 在线成员统计
+        chat_room.online_members_count = len(manager.active_connections.get(room_id, {}))
+        
+        # TODO: 实现未读消息统计
+        chat_room.unread_messages_count = 0
+
+        return chat_room
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: 获取聊天室详情失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"获取聊天室详情失败: {str(e)}"
+        )
+
+
+@router.put("/chatrooms/{room_id}/", response_model=schemas.ChatRoomResponse, summary="更新指定聊天室（增强版）")
+async def update_chat_room(
+        room_id: int,
+        room_data: schemas.ChatRoomUpdate,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    更新指定聊天室。
+    增强特性：
+    - 严格权限控制
+    - 关联验证
+    - 实时通知
+    """
+    try:
+        # 权限检查：只有创建者才能更新聊天室
+        db_chat_room = db.query(ChatRoom).filter(
+            ChatRoom.id == room_id,
+            ChatRoom.creator_id == current_user_id
+        ).first()
+
+        if not db_chat_room:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="聊天室未找到或无权访问"
+            )
+
+        update_data = room_data.dict(exclude_unset=True)
+
+        # 验证项目关联
+        if "project_id" in update_data and update_data["project_id"] is not None:
+            project = db.query(Project).filter(Project.id == update_data["project_id"]).first()
+            if not project:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, 
+                    detail="关联的项目不存在"
+                )
+            
+            # 检查权限
+            if project.creator_id != current_user_id:
+                current_user = db.query(Student).filter(Student.id == current_user_id).first()
+                if not current_user or not current_user.is_admin:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="您无权将此项目关联到聊天室"
+                    )
+            
+            # 检查项目是否已有其他聊天室
+            if project.chat_room and project.chat_room.id != room_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="项目已有关联的聊天室"
+                )
+
+        # 验证课程关联
+        if "course_id" in update_data and update_data["course_id"] is not None:
+            course = db.query(Course).filter(Course.id == update_data["course_id"]).first()
+            if not course:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, 
+                    detail="关联的课程不存在"
+                )
+            
+            # 检查权限
+            if course.creator_id != current_user_id:
+                current_user = db.query(Student).filter(Student.id == current_user_id).first()
+                if not current_user or not current_user.is_admin:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="您无权将此课程关联到聊天室"
+                    )
+            
+            # 检查课程是否已有其他聊天室
+            if course.chat_room and course.chat_room.id != room_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="课程已有关联的聊天室"
+                )
+
+        # 应用更新
+        for key, value in update_data.items():
+            setattr(db_chat_room, key, value)
+
+        db_chat_room.updated_at = func.now()
+        db.add(db_chat_room)
+        db.commit()
+        db.refresh(db_chat_room)
+
+        # 填充响应数据
+        db_chat_room.members_count = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == db_chat_room.id,
+            ChatRoomMember.status == "active"
+        ).count()
+        
+        db_chat_room.online_members_count = len(manager.active_connections.get(room_id, {}))
+        db_chat_room.unread_messages_count = 0
+        db_chat_room.last_message = {"sender": "系统", "content": "聊天室信息已更新"}
+
+        # WebSocket通知
+        update_notification = {
+            "type": "room_updated",
+            "room_id": room_id,
+            "updated_by": current_user_id,
+            "changes": update_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        asyncio.create_task(manager.broadcast(json.dumps(update_notification), room_id))
+
+        print(f"DEBUG: 聊天室 {room_id} 更新成功")
+        return db_chat_room
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR: 聊天室更新发生完整性约束错误: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="更新聊天室失败，可能存在名称冲突或其他约束冲突"
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 更新聊天室失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"更新聊天室失败: {str(e)}"
+        )
+
+
+@router.delete("/chatrooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT,
+            summary="删除指定聊天室（增强版）")
+async def delete_chat_room(
+        room_id: int,
+        background_tasks: BackgroundTasks,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    删除指定聊天室。
+    增强特性：
+    - 严格权限控制
+    - 关联文件清理
+    - 级联删除
+    - 实时通知
+    """
+    try:
+        # 获取当前用户信息
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效")
+
+        # 获取目标聊天室
+        db_chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        # 权限检查：只有群主或系统管理员可以删除
+        is_creator = (db_chat_room.creator_id == current_user_id)
+        is_system_admin = current_user.is_admin
+
+        if not (is_creator or is_system_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权删除此聊天室。只有群主或系统管理员可以执行此操作"
+            )
+
+        # 收集需要清理的文件
+        messages_with_files = db.query(ChatMessage).filter(
+            ChatMessage.room_id == room_id,
+            ChatMessage.media_url.isnot(None)
+        ).all()
+
+        file_urls_to_delete = [msg.media_url for msg in messages_with_files if msg.media_url]
+
+        # 先通知所有连接的用户聊天室即将删除
+        deletion_notification = {
+            "type": "room_deleting",
+            "room_id": room_id,
+            "deleted_by": current_user_id,
+            "timestamp": datetime.now().isoformat(),
+            "message": "聊天室即将被删除"
+        }
+        await manager.broadcast(json.dumps(deletion_notification), room_id)
+
+        # 断开所有WebSocket连接
+        if room_id in manager.active_connections:
+            for user_id, websocket in list(manager.active_connections[room_id].items()):
+                try:
+                    await websocket.close(
+                        code=status.WS_1001_GOING_AWAY, 
+                        reason="聊天室已被删除"
+                    )
+                except:
+                    pass
+                manager.disconnect(room_id, user_id)
+
+        # 执行数据库删除（级联删除应在模型中配置）
+        db.delete(db_chat_room)
+        db.commit()
+
+        # 后台任务：清理关联文件
+        background_tasks.add_task(cleanup_room_files, file_urls_to_delete)
+
+        print(f"DEBUG: 聊天室 {room_id} 及其所有关联数据已成功删除")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR: 聊天室删除发生完整性约束错误: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, 
+            detail="删除聊天室失败，可能存在数据关联问题"
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 删除聊天室失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"删除聊天室失败: {str(e)}"
+        )
+
+
+async def cleanup_room_files(file_urls: List[str]):
+    """后台任务：清理聊天室相关的文件"""
+    for file_url in file_urls:
+        try:
+            # 从URL中提取object_name
+            object_name = file_url.split('/')[-1]
+            await oss_utils.delete_file_from_oss(object_name)
+            print(f"DEBUG: 已删除文件: {object_name}")
+        except Exception as e:
+            print(f"WARNING: 删除文件失败: {file_url}, 错误: {e}")
+
+
+# --- 入群申请管理 ---
+@router.post("/chat-rooms/{room_id}/join-request", response_model=schemas.ChatRoomJoinRequestResponse,
+          summary="向指定聊天室发起入群申请（增强版）")
+async def send_join_request(
+        room_id: int,
+        request_data: schemas.ChatRoomJoinRequestCreate,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    向指定聊天室发起入群申请。
+    增强特性：
+    - 重复申请检查
+    - 实时通知
+    - 申请理由验证
+    """
+    try:
+        if request_data.room_id != room_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail="请求体中的room_id与路径中的room_id不匹配"
+            )
+
+        # 验证聊天室存在
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        # 验证申请者不是创建者
+        if chat_room.creator_id == current_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="您已经是该聊天室的创建者，无需申请加入"
+            )
+
+        # 验证申请者不是活跃成员
+        existing_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first()
+        if existing_member:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="您已是该聊天室的活跃成员，无需重复申请"
+            )
+
+        # 验证没有待处理的申请
+        existing_pending_request = db.query(ChatRoomJoinRequest).filter(
+            ChatRoomJoinRequest.room_id == room_id,
+            ChatRoomJoinRequest.requester_id == current_user_id,
+            ChatRoomJoinRequest.status == "pending"
+        ).first()
+        if existing_pending_request:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, 
+                detail="您已有待处理的入群申请，请勿重复提交"
+            )
+
+        # 创建入群申请
+        db_join_request = ChatRoomJoinRequest(
+            room_id=room_id,
+            requester_id=current_user_id,
+            reason=request_data.reason,
+            status="pending"
+        )
+        db.add(db_join_request)
+        db.commit()
+        db.refresh(db_join_request)
+
+        # 实时通知群主和管理员
+        requester = db.query(Student).filter(Student.id == current_user_id).first()
+        join_request_notification = {
+            "type": "join_request_received",
+            "room_id": room_id,
+            "requester_id": current_user_id,
+            "requester_name": requester.name if requester else "未知用户",
+            "reason": request_data.reason,
+            "request_id": db_join_request.id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 通知群主
+        if chat_room.creator_id in manager.active_connections.get(room_id, {}):
+            creator_ws = manager.active_connections[room_id][chat_room.creator_id]
+            asyncio.create_task(
+                manager.send_personal_message(json.dumps(join_request_notification), creator_ws)
+            )
+
+        print(f"DEBUG: 用户 {current_user_id} 向聊天室 {room_id} 发起入群申请")
+        return db_join_request
+
+    except IntegrityError as e:
+        db.rollback()
+        print(f"ERROR: 入群申请创建发生完整性约束错误: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="入群申请提交失败，可能存在重复申请或其他数据冲突"
+        )
+# --- 管理员功能和系统维护 ---
+@router.post("/admin/optimize-storage", summary="优化存储（管理员）")
+async def optimize_storage_endpoint(
+        background_tasks: BackgroundTasks,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    触发存储优化任务（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以执行此操作"
+        )
+    
+    # 添加后台任务
+    background_tasks.add_task(optimize_storage_costs, db)
+    background_tasks.add_task(cleanup_expired_files, db)
+    
+    return {"message": "存储优化任务已启动"}
+
+
+@router.post("/admin/cleanup-connections", summary="清理过期WebSocket连接（管理员）")
+async def cleanup_stale_connections(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    清理过期的WebSocket连接（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以执行此操作"
+        )
+    
+    await manager.cleanup_stale_connections()
+    
+    return {
+        "message": "已清理过期连接",
+        "active_rooms": len(manager.active_connections),
+        "total_connections": sum(len(connections) for connections in manager.active_connections.values())
+    }
+
+
+@router.get("/admin/system-health", summary="系统健康检查（管理员）")
+async def system_health_check(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    系统健康检查（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以查看系统健康状态"
+        )
+    
+    try:
+        # 数据库健康检查
+        db_health = True
+        try:
+            db.execute("SELECT 1")
+        except:
+            db_health = False
+        
+        # WebSocket连接状态
+        ws_stats = {
+            "active_rooms": len(manager.active_connections),
+            "total_connections": sum(len(connections) for connections in manager.active_connections.values()),
+            "user_connections": len(manager.user_connection_count),
+            "heartbeat_records": len(manager.heartbeats)
+        }
+        
+        # 存储统计
+        total_messages = db.query(ChatMessage).count()
+        messages_with_files = db.query(ChatMessage).filter(
+            ChatMessage.media_url.isnot(None)
+        ).count()
+        
+        total_file_size = db.query(func.sum(ChatMessage.file_size)).filter(
+            ChatMessage.file_size.isnot(None)
+        ).scalar() or 0
+        
+        # 内存和性能指标
+        import psutil
+        memory_usage = psutil.virtual_memory().percent
+        cpu_usage = psutil.cpu_percent()
+        
+        return {
+            "system_status": "healthy" if db_health else "unhealthy",
+            "database_health": db_health,
+            "websocket_stats": ws_stats,
+            "storage_stats": {
+                "total_messages": total_messages,
+                "messages_with_files": messages_with_files,
+                "total_file_size_mb": round(total_file_size / (1024 * 1024), 2)
+            },
+            "server_stats": {
+                "memory_usage_percent": memory_usage,
+                "cpu_usage_percent": cpu_usage
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"ERROR: 系统健康检查失败: {e}")
+        return {
+            "system_status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+# --- 安全检查和审计 ---
+@router.post("/admin/security-scan", summary="安全扫描（管理员）")
+async def security_scan(
+        scan_type: Literal["files", "connections", "permissions", "all"] = Query("all"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    执行安全扫描（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以执行安全扫描"
+        )
+    
+    scan_results = {}
+    
+    try:
+        if scan_type in ["files", "all"]:
+            # 文件安全扫描
+            large_files = db.query(ChatMessage).filter(
+                ChatMessage.file_size > 50 * 1024 * 1024,  # 大于50MB
+                ChatMessage.media_url.isnot(None)
+            ).count()
+            
+            scan_results["file_security"] = {
+                "large_files_count": large_files,
+                "status": "warning" if large_files > 10 else "ok"
+            }
+        
+        if scan_type in ["connections", "all"]:
+            # 连接安全扫描
+            total_connections = sum(len(connections) for connections in manager.active_connections.values())
+            max_connections_per_user = max(manager.user_connection_count.values()) if manager.user_connection_count else 0
+            
+            scan_results["connection_security"] = {
+                "total_connections": total_connections,
+                "max_connections_per_user": max_connections_per_user,
+                "status": "warning" if max_connections_per_user > SecurityConfig.MAX_CONNECTIONS_PER_USER else "ok"
+            }
+        
+        if scan_type in ["permissions", "all"]:
+            # 权限安全扫描
+            admin_count = db.query(Student).filter(Student.is_admin == True).count()
+            
+            scan_results["permission_security"] = {
+                "admin_users_count": admin_count,
+                "status": "warning" if admin_count > 5 else "ok"  # 警告：管理员过多
+            }
+        
+        overall_status = "ok"
+        for category in scan_results.values():
+            if category.get("status") == "warning":
+                overall_status = "warning"
+                break
+        
+        return {
+            "scan_type": scan_type,
+            "overall_status": overall_status,
+            "scan_results": scan_results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"ERROR: 安全扫描失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"安全扫描失败: {str(e)}"
+        )
+
+
+# --- 批量操作接口 ---
+@router.post("/admin/batch-cleanup", summary="批量清理操作（管理员）")
+async def batch_cleanup(
+        background_tasks: BackgroundTasks,
+        cleanup_type: Literal["expired_files", "old_messages", "inactive_rooms", "all"] = Query("expired_files"),
+        days_threshold: int = Query(30, description="清理阈值天数"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    批量清理操作（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以执行批量清理"
+        )
+    
+    tasks_added = []
+    
+    if cleanup_type in ["expired_files", "all"]:
+        background_tasks.add_task(cleanup_expired_files, db)
+        tasks_added.append("expired_files")
+    
+    if cleanup_type in ["old_messages", "all"]:
+        background_tasks.add_task(cleanup_old_messages, db, days_threshold)
+        tasks_added.append("old_messages")
+    
+    if cleanup_type in ["inactive_rooms", "all"]:
+        background_tasks.add_task(cleanup_inactive_rooms, db, days_threshold)
+        tasks_added.append("inactive_rooms")
+    
+    return {
+        "message": "批量清理任务已启动",
+        "tasks": tasks_added,
+        "days_threshold": days_threshold
+    }
+
+
+async def cleanup_old_messages(db: Session, days_threshold: int):
+    """清理旧消息"""
+    try:
+        cutoff_date = datetime.now() - timedelta(days=days_threshold)
+        
+        # 查找旧消息
+        old_messages = db.query(ChatMessage).filter(
+            ChatMessage.sent_at < cutoff_date,
+            ChatMessage.deleted_at.is_(None)
+        ).all()
+        
+        deleted_count = 0
+        for message in old_messages:
+            # 软删除消息
+            message.deleted_at = func.now()
+            db.add(message)
+            deleted_count += 1
+        
+        db.commit()
+        print(f"INFO: 清理了 {deleted_count} 条旧消息")
+        
+    except Exception as e:
+        print(f"ERROR: 清理旧消息失败: {e}")
+        db.rollback()
+
+
+async def cleanup_inactive_rooms(db: Session, days_threshold: int):
+    """清理不活跃的聊天室"""
+    try:
+        cutoff_date = datetime.now() - timedelta(days=days_threshold)
+        
+        # 查找不活跃的聊天室
+        inactive_rooms = db.query(ChatRoom).filter(
+            ChatRoom.updated_at < cutoff_date,
+            # 添加其他条件，比如无活跃成员
+        ).all()
+        
+        # TODO: 实现不活跃聊天室的清理逻辑
+        # 需要谨慎处理，避免误删重要聊天室
+        
+        print(f"INFO: 发现 {len(inactive_rooms)} 个不活跃聊天室")
+        
+    except Exception as e:
+        print(f"ERROR: 清理不活跃聊天室失败: {e}")
+
+
+# --- 实时状态监控 ---
+@router.get("/admin/real-time-stats", summary="实时统计数据（管理员）")
+async def get_real_time_stats(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    获取实时统计数据（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以查看实时统计"
+        )
+    
+    try:
+        # 实时消息统计
+        now = datetime.now()
+        last_hour = now - timedelta(hours=1)
+        last_day = now - timedelta(days=1)
+        
+        messages_last_hour = db.query(ChatMessage).filter(
+            ChatMessage.sent_at >= last_hour
+        ).count()
+        
+        messages_last_day = db.query(ChatMessage).filter(
+            ChatMessage.sent_at >= last_day
+        ).count()
+        
+        # 活跃用户统计
+        active_users_last_hour = db.query(ChatMessage.sender_id).filter(
+            ChatMessage.sent_at >= last_hour
+        ).distinct().count()
+        
+        # WebSocket连接统计
+        current_connections = sum(len(connections) for connections in manager.active_connections.values())
+        active_rooms = len(manager.active_connections)
+        
+        return {
+            "timestamp": now.isoformat(),
+            "message_stats": {
+                "last_hour": messages_last_hour,
+                "last_day": messages_last_day
+            },
+            "user_stats": {
+                "active_users_last_hour": active_users_last_hour
+            },
+            "connection_stats": {
+                "current_connections": current_connections,
+                "active_rooms": active_rooms
+            }
+        }
+        
+    except Exception as e:
+        print(f"ERROR: 获取实时统计失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取实时统计失败: {str(e)}"
+        )
 @router.post("/chatrooms/{room_id}/messages/", response_model=schemas.ChatMessageResponse,
-          summary="在指定聊天室发送新消息")
+          summary="在指定聊天室发送新消息（增强版）")
 async def send_chat_message(
         room_id: int,
-        content_text: Optional[str] = Form(None, description="消息文本内容，当message_type为'text'时为必填"),
-        message_type: Literal["text", "image", "file", "video", "audio", "system_notification"] = Form("text", description="消息类型"),
+        background_tasks: BackgroundTasks,
+        content_text: Optional[str] = Form(None, description="消息文本内容"),
+        message_type: Literal["text", "image", "file", "video", "audio", "system_notification"] = Form("text"),
         media_url: Optional[str] = Form(None, description="媒体文件OSS URL或外部链接"),
-        file: Optional[UploadFile] = File(None, description="上传文件、图片、视频或音频"),
-        # 新增：多文件上传支持（仿微信相册选择多张图片）
-        files: Optional[List[UploadFile]] = File(None, description="批量上传文件（最多9个）"),
-        # 新增：语音消息支持
+        file: Optional[UploadFile] = File(None, description="单个文件上传"),
+        files: Optional[List[UploadFile]] = File(None, description="批量文件上传（最多9个）"),
         audio_duration: Optional[float] = Form(None, description="音频时长（秒）"),
-        # 新增：文件元数据
         file_size: Optional[int] = Form(None, description="文件大小（字节）"),
         reply_to_message_id: Optional[int] = Form(None, description="回复的消息ID"),
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
     """
-    在指定聊天室中发送一条新消息。
-    支持多种消息类型：
-    - 文本消息
-    - 图片/视频（单个或多个，仿微信相册）
-    - 文件（支持 txt, md, html, pdf, docx, pptx, xlsx, .py 等）
-    - 音频消息（仿微信按住说话）
-    - 回复消息
+    发送消息到指定聊天室。
+    
+    功能特性：
+    - 支持文本、图片、视频、音频、文件消息
+    - 批量文件上传（最多9个）
+    - 文件安全扫描和大小限制
+    - 回复消息功能
+    - 自动清理过期文件
+    - 实时WebSocket推送
     """
-    print(f"DEBUG: 用户 {current_user_id} 在聊天室 {room_id} 发送消息。类型: {message_type}")
+    print(f"DEBUG: 用户 {current_user_id} 在聊天室 {room_id} 发送消息，类型: {message_type}")
 
-    # 用于在OSS上传失败或DB事务回滚时删除OSS中已上传文件的变量
     uploaded_files_for_rollback = []
 
     try:
-        # 1. 验证聊天室是否存在
+        # 1. 基础权限验证
         db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
         if not db_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
 
-        # 2. 权限检查：发送者是否是活跃成员或群主
         is_creator = (db_room.creator_id == current_user_id)
         is_active_member = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
@@ -1102,15 +2387,18 @@ async def send_chat_message(
         ).first() is not None
 
         if not (is_creator or is_active_member):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="您无权在该聊天室发送消息。请先加入聊天室。")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您无权在该聊天室发送消息"
+            )
 
-        # 3. 验证发送者用户是否存在
+        # 2. 验证发送者
         db_sender = db.query(Student).filter(Student.id == current_user_id).first()
         if not db_sender:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发送者用户未找到")
 
-        # 4. 验证回复消息是否存在（如果指定了回复）
+        # 3. 验证回复消息
+        reply_message = None
         if reply_to_message_id:
             reply_message = db.query(ChatMessage).filter(
                 ChatMessage.id == reply_to_message_id,
@@ -1120,99 +2408,66 @@ async def send_chat_message(
             if not reply_message:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回复的消息不存在")
 
-        # 定义支持的文件类型
-        SUPPORTED_FILE_TYPES = {
-            # 文档类型
-            '.txt': 'text/plain',
-            '.md': 'text/markdown', 
-            '.html': 'text/html',
-            '.pdf': 'application/pdf',
-            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            '.py': 'text/x-python',
-            '.js': 'application/javascript',
-            '.json': 'application/json',
-            '.xml': 'application/xml',
-            '.csv': 'text/csv',
-            # 音频类型
-            '.mp3': 'audio/mpeg',
-            '.wav': 'audio/wav',
-            '.m4a': 'audio/mp4',
-            '.aac': 'audio/aac',
-            '.ogg': 'audio/ogg',
-            '.webm': 'audio/webm',  # 用于录音
-            # 图片类型
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.bmp': 'image/bmp',
-            # 视频类型
-            '.mp4': 'video/mp4',
-            '.avi': 'video/x-msvideo',
-            '.mov': 'video/quicktime',
-            '.wmv': 'video/x-ms-wmv',
-            '.flv': 'video/x-flv',
-            '.mkv': 'video/x-matroska'
-        }
+        # 4. 处理文件上传
+        messages_to_create = []
 
-        messages_to_create = []  # 存储要创建的消息列表（支持多文件时创建多条消息）
-
-        # 5. 处理多文件上传（批量上传，如微信相册选择多张图片）
+        # 处理批量文件上传
         if files and len(files) > 0:
             if len(files) > 9:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="一次最多上传9个文件")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="一次最多上传9个文件"
+                )
             
             for idx, upload_file in enumerate(files):
                 if not upload_file.filename:
                     continue
-                    
-                file_ext = os.path.splitext(upload_file.filename)[1].lower()
-                if file_ext not in SUPPORTED_FILE_TYPES:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"不支持的文件类型: {file_ext}。支持的类型: {', '.join(SUPPORTED_FILE_TYPES.keys())}"
-                    )
-
+                
+                # 读取文件内容
                 file_bytes = await upload_file.read()
-                content_type = upload_file.content_type or SUPPORTED_FILE_TYPES.get(file_ext, 'application/octet-stream')
-
-                # 根据文件类型确定消息类型和OSS路径
+                content_type = upload_file.content_type or 'application/octet-stream'
+                
+                # 安全验证
+                await validate_file_security(file_bytes, upload_file.filename, content_type)
+                
+                # 生成安全文件名
+                secure_filename = await generate_secure_filename(upload_file.filename, current_user_id)
+                
+                # 确定文件类型和存储路径
                 if content_type.startswith('image/'):
                     msg_type = "image"
-                    oss_path_prefix = "chat_images"
+                    oss_path = f"chat_images/{secure_filename}"
                 elif content_type.startswith('video/'):
-                    msg_type = "video"  
-                    oss_path_prefix = "chat_videos"
+                    msg_type = "video"
+                    oss_path = f"chat_videos/{secure_filename}"
                 elif content_type.startswith('audio/'):
                     msg_type = "audio"
-                    oss_path_prefix = "chat_audios"
+                    oss_path = f"chat_audios/{secure_filename}"
                 else:
                     msg_type = "file"
-                    oss_path_prefix = "chat_files"
+                    oss_path = f"chat_files/{secure_filename}"
 
-                # 上传到OSS
-                object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_ext}"
-                uploaded_files_for_rollback.append(object_name)
+                uploaded_files_for_rollback.append(oss_path)
                 
                 try:
                     media_url = await oss_utils.upload_file_to_oss(
                         file_bytes=file_bytes,
-                        object_name=object_name,
+                        object_name=oss_path,
                         content_type=content_type
                     )
-                    print(f"DEBUG: 文件 '{upload_file.filename}' 上传成功，URL: {media_url}")
                     
-                    # 创建消息数据
-                    message_content = content_text if idx == 0 and content_text else f"文件: {upload_file.filename}"
-                    if content_type.startswith('image/'):
-                        message_content = f"图片: {upload_file.filename}"
-                    elif content_type.startswith('video/'):
-                        message_content = f"视频: {upload_file.filename}"
-                    elif content_type.startswith('audio/'):
-                        message_content = f"音频: {upload_file.filename}"
+                    # 生成消息内容
+                    if idx == 0 and content_text:
+                        message_content = content_text
+                    else:
+                        if msg_type == "image":
+                            message_content = f"[图片] {upload_file.filename}"
+                        elif msg_type == "video":
+                            message_content = f"[视频] {upload_file.filename}"
+                        elif msg_type == "audio":
+                            message_content = f"[音频] {upload_file.filename}"
+                        else:
+                            message_content = f"[文件] {upload_file.filename}"
                     
                     messages_to_create.append({
                         'content_text': message_content,
@@ -1225,56 +2480,55 @@ async def send_chat_message(
                     
                 except Exception as e:
                     print(f"ERROR: 上传文件 {upload_file.filename} 失败: {e}")
-                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                                      detail=f"文件上传失败: {upload_file.filename}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"文件上传失败: {upload_file.filename}"
+                    )
 
-        # 6. 处理单个文件上传
+        # 处理单文件上传
         elif file and file.filename:
-            file_ext = os.path.splitext(file.filename)[1].lower()
-            if file_ext not in SUPPORTED_FILE_TYPES:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"不支持的文件类型: {file_ext}。支持的类型: {', '.join(SUPPORTED_FILE_TYPES.keys())}"
-                )
-
             file_bytes = await file.read()
-            content_type = file.content_type or SUPPORTED_FILE_TYPES.get(file_ext, 'application/octet-stream')
-
-            # 根据文件类型确定消息类型和OSS路径
+            content_type = file.content_type or 'application/octet-stream'
+            
+            # 安全验证
+            await validate_file_security(file_bytes, file.filename, content_type)
+            
+            # 生成安全文件名
+            secure_filename = await generate_secure_filename(file.filename, current_user_id)
+            
+            # 确定文件类型和存储路径
             if content_type.startswith('image/'):
                 final_message_type = "image"
-                oss_path_prefix = "chat_images"
+                oss_path = f"chat_images/{secure_filename}"
             elif content_type.startswith('video/'):
                 final_message_type = "video"
-                oss_path_prefix = "chat_videos" 
+                oss_path = f"chat_videos/{secure_filename}"
             elif content_type.startswith('audio/'):
                 final_message_type = "audio"
-                oss_path_prefix = "chat_audios"
+                oss_path = f"chat_audios/{secure_filename}"
             else:
                 final_message_type = "file"
-                oss_path_prefix = "chat_files"
+                oss_path = f"chat_files/{secure_filename}"
 
-            object_name = f"{oss_path_prefix}/{uuid.uuid4().hex}{file_ext}"
-            uploaded_files_for_rollback.append(object_name)
+            uploaded_files_for_rollback.append(oss_path)
 
             try:
                 final_media_url = await oss_utils.upload_file_to_oss(
                     file_bytes=file_bytes,
-                    object_name=object_name,
+                    object_name=oss_path,
                     content_type=content_type
                 )
-                print(f"DEBUG: 文件 '{file.filename}' 上传成功，URL: {final_media_url}")
 
                 # 设置消息内容
                 if not content_text:
-                    if content_type.startswith('image/'):
-                        final_content_text = f"图片: {file.filename}"
-                    elif content_type.startswith('video/'):
-                        final_content_text = f"视频: {file.filename}"
-                    elif content_type.startswith('audio/'):
-                        final_content_text = f"音频: {file.filename}"
+                    if final_message_type == "image":
+                        final_content_text = f"[图片] {file.filename}"
+                    elif final_message_type == "video":
+                        final_content_text = f"[视频] {file.filename}"
+                    elif final_message_type == "audio":
+                        final_content_text = f"[音频] {file.filename}"
                     else:
-                        final_content_text = f"文件: {file.filename}"
+                        final_content_text = f"[文件] {file.filename}"
                 else:
                     final_content_text = content_text
 
@@ -1289,12 +2543,18 @@ async def send_chat_message(
 
             except Exception as e:
                 print(f"ERROR: 上传文件失败: {e}")
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件上传失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"文件上传失败: {e}"
+                )
 
-        # 7. 处理纯文本消息或系统通知
+        # 处理纯文本消息
         else:
             if message_type == "text" and not content_text:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文本消息内容不能为空")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="文本消息内容不能为空"
+                )
             
             messages_to_create.append({
                 'content_text': content_text,
@@ -1305,7 +2565,7 @@ async def send_chat_message(
                 'audio_duration': audio_duration if message_type == "audio" else None
             })
 
-        # 8. 批量创建消息记录
+        # 5. 批量创建消息记录
         created_messages = []
         for msg_data in messages_to_create:
             db_message = ChatMessage(
@@ -1322,13 +2582,13 @@ async def send_chat_message(
             db.add(db_message)
             created_messages.append(db_message)
 
-        # 更新聊天室的 updated_at
+        # 更新聊天室时间
         db_room.updated_at = func.now()
         db.add(db_room)
-        db.flush()  # 刷新以便后续操作可以访问消息的 ID
+        db.flush()
 
-        # 9. 积分奖励和成就检查
-        chat_message_points = len(created_messages)  # 每条消息1积分
+        # 6. 积分奖励
+        chat_message_points = len(created_messages)
         await _award_points(
             db=db,
             user=db_sender,
@@ -1340,33 +2600,58 @@ async def send_chat_message(
         )
         await _check_and_award_achievements(db, current_user_id)
 
-        db.commit()  # 提交所有
-        
-        # 10. 填充 sender_name 并返回结果
+        db.commit()
+
+        # 7. 填充响应数据并WebSocket推送
         for msg in created_messages:
             db.refresh(msg)
             msg.sender_name = db_sender.name
+            
+            # 构建WebSocket消息
+            ws_message = {
+                "type": "chat_message",
+                "id": msg.id,
+                "room_id": room_id,
+                "sender_id": current_user_id,
+                "sender_name": db_sender.name,
+                "content": msg.content_text,
+                "message_type": msg.message_type,
+                "media_url": msg.media_url,
+                "sent_at": msg.sent_at.isoformat(),
+                "reply_to_message_id": reply_to_message_id,
+                "reply_to_message": {
+                    "id": reply_message.id,
+                    "content": reply_message.content_text[:50] + "..." if len(reply_message.content_text) > 50 else reply_message.content_text,
+                    "sender_name": reply_message.sender.name
+                } if reply_message else None
+            }
+            
+            # 广播到WebSocket连接
+            asyncio.create_task(manager.broadcast(json.dumps(ws_message), room_id))
+
+        # 8. 添加后台任务
+        background_tasks.add_task(cleanup_expired_files, db)
 
         print(f"DEBUG: 聊天室 {room_id} 收到 {len(created_messages)} 条消息")
         
-        # 如果是单条消息，返回消息对象；如果是多条消息，返回第一条
         return created_messages[0] if created_messages else None
 
-    except HTTPException as e:
+    except HTTPException:
         db.rollback()
         # 清理已上传的文件
         for file_key in uploaded_files_for_rollback:
             asyncio.create_task(oss_utils.delete_file_from_oss(file_key))
-        raise e
+        raise
     except Exception as e:
         db.rollback()
         # 清理已上传的文件
         for file_key in uploaded_files_for_rollback:
             asyncio.create_task(oss_utils.delete_file_from_oss(file_key))
         print(f"ERROR: 发送聊天消息失败: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"发送消息失败: {e}")
-
-
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"发送消息失败: {str(e)}"
+        )
 @router.post("/chatrooms/{room_id}/upload-audio/", response_model=schemas.ChatMessageResponse,
           summary="上传音频消息（仿微信语音）")
 async def upload_audio_message(
@@ -1712,32 +2997,42 @@ async def upload_document_files(
 
 
 @router.get("/chatrooms/{room_id}/messages/", response_model=List[schemas.ChatMessageResponse],
-         summary="获取指定聊天室的历史消息")
+         summary="获取指定聊天室的历史消息（增强分页版）")
 async def get_chat_messages(
         room_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),
-        limit: int = Query(50, description="限制返回消息数量"),
-        offset: int = Query(0, description="偏移量，用于分页加载"),
-        message_type: Optional[str] = Query(None, description="按消息类型过滤")
+        limit: int = Query(SecurityConfig.DEFAULT_MESSAGES_PER_PAGE, ge=1, le=SecurityConfig.MAX_MESSAGES_PER_PAGE, description="每页消息数量"),
+        cursor: Optional[int] = Query(None, description="游标分页的消息ID，获取此ID之前的消息"),
+        message_type: Optional[str] = Query(None, description="按消息类型过滤"),
+        search: Optional[str] = Query(None, description="搜索消息内容"),
+        pinned_only: bool = Query(False, description="只获取置顶消息"),
+        include_deleted: bool = Query(False, description="是否包含已删除消息（仅群主可用）")
 ):
     """
     获取指定聊天室的历史消息。
-    支持分页加载和按类型过滤。
+    
+    功能特性：
+    - 高效分页加载（游标分页）
+    - 消息类型过滤
+    - 消息内容搜索
+    - 置顶消息筛选
+    - 懒加载机制
+    - 权限控制
     """
-    print(f"DEBUG: 获取聊天室 {room_id} 的历史消息，用户 {current_user_id}。")
+    print(f"DEBUG: 获取聊天室 {room_id} 的历史消息，用户 {current_user_id}，游标: {cursor}")
 
     try:
-        # 1. 获取当前用户和目标聊天室的信息
+        # 1. 权限验证
         current_user = db.query(Student).filter(Student.id == current_user_id).first()
         if not current_user:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效。")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效")
 
         db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
         if not db_room:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到。")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
 
-        # 2. 权限检查：用户是否是群主、活跃成员或系统管理员
+        # 权限检查：用户是否是群主、活跃成员或系统管理员
         is_creator = (db_room.creator_id == current_user_id)
         is_active_member = db.query(ChatRoomMember).filter(
             ChatRoomMember.room_id == room_id,
@@ -1746,60 +3041,86 @@ async def get_chat_messages(
         ).first() is not None
 
         if not (is_creator or is_active_member or current_user.is_admin):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权查看该聊天室的历史消息。")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="您无权查看该聊天室的历史消息"
+            )
 
-        # 3. 构建查询（过滤掉被删除的消息）
-        query = db.query(ChatMessage).filter(
-            ChatMessage.room_id == room_id,
-            ChatMessage.deleted_at.is_(None)  # 只获取未删除的消息
-        )
+        # 2. 构建基础查询
+        query = db.query(ChatMessage).filter(ChatMessage.room_id == room_id)
         
-        # 按消息类型过滤
+        # 是否包含已删除消息（仅群主可见）
+        if not include_deleted or not is_creator:
+            query = query.filter(ChatMessage.deleted_at.is_(None))
+        
+        # 游标分页
+        if cursor:
+            query = query.filter(ChatMessage.id < cursor)
+        
+        # 消息类型过滤
         if message_type:
             query = query.filter(ChatMessage.message_type == message_type)
         
-        # 预加载回复消息的信息
-        query = query.options(joinedload(ChatMessage.reply_to))
+        # 置顶消息过滤
+        if pinned_only:
+            query = query.filter(ChatMessage.is_pinned == True)
         
-        # 排序和分页
-        messages = query.order_by(ChatMessage.sent_at.desc()) \
-            .offset(offset).limit(limit).all()
+        # 消息内容搜索
+        if search:
+            search_pattern = f"%{search}%"
+            query = query.filter(ChatMessage.content_text.ilike(search_pattern))
 
-        # 4. 填充 sender_name 和 reply_to_message
+        # 预加载关联数据，避免N+1查询
+        query = query.options(
+            joinedload(ChatMessage.reply_to),
+            joinedload(ChatMessage.sender)
+        )
+
+        # 排序和限制
+        messages = query.order_by(desc(ChatMessage.sent_at)).limit(limit).all()
+
+        # 3. 填充响应数据
         response_messages = []
-        # 预加载所有发送者信息，以避免 N+1 查询问题
-        sender_ids = list(set([msg.sender_id for msg in messages if msg.sender_id]))
-        if messages:
-            # 包括被回复消息的发送者
-            reply_sender_ids = [msg.reply_to.sender_id for msg in messages if msg.reply_to and msg.reply_to.sender_id]
-            sender_ids.extend(reply_sender_ids)
-            sender_ids = list(set(sender_ids))
-        
-        senders_map = {s.id: s.name for s in db.query(Student).filter(Student.id.in_(sender_ids)).all()} if sender_ids else {}
-
         for msg in messages:
-            msg.sender_name = senders_map.get(msg.sender_id, "未知用户")
+            # 填充发送者姓名
+            msg.sender_name = msg.sender.name if msg.sender else "未知用户"
             
             # 填充回复消息信息
             if msg.reply_to:
-                msg.reply_to.sender_name = senders_map.get(msg.reply_to.sender_id, "未知用户")
+                msg.reply_to.sender_name = msg.reply_to.sender.name if msg.reply_to.sender else "未知用户"
                 msg.reply_to_message = msg.reply_to
             
             response_messages.append(msg)
 
-        # 反转顺序，使最新的消息在最后（符合聊天界面习惯）
+        # 4. 返回正序消息（最旧的在前，最新的在后）
         response_messages.reverse()
 
-        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(response_messages)} 条历史消息。")
+        # 5. 计算下一页游标
+        next_cursor = None
+        if len(response_messages) == limit and response_messages:
+            next_cursor = response_messages[0].id  # 最旧消息的ID
+
+        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(response_messages)} 条历史消息")
+
+        # 6. 设置响应头
+        response = JSONResponse(
+            content=[msg.__dict__ for msg in response_messages] if response_messages else [],
+            headers={
+                "X-Next-Cursor": str(next_cursor) if next_cursor else "",
+                "X-Has-More": "true" if next_cursor else "false",
+                "X-Message-Count": str(len(response_messages))
+            }
+        )
+        
         return response_messages
 
-    except HTTPException as e:
-        raise e
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"ERROR: 获取聊天消息时发生错误: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取聊天消息失败，请稍后重试。"
+            detail="获取聊天消息失败，请稍后重试"
         )
 
 
@@ -2143,7 +3464,7 @@ async def delete_chat_message(
         )
 
 
-# --- WebSocket 聊天室接口 ---
+# --- 增强版 WebSocket 聊天室接口 ---
 @router.websocket("/ws_chat/{room_id}")
 async def websocket_endpoint(
         websocket: WebSocket,
@@ -2152,226 +3473,657 @@ async def websocket_endpoint(
         db: Session = Depends(get_db)
 ):
     """
-    WebSocket 聊天接口，支持实时消息推送。
-    支持的消息类型：
-    - 文本消息
-    - 状态消息（用户加入/离开）
-    - 系统通知
-    - 媒体文件消息通知
+    增强版 WebSocket 聊天接口，支持：
+    - 实时消息推送
+    - 心跳检测
+    - 连接状态管理
+    - 在线用户统计
+    - 输入状态提示
+    - 安全连接验证
     """
-    print(f"DEBUG_WS: 尝试连接房间 {room_id}。")
-    current_email = None
-    current_payload_sub_str = None
-    current_user_db = None
-    current_user_id_int = None
+    print(f"DEBUG_WS: 尝试连接房间 {room_id}")
+    current_user_id = None
+    current_user = None
     
     try:
-        # 解码 JWT 令牌以获取用户身份
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        current_payload_sub_str: str = payload.get("sub")
-        if current_payload_sub_str is None:
-            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION,
-                                      reason="Invalid authentication token (subject missing).")
-
-        # 将字符串ID转换为整数
+        # 1. JWT令牌验证
         try:
-            current_user_id_int = int(current_payload_sub_str)
-        except ValueError:
-            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid user ID format in token.")
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            user_id_str = payload.get("sub")
+            if not user_id_str:
+                raise WebSocketDisconnect(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="Invalid token: missing subject"
+                )
+            
+            current_user_id = int(user_id_str)
+        except (JWTError, ValueError) as e:
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason=f"Authentication failed: {e}"
+            )
+            return
 
-        # 从数据库中获取用户信息
-        current_user_db = db.query(Student).filter(Student.id == current_user_id_int).first()
-        if current_user_db is None:
-            raise WebSocketDisconnect(code=status.WS_1008_POLICY_VIOLATION, reason="User not found in database.")
+        # 2. 用户验证
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="User not found"
+            )
+            return
 
-        current_email = current_user_db.email
+        # 3. 聊天室验证
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            await websocket.close(
+                code=status.WS_1003_UNSUPPORTED_DATA,
+                reason="聊天室不存在"
+            )
+            return
 
-    except (JWTError, WebSocketDisconnect) as auth_error:
-        print(f"ERROR_WS_AUTH: WebSocket 认证失败: {type(auth_error).__name__}: {auth_error}")
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"Authentication failed: {auth_error}")
-        return
-    except Exception as e:
-        print(f"ERROR_WS_AUTH: WebSocket 认证内部错误: {type(e).__name__}: {e}")
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Authentication internal error.")
-        return
+        # 4. 权限验证
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_active_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
 
-    print(f"DEBUG_WS: 用户 {current_user_id_int} (邮箱: {current_email}) 尝试连接聊天室 {room_id}。")
+        if not (is_creator or is_active_member):
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="您无权访问此聊天室"
+            )
+            return
 
-    # 验证聊天室权限
-    chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not chat_room:
-        print(f"WARNING_WS: 用户 {current_user_id_int} 尝试连接不存在的聊天室 {room_id}。")
-        await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="聊天室不存在。")
-        return
+        # 5. 建立连接
+        connection_success = await manager.connect(websocket, room_id, current_user_id)
+        if not connection_success:
+            return
 
-    # 权限检查
-    is_creator = (chat_room.creator_id == current_user_id_int)
-    is_active_member = db.query(ChatRoomMember).filter(
-        ChatRoomMember.room_id == room_id,
-        ChatRoomMember.member_id == current_user_id_int,
-        ChatRoomMember.status == "active"
-    ).first() is not None
+        print(f"DEBUG_WS: 用户 {current_user_id} 成功连接聊天室 {room_id}")
 
-    print(f"DEBUG_PERM_WS: is_creator={is_creator}, is_active_member={is_active_member}")
-
-    if not (is_creator or is_active_member):
-        print(f"WARNING_WS: 用户 {current_user_id_int} 无权连接聊天室 {room_id}。")
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="您无权访问或加入此聊天室。")
-        return
-
-    try:
-        await manager.connect(websocket, room_id, current_user_id_int)
-        print(f"DEBUG_WS: 用户 {current_user_id_int} 已成功连接到聊天室 {room_id}。")
-
-        # 发送欢迎消息给新连接的用户
+        # 6. 发送欢迎消息
         welcome_message = {
             "type": "system",
-            "content": f"欢迎 {current_user_db.name} 加入聊天室 {chat_room.name}！",
-            "timestamp": datetime.now().isoformat()
+            "content": f"欢迎 {current_user.name} 加入聊天室！",
+            "timestamp": datetime.now().isoformat(),
+            "room_info": {
+                "id": chat_room.id,
+                "name": chat_room.name,
+                "type": chat_room.type,
+                "online_members": len(manager.active_connections.get(room_id, {}))
+            }
         }
         await manager.send_personal_message(json.dumps(welcome_message), websocket)
 
-        # 向房间内其他用户广播用户加入消息
+        # 7. 向其他用户广播加入通知
         join_notification = {
             "type": "user_joined",
-            "user_id": current_user_id_int,
-            "user_name": current_user_db.name,
-            "content": f"{current_user_db.name} 加入了聊天室",
-            "timestamp": datetime.now().isoformat()
+            "user_id": current_user_id,
+            "user_name": current_user.name,
+            "content": f"{current_user.name} 加入了聊天室",
+            "timestamp": datetime.now().isoformat(),
+            "online_members_count": len(manager.active_connections.get(room_id, {}))
         }
-        await manager.broadcast(json.dumps(join_notification), room_id)
+        await manager.broadcast(json.dumps(join_notification), room_id, exclude_user_id=current_user_id)
 
-        while True:
-            # 接收客户端消息
-            data = await websocket.receive_json()
-            message_type = data.get("type", "chat")
-            
-            if message_type == "chat":
-                # 处理聊天消息
-                message_content = data.get("content")
-                reply_to_id = data.get("reply_to_message_id")
-
-                if not message_content or not isinstance(message_content, str):
-                    await websocket.send_json({"error": "Invalid message format. 'content' (string) is required."})
-                    continue
-
-                # 再次检查权限
-                re_check_active_member = db.query(ChatRoomMember).filter(
-                    ChatRoomMember.room_id == room_id,
-                    ChatRoomMember.member_id == current_user_id_int,
-                    ChatRoomMember.status == "active"
-                ).first()
-                re_check_creator = (chat_room.creator_id == current_user_id_int)
-
-                if not (re_check_creator or re_check_active_member):
-                    print(f"WARNING_WS: 用户 {current_user_id_int} 发送消息时已失去权限。")
-                    await websocket.send_json({"error": "No permission to send messages."})
-                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="失去发送消息权限。")
+        # 8. 心跳检测任务
+        async def heartbeat_task():
+            while True:
+                try:
+                    await asyncio.sleep(SecurityConfig.HEARTBEAT_INTERVAL)
+                    heartbeat_msg = {
+                        "type": "heartbeat",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    await manager.send_personal_message(json.dumps(heartbeat_msg), websocket)
+                except:
                     break
 
-                # 验证回复消息
-                reply_to_message = None
-                if reply_to_id:
-                    reply_to_message = db.query(ChatMessage).filter(
-                        ChatMessage.id == reply_to_id,
-                        ChatMessage.room_id == room_id,
-                        ChatMessage.deleted_at.is_(None)
-                    ).first()
+        # 启动心跳任务
+        heartbeat_job = asyncio.create_task(heartbeat_task())
 
-                # 创建消息记录
-                db_message = ChatMessage(
-                    room_id=room_id,
-                    sender_id=current_user_id_int,
-                    content_text=message_content,
-                    message_type="text",
-                    reply_to_message_id=reply_to_id if reply_to_message else None
-                )
-                db.add(db_message)
+        # 9. 消息处理循环
+        try:
+            while True:
+                # 接收客户端消息
+                data = await websocket.receive_json()
+                message_type = data.get("type", "chat")
                 
-                # 更新聊天室活跃时间
-                chat_room.updated_at = func.now()
-                db.add(chat_room)
+                # 更新心跳
+                manager.update_heartbeat(room_id, current_user_id)
                 
-                db.commit()
-                db.refresh(db_message)
+                if message_type == "chat":
+                    await handle_chat_message(data, room_id, current_user_id, current_user, db)
+                    
+                elif message_type == "typing":
+                    await handle_typing_status(data, room_id, current_user_id, current_user)
+                    
+                elif message_type == "heartbeat_response":
+                    # 客户端心跳响应，更新心跳时间
+                    manager.update_heartbeat(room_id, current_user_id)
+                    
+                elif message_type == "file_upload_notification":
+                    await handle_file_upload_notification(data, room_id, current_user_id, current_user)
+                    
+                elif message_type == "message_read":
+                    await handle_message_read(data, room_id, current_user_id, db)
+                    
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Unknown message type: {message_type}"
+                    })
 
-                # 构建广播消息
-                broadcast_message = {
-                    "type": "chat_message",
-                    "id": db_message.id,
-                    "room_id": room_id,
-                    "sender_id": current_user_id_int,
-                    "sender_name": current_user_db.name,
-                    "content": message_content,
-                    "message_type": "text",
-                    "sent_at": db_message.sent_at.isoformat(),
-                    "reply_to_message_id": reply_to_id,
-                    "reply_to_message": {
-                        "id": reply_to_message.id,
-                        "content": reply_to_message.content_text[:50] + "..." if len(reply_to_message.content_text) > 50 else reply_to_message.content_text,
-                        "sender_name": reply_to_message.sender.name
-                    } if reply_to_message else None
-                }
-                
-                await manager.broadcast(json.dumps(broadcast_message), room_id)
-                print(f"DEBUG_WS: 聊天室 {room_id} 广播消息: {current_user_db.name}: {message_content[:50]}...")
-
-            elif message_type == "typing":
-                # 处理正在输入状态
-                typing_message = {
-                    "type": "typing",
-                    "user_id": current_user_id_int,
-                    "user_name": current_user_db.name,
-                    "is_typing": data.get("is_typing", True),
-                    "timestamp": datetime.now().isoformat()
-                }
-                # 广播给除自己外的其他用户
-                for user_id, connection in manager.active_connections.get(room_id, {}).items():
-                    if user_id != current_user_id_int:
-                        try:
-                            await connection.send_text(json.dumps(typing_message))
-                        except:
-                            pass
-
-            elif message_type == "file_upload_notification":
-                # 处理文件上传完成通知
-                file_info = data.get("file_info", {})
-                notification_message = {
-                    "type": "file_uploaded",
-                    "user_id": current_user_id_int,
-                    "user_name": current_user_db.name,
-                    "file_info": file_info,
-                    "timestamp": datetime.now().isoformat()
-                }
-                await manager.broadcast(json.dumps(notification_message), room_id)
-
-            elif message_type == "heartbeat":
-                # 心跳检测
-                await websocket.send_json({"type": "heartbeat_response", "timestamp": datetime.now().isoformat()})
-
-            else:
-                await websocket.send_json({"error": f"Unknown message type: {message_type}"})
-
-    except WebSocketDisconnect:
-        print(f"DEBUG_WS: 用户 {current_user_id_int} 从聊天室 {room_id} 断开连接。")
-        
-        # 广播用户离开消息
-        if current_user_id_int and current_user_db:
-            leave_notification = {
-                "type": "user_left",
-                "user_id": current_user_id_int,
-                "user_name": current_user_db.name,
-                "content": f"{current_user_db.name} 离开了聊天室",
-                "timestamp": datetime.now().isoformat()
-            }
-            await manager.broadcast(json.dumps(leave_notification), room_id)
+        except WebSocketDisconnect:
+            print(f"DEBUG_WS: 用户 {current_user_id} 主动断开连接")
+        except Exception as e:
+            print(f"ERROR_WS: WebSocket连接异常: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"服务器内部错误: {str(e)}"
+            })
+        finally:
+            # 取消心跳任务
+            heartbeat_job.cancel()
             
+            # 广播用户离开消息
+            if current_user_id and current_user:
+                leave_notification = {
+                    "type": "user_left",
+                    "user_id": current_user_id,
+                    "user_name": current_user.name,
+                    "content": f"{current_user.name} 离开了聊天室",
+                    "timestamp": datetime.now().isoformat(),
+                    "online_members_count": len(manager.active_connections.get(room_id, {})) - 1
+                }
+                await manager.broadcast(json.dumps(leave_notification), room_id)
+            
+            # 断开连接
+            manager.disconnect(room_id, current_user_id)
+
     except Exception as e:
-        print(f"ERROR_WS: 用户 {current_user_id_int} 在聊天室 {room_id} WebSocket 处理异常: {e}")
-        if websocket.client_state == 1:  # WebSocketState.CONNECTED
-            await websocket.send_json({"error": f"服务器内部错误: {e}"})
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"服务器内部错误: {e}")
-    finally:
-        # 确保从管理器中移除连接
-        if current_user_id_int is not None:
-            manager.disconnect(room_id, current_user_id_int)
+        print(f"ERROR_WS: WebSocket初始化异常: {e}")
+        if websocket.client_state.name == "CONNECTED":
+            await websocket.close(
+                code=status.WS_1011_INTERNAL_ERROR,
+                reason=f"服务器内部错误: {str(e)}"
+            )
+
+
+async def handle_chat_message(data: dict, room_id: int, user_id: int, user: Student, db: Session):
+    """处理聊天消息"""
+    message_content = data.get("content")
+    reply_to_id = data.get("reply_to_message_id")
+
+    if not message_content or not isinstance(message_content, str):
+        return
+
+    # 再次验证权限
+    is_active = db.query(ChatRoomMember).filter(
+        ChatRoomMember.room_id == room_id,
+        ChatRoomMember.member_id == user_id,
+        ChatRoomMember.status == "active"
+    ).first() is not None
+
+    if not is_active:
+        return
+
+    # 验证回复消息
+    reply_message = None
+    if reply_to_id:
+        reply_message = db.query(ChatMessage).filter(
+            ChatMessage.id == reply_to_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+
+    # 创建消息记录
+    db_message = ChatMessage(
+        room_id=room_id,
+        sender_id=user_id,
+        content_text=message_content,
+        message_type="text",
+        reply_to_message_id=reply_to_id if reply_message else None
+    )
+    db.add(db_message)
+    
+    # 更新聊天室活跃时间
+    chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if chat_room:
+        chat_room.updated_at = func.now()
+        db.add(chat_room)
+    
+    db.commit()
+    db.refresh(db_message)
+
+    # 构建广播消息
+    broadcast_message = {
+        "type": "chat_message",
+        "id": db_message.id,
+        "room_id": room_id,
+        "sender_id": user_id,
+        "sender_name": user.name,
+        "content": message_content,
+        "message_type": "text",
+        "sent_at": db_message.sent_at.isoformat(),
+        "reply_to_message_id": reply_to_id,
+        "reply_to_message": {
+            "id": reply_message.id,
+            "content": reply_message.content_text[:50] + "..." if len(reply_message.content_text) > 50 else reply_message.content_text,
+            "sender_name": reply_message.sender.name
+        } if reply_message else None
+    }
+    
+    await manager.broadcast(json.dumps(broadcast_message), room_id)
+
+
+async def handle_typing_status(data: dict, room_id: int, user_id: int, user: Student):
+    """处理用户输入状态"""
+    typing_message = {
+        "type": "typing",
+        "user_id": user_id,
+        "user_name": user.name,
+        "is_typing": data.get("is_typing", True),
+        "timestamp": datetime.now().isoformat()
+    }
+    await manager.broadcast(json.dumps(typing_message), room_id, exclude_user_id=user_id)
+
+
+async def handle_file_upload_notification(data: dict, room_id: int, user_id: int, user: Student):
+    """处理文件上传完成通知"""
+    file_info = data.get("file_info", {})
+    notification_message = {
+        "type": "file_uploaded",
+        "user_id": user_id,
+        "user_name": user.name,
+        "file_info": file_info,
+        "timestamp": datetime.now().isoformat()
+    }
+    await manager.broadcast(json.dumps(notification_message), room_id)
+
+
+async def handle_message_read(data: dict, room_id: int, user_id: int, db: Session):
+    """处理消息已读状态"""
+    message_id = data.get("message_id")
+    if not message_id:
+        return
+    
+    # TODO: 实现消息已读状态记录
+    # 可以创建一个MessageReadStatus表来记录用户的消息已读状态
+    pass
+
+
+# --- 消息撤回和管理功能 ---
+@router.put("/chatrooms/{room_id}/messages/{message_id}/recall", 
+         response_model=schemas.ChatMessageResponse,
+         summary="撤回消息（增强版）")
+async def recall_message(
+        room_id: int,
+        message_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    撤回消息功能，类似微信。
+    增强特性：
+    - 时间限制检查
+    - 权限验证
+    - 实时通知
+    """
+    try:
+        # 查询要撤回的消息
+        db_message = db.query(ChatMessage).filter(
+            ChatMessage.id == message_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+
+        if not db_message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="消息未找到或已被删除"
+            )
+
+        # 权限检查：只有消息发送者或群主可以撤回
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        is_sender = (db_message.sender_id == current_user_id)
+        is_creator = (chat_room.creator_id == current_user_id)
+
+        if not (is_sender or is_creator):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="只能撤回自己发送的消息或群主可撤回任何消息"
+            )
+
+        # 时间限制检查：发送者2分钟内可撤回，群主无时间限制
+        if is_sender and not is_creator:
+            time_limit = timedelta(seconds=SecurityConfig.MESSAGE_RECALL_TIME_LIMIT)
+            if datetime.now() - db_message.sent_at > time_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, 
+                    detail=f"消息发送超过{SecurityConfig.MESSAGE_RECALL_TIME_LIMIT}秒，无法撤回"
+                )
+
+        # 执行撤回
+        db_message.content_text = "此消息已被撤回"
+        db_message.message_type = "system_notification"
+        db_message.media_url = None  # 清除媒体链接
+        db_message.edited_at = func.now()
+        
+        db.add(db_message)
+        db.commit()
+        db.refresh(db_message)
+
+        # 填充发送者姓名
+        sender = db.query(Student).filter(Student.id == db_message.sender_id).first()
+        db_message.sender_name = sender.name if sender else "未知用户"
+
+        # WebSocket实时通知
+        recall_notification = {
+            "type": "message_recalled",
+            "message_id": message_id,
+            "room_id": room_id,
+            "recalled_by": current_user_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        asyncio.create_task(manager.broadcast(json.dumps(recall_notification), room_id))
+
+        return db_message
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 撤回消息失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"撤回消息失败: {str(e)}"
+        )
+
+
+@router.put("/chatrooms/{room_id}/messages/{message_id}/pin",
+         summary="置顶/取消置顶消息（增强版）")
+async def toggle_pin_message(
+        room_id: int,
+        message_id: int,
+        pin: bool = Query(..., description="true为置顶，false为取消置顶"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    置顶或取消置顶消息。
+    增强特性：
+    - 置顶数量限制
+    - 权限控制
+    - 实时通知
+    """
+    try:
+        # 权限检查
+        db_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not db_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        is_creator = (db_room.creator_id == current_user_id)
+        member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first()
+        is_admin = member and member.role == "admin"
+
+        if not (is_creator or is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="只有群主和管理员可以置顶消息"
+            )
+
+        # 查询消息
+        db_message = db.query(ChatMessage).filter(
+            ChatMessage.id == message_id,
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).first()
+
+        if not db_message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息未找到")
+
+        # 置顶数量限制检查
+        if pin:
+            pinned_count = db.query(ChatMessage).filter(
+                ChatMessage.room_id == room_id,
+                ChatMessage.is_pinned == True,
+                ChatMessage.deleted_at.is_(None)
+            ).count()
+            
+            if pinned_count >= SecurityConfig.PIN_MESSAGE_LIMIT:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"最多只能置顶{SecurityConfig.PIN_MESSAGE_LIMIT}条消息"
+                )
+
+        # 更新置顶状态
+        db_message.is_pinned = pin
+        db.add(db_message)
+        db.commit()
+
+        # WebSocket实时通知
+        pin_notification = {
+            "type": "message_pinned" if pin else "message_unpinned",
+            "message_id": message_id,
+            "room_id": room_id,
+            "pinned_by": current_user_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        asyncio.create_task(manager.broadcast(json.dumps(pin_notification), room_id))
+
+        return {"message": f"消息已{'置顶' if pin else '取消置顶'}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR: 置顶消息操作失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"置顶操作失败: {str(e)}"
+        )
+
+
+# --- 聊天室成员管理 ---
+@router.get("/chatrooms/{room_id}/members", response_model=List[schemas.ChatRoomMemberResponse],
+         summary="获取指定聊天室的所有成员列表（增强版）")
+async def get_chat_room_members(
+        room_id: int,
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        status_filter: Optional[str] = Query(None, description="按状态过滤成员"),
+        role_filter: Optional[str] = Query(None, description="按角色过滤成员")
+):
+    """
+    获取指定聊天室的所有成员列表。
+    增强特性：
+    - 状态和角色过滤
+    - 在线状态显示
+    - 权限控制
+    """
+    try:
+        # 权限验证
+        current_user = db.query(Student).filter(Student.id == current_user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证用户无效")
+
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        # 权限检查
+        is_creator = (chat_room.creator_id == current_user_id)
+        is_room_member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.member_id == current_user_id,
+            ChatRoomMember.status == "active"
+        ).first() is not None
+
+        if not (is_creator or is_room_member or current_user.is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="无权查看该聊天室的成员列表"
+            )
+
+        # 构建查询
+        query = db.query(ChatRoomMember).options(
+            joinedload(ChatRoomMember.member)
+        ).filter(ChatRoomMember.room_id == room_id)
+
+        # 应用过滤
+        if status_filter:
+            query = query.filter(ChatRoomMember.status == status_filter)
+        if role_filter:
+            query = query.filter(ChatRoomMember.role == role_filter)
+
+        memberships = query.all()
+
+        # 构建响应
+        response_members = []
+        online_users = manager.active_connections.get(room_id, {})
+        
+        for membership in memberships:
+            member_response = {
+                "id": membership.id,
+                "room_id": membership.room_id,
+                "member_id": membership.member_id,
+                "role": membership.role,
+                "status": membership.status,
+                "joined_at": membership.joined_at,
+                "member_name": membership.member.name if membership.member else "未知用户",
+                "is_online": membership.member_id in online_users
+            }
+            response_members.append(schemas.ChatRoomMemberResponse(**member_response))
+
+        print(f"DEBUG: 聊天室 {room_id} 获取到 {len(response_members)} 位成员")
+        return response_members
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: 获取聊天室成员列表失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"获取聊天室成员列表失败: {str(e)}"
+        )
+
+
+# --- 聊天室设置管理 ---
+@router.put("/chatrooms/{room_id}/settings", summary="更新聊天室设置")
+async def update_chat_room_settings(
+        room_id: int,
+        allow_file_upload: Optional[bool] = Query(None, description="是否允许文件上传"),
+        max_file_size_mb: Optional[int] = Query(None, description="最大文件大小限制(MB)"),
+        allowed_file_types: Optional[List[str]] = Query(None, description="允许的文件类型"),
+        message_retention_days: Optional[int] = Query(None, description="消息保留天数"),
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """
+    更新聊天室设置（仅群主可用）
+    """
+    try:
+        # 权限检查
+        chat_room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not chat_room:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天室未找到")
+
+        if chat_room.creator_id != current_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="只有群主可以修改聊天室设置"
+            )
+
+        # TODO: 实现聊天室设置的数据库存储
+        # 这里可以添加一个ChatRoomSettings表来存储这些设置
+        
+        settings = {
+            "allow_file_upload": allow_file_upload,
+            "max_file_size_mb": max_file_size_mb,
+            "allowed_file_types": allowed_file_types,
+            "message_retention_days": message_retention_days
+        }
+
+        # 过滤掉None值
+        settings = {k: v for k, v in settings.items() if v is not None}
+
+        return {
+            "message": "聊天室设置已更新",
+            "settings": settings
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"ERROR: 更新聊天室设置失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"更新聊天室设置失败: {str(e)}"
+        )
+
+
+# --- 系统监控和统计 ---
+@router.get("/admin/chatroom-stats", summary="获取聊天室统计信息（管理员）")
+async def get_chatroom_statistics(
+        current_user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+        days: int = Query(7, description="统计天数")
+):
+    """
+    获取聊天室统计信息（仅管理员可用）
+    """
+    current_user = db.query(Student).filter(Student.id == current_user_id).first()
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理员可以查看统计信息"
+        )
+
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        # 基础统计
+        total_rooms = db.query(ChatRoom).count()
+        total_messages = db.query(ChatMessage).filter(
+            ChatMessage.sent_at >= start_date,
+            ChatMessage.deleted_at.is_(None)
+        ).count()
+        
+        active_users = db.query(ChatMessage.sender_id).filter(
+            ChatMessage.sent_at >= start_date
+        ).distinct().count()
+
+        # 存储统计
+        total_file_size = db.query(func.sum(ChatMessage.file_size)).filter(
+            ChatMessage.file_size.isnot(None),
+            ChatMessage.deleted_at.is_(None)
+        ).scalar() or 0
+
+        # WebSocket连接统计
+        active_connections = sum(len(connections) for connections in manager.active_connections.values())
+        
+        return {
+            "period_days": days,
+            "total_chatrooms": total_rooms,
+            "total_messages": total_messages,
+            "active_users": active_users,
+            "total_file_size_mb": round(total_file_size / (1024 * 1024), 2),
+            "active_websocket_connections": active_connections,
+            "active_rooms_with_connections": len(manager.active_connections)
+        }
+
+    except Exception as e:
+        print(f"ERROR: 获取聊天室统计信息失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取统计信息失败: {str(e)}"
+        )

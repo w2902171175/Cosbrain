@@ -16,11 +16,11 @@ from sqlalchemy.sql import func
 from sqlalchemy import and_, or_, desc, asc, text
 import asyncio, uuid, json, csv, io, zipfile
 
-from database import get_db
-from models import Student, Folder, CollectedContent
-from dependencies import get_current_user_id
-import schemas
-import oss_utils
+from project.database import get_db
+from project.models import Student, Folder, CollectedContent
+from project.dependencies import get_current_user_id
+import project.schemas as schemas
+import project.oss_utils as oss_utils
 
 router = APIRouter(
     prefix="/folders/advanced",

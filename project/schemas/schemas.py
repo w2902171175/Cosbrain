@@ -566,9 +566,12 @@ class ForumTopicBase(BaseModel):
     shared_item_id: Optional[int] = Field(None, description="如果分享平台内部内容，记录其ID")
     tags: Optional[str] = None
     media_url: Optional[str] = Field(None, description="图片、视频或文件的OSS URL")
-    media_type: Optional[Literal["image", "video", "file"]] = Field(None, description="媒体类型：'image', 'video', 'file'")
+    media_type: Optional[Literal["image", "video", "file", "audio"]] = Field(None, description="媒体类型：'image', 'video', 'file', 'audio'")
     original_filename: Optional[str] = Field(None, description="原始上传文件名")
     media_size_bytes: Optional[int] = Field(None, description="媒体文件大小（字节）")
+    # 新增字段
+    attachments: Optional[List[Dict[str, Any]]] = Field(None, description="附件信息列表")
+    mentioned_users_info: Optional[List[Dict[str, Any]]] = Field(None, description="被@用户信息列表")
 
     @model_validator(mode='after')
     def validate_media_and_shared_item(self) -> 'ForumTopicBase':
@@ -577,7 +580,7 @@ class ForumTopicBase(BaseModel):
         
         # 只在有 media_url 时才要求必须有 media_type
         if self.media_url and not self.media_type:
-            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video', 'file' 或 'audio'。")
         
         # 检查共享内容和直接上传媒体文件的互斥性（但这里要考虑文件上传场景）
         if (self.shared_item_type and self.shared_item_id is not None) and self.media_url:
@@ -617,9 +620,14 @@ class ForumCommentBase(BaseModel):
     content: str
     parent_comment_id: Optional[int] = None
     media_url: Optional[str] = Field(None, description="图片、视频或文件的OSS URL")
-    media_type: Optional[Literal["image", "video", "file"]] = Field(None, description="媒体类型：'image', 'video', 'file'")
+    media_type: Optional[Literal["image", "video", "file", "audio"]] = Field(None, description="媒体类型：'image', 'video', 'file', 'audio'")
     original_filename: Optional[str] = Field(None, description="原始上传文件名")
     media_size_bytes: Optional[int] = Field(None, description="媒体文件大小（字节）")
+    # 新增字段
+    attachments: Optional[List[Dict[str, Any]]] = Field(None, description="附件信息列表")
+    emoji_info: Optional[Dict[str, Any]] = Field(None, description="表情包信息")
+    mentioned_users_info: Optional[List[Dict[str, Any]]] = Field(None, description="被@用户信息列表")
+    reply_count: Optional[int] = Field(None, description="回复数量")
 
     @model_validator(mode='after')
     def validate_media_in_comment(self) -> 'ForumCommentBase':
@@ -628,7 +636,7 @@ class ForumCommentBase(BaseModel):
         
         # 只在有 media_url 时才要求必须有 media_type
         if self.media_url and not self.media_type:
-            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video' 或 'file'。")
+            raise ValueError("media_url 存在时，media_type 不能为空，且必须为 'image', 'video', 'file' 或 'audio'。")
         return self
 
 
@@ -704,6 +712,71 @@ class UserFollowResponse(BaseModel):
     class Config:
         from_attributes = True
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+
+# --- 抖音式论坛功能新增 Schemas ---
+
+class EmojiBase(BaseModel):
+    name: str = Field(..., description="表情包名称")
+    category: str = Field(default="custom", description="表情包分类")
+    url: str = Field(..., description="表情包URL")
+
+class EmojiResponse(EmojiBase):
+    id: int
+    uploader_id: Optional[int] = None
+    is_system: bool = False
+    is_active: bool = True
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+class MentionedUserInfo(BaseModel):
+    id: int
+    username: str
+    name: str
+    avatar_url: Optional[str] = None
+
+class AttachmentInfo(BaseModel):
+    url: str = Field(..., description="附件URL")
+    type: str = Field(..., description="附件类型: image, video, audio, file")
+    filename: str = Field(..., description="原始文件名")
+    size: int = Field(..., description="文件大小（字节）")
+    content_type: str = Field(..., description="MIME类型")
+
+class ForumMentionResponse(BaseModel):
+    id: int
+    mentioner_id: int
+    mentioned_id: int
+    topic_id: Optional[int] = None
+    comment_id: Optional[int] = None
+    is_read: bool = False
+    created_at: datetime
+    
+    # 关联信息
+    mentioner_name: Optional[str] = None
+    topic_title: Optional[str] = None
+    comment_content: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
+
+class TrendingTopicResponse(BaseModel):
+    topic: 'ForumTopicResponse'
+    hot_score: float
+    rank: int
+    
+    class Config:
+        from_attributes = True
+
+class UserSearchResult(BaseModel):
+    id: int
+    username: str
+    name: str
+    avatar_url: Optional[str] = None
+    bio: Optional[str] = None
 
 
 # --- UserMcpConfig Schemas ---

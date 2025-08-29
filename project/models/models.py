@@ -6,13 +6,13 @@ from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.schema import UniqueConstraint
-from base import Base
+from project.base import Base
 from sqlalchemy import event
 import asyncio
 from typing import Optional
 import json
 from datetime import datetime
-import oss_utils
+from project import oss_utils
 
 
 class ProjectApplication(Base):

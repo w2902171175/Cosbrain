@@ -5,11 +5,11 @@ from typing import List, Optional
 import httpx
 from datetime import datetime
 
-from database import get_db
-from dependencies import get_current_user_id
-from models import UserMcpConfig
-import schemas
-from ai_providers.security_utils import decrypt_key, encrypt_key
+from project.database import get_db
+from project.dependencies import get_current_user_id
+from project.models import UserMcpConfig
+import project.schemas as schemas
+from project.ai_providers.security_utils import decrypt_key, encrypt_key
 
 router = APIRouter(
     prefix="/mcp-configs",

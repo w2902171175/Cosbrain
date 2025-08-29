@@ -24,15 +24,15 @@ from datetime import datetime
 import json, os, uuid, asyncio
 
 # 导入数据库和模型
-from database import get_db
-from models import Note, Course, Folder, Student
-from dependencies import get_current_user_id
-from utils import _get_text_part
-import schemas
-import oss_utils
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
+from project.database import get_db
+from project.models import Note, Course, Folder, Student
+from project.dependencies import get_current_user_id
+from project.utils import _get_text_part
+import project.schemas as schemas
+import project.oss_utils as oss_utils
+from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 # 创建路由器
 router = APIRouter(

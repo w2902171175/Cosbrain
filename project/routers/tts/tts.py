@@ -5,14 +5,14 @@ from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 
 # 导入数据库和模型
-from database import get_db
-from models.models import UserTTSConfig
-from schemas.schemas import UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
-from dependencies.dependencies import get_current_user_id
+from project.database import get_db
+from project.models import UserTTSConfig
+from project.schemas.schemas import UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
+from project.dependencies.dependencies import get_current_user_id
 
 from jose import JWTError, jwt
-from dependencies.dependencies import SECRET_KEY, ALGORITHM
-from ai_providers.security_utils import encrypt_key
+from project.dependencies.dependencies import SECRET_KEY, ALGORITHM
+from project.ai_providers.security_utils import encrypt_key
 
 router = APIRouter(
     prefix="/users/me/tts_configs",

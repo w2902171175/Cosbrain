@@ -9,15 +9,15 @@ import json, os, uuid, asyncio
 from datetime import datetime
 
 # 导入数据库和模型
-from database import get_db
-from models import Course, UserCourse, Student, CourseLike, CourseMaterial, PointTransaction, Achievement, UserAchievement, Project, ForumTopic, ForumComment, ForumLike, ChatMessage
+from project.database import get_db
+from project.models import Course, UserCourse, Student, CourseLike, CourseMaterial, PointTransaction, Achievement, UserAchievement, Project, ForumTopic, ForumComment, ForumLike, ChatMessage
 from sqlalchemy import and_, or_
-import schemas, oss_utils
-from utils import (_get_text_part, populate_like_status, get_courses_with_details, get_resource_or_404, 
+import project.schemas as schemas, project.oss_utils as oss_utils
+from project.utils import (_get_text_part, populate_like_status, get_courses_with_details, get_resource_or_404, 
                   debug_operation, commit_or_rollback, _award_points, _check_and_award_achievements)
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
+from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 # 创建路由器
 router = APIRouter(
@@ -40,7 +40,7 @@ def get_student_by_id(student_id: int, db: Session = Depends(get_db)):
     return student
 
 # 导入认证相关依赖
-from dependencies import get_current_user_id, is_admin_user
+from project.dependencies import get_current_user_id, is_admin_user
 
 # --- 课程路由 ---
 @router.post("/", response_model=schemas.CourseResponse, summary="创建新课程")

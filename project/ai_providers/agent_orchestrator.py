@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models import Student, KnowledgeBase, UserMcpConfig, UserSearchEngineConfig
+from project.models import Student, KnowledgeBase, UserMcpConfig, UserSearchEngineConfig
 
 # 导入AI提供者和工具
 from .security_utils import decrypt_key

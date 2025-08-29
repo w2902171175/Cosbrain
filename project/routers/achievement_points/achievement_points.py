@@ -4,11 +4,11 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Literal
 
 # 导入数据库和模型
-from database import get_db
-from models import Student, Achievement, UserAchievement, PointTransaction
-from dependencies import get_current_user_id
-from schemas import StudentResponse, AchievementResponse, UserAchievementResponse, PointTransactionResponse
-import schemas
+from project.database import get_db
+from project.models import Student, Achievement, UserAchievement, PointTransaction
+from project.dependencies import get_current_user_id
+from project.schemas import StudentResponse, AchievementResponse, UserAchievementResponse, PointTransactionResponse
+import project.schemas as schemas
 
 # 创建路由器
 router = APIRouter(

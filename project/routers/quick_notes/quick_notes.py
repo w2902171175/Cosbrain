@@ -4,10 +4,10 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 
 # 使用正确的相对导入
-from database import get_db
-from models import DailyRecord, Student
-from dependencies import get_current_user_id
-from utils import (_get_text_part, generate_embedding_safe, get_user_resource_or_404, 
+from project.database import get_db
+from project.models import DailyRecord, Student
+from project.dependencies import get_current_user_id
+from project.utils import (_get_text_part, generate_embedding_safe, get_user_resource_or_404, 
                   debug_operation, commit_or_rollback, create_and_add_resource, update_embedding_safe)
 
 import schemas

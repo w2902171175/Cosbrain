@@ -14,8 +14,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 # 导入模型和Schema
-from models import Student, Project, Course
-from schemas import MatchedProject, MatchedStudent, MatchedCourse
+from project.models import Student, Project, Course
+from project.schemas import MatchedProject, MatchedStudent, MatchedCourse
 
 # 导入AI提供者和工具
 from .security_utils import decrypt_key

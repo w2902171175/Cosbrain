@@ -10,19 +10,19 @@ import os
 import uuid
 import asyncio
 
-# 导入数据库和模型 - 使用正确的相对导入
-from database import get_db
-from models import Student, Project, ProjectApplication, ProjectMember, ProjectFile, ProjectLike
-from dependencies import get_current_user_id, get_pagination_params
-import schemas
-import oss_utils
-from utils import (_get_text_part, generate_embedding_safe, populate_user_name, populate_like_status, 
+# 导入数据库和模型 - 使用正确的绝对导入
+from project.database import get_db
+from project.models import Student, Project, ProjectApplication, ProjectMember, ProjectFile, ProjectLike
+from project.dependencies import get_current_user_id, get_pagination_params
+import project.schemas as schemas
+import project.oss_utils as oss_utils
+from project.utils import (_get_text_part, generate_embedding_safe, populate_user_name, populate_like_status, 
                   validate_ownership, _award_points, _check_and_award_achievements, get_projects_with_details,
                   get_resource_or_404, get_user_by_id_or_404, check_resource_permission, debug_operation,
                   commit_or_rollback, create_and_add_resource)
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
+from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 router = APIRouter(
     prefix="/projects",

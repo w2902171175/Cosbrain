@@ -17,26 +17,26 @@ from sqlalchemy.sql import func
 
 # === 项目内部导入 ===
 # 核心模块
-from database import get_db
-from dependencies.dependencies import (
+from project.database import get_db
+from project.dependencies.dependencies import (
     SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token, get_current_user_id, verify_password, get_password_hash, is_admin_user
 )
-from utils.utils import _award_points, _check_and_award_achievements, _get_text_part
+from project.utils.utils import _award_points, _check_and_award_achievements, _get_text_part
 
 # 数据模型
-from models.models import (
+from project.models import (
     Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, 
     ChatMessage, Achievement, UserAchievement, PointTransaction
 )
 
 # 路由模块
-from routers import (
+from project.routers import (
     admin, projects, dashboard, course_notes, quick_notes, auth, achievement_points, 
     tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, ai, recommend
 )
 # 导入收藏系统模块
-from routers.collections import collections_router, collections_advanced_router
+from project.routers.collections import collections_router, collections_advanced_router
 
 # 加载环境变量
 load_dotenv()

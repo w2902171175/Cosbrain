@@ -3,13 +3,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 
-from database import get_db
-from models import Student
-from dependencies import get_current_user_id
-import schemas
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_available_llm_configs, get_user_model_for_provider, parse_llm_model_ids, serialize_llm_model_ids
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key, encrypt_key
+from project.database import get_db
+from project.models import Student
+from project.dependencies import get_current_user_id
+import project.schemas as schemas
+from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_available_llm_configs, get_user_model_for_provider, parse_llm_model_ids, serialize_llm_model_ids
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key, encrypt_key
 
 router = APIRouter(
     tags=["LLM管理"],

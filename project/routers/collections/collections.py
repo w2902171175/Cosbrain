@@ -23,8 +23,8 @@ from jose import JWTError, jwt
 import requests, secrets, json, os, uuid, asyncio, httpx, re, traceback, time
 
 # 导入数据库和模型
-from database import SessionLocal, engine, init_db, get_db
-from models import Student, Project, Note, KnowledgeBase, Course, UserCourse, CollectionItem, \
+from project.database import SessionLocal, engine, init_db, get_db
+from project.models import Student, Project, Note, KnowledgeBase, Course, UserCourse, CollectionItem, \
     Folder, CollectedContent, ChatRoom, ChatMessage, ForumTopic, ForumComment, ForumLike, UserFollow, \
     UserMcpConfig, UserSearchEngineConfig, ChatRoomMember, \
     ChatRoomJoinRequest, Achievement, UserAchievement, PointTransaction, CourseMaterial, AIConversation, \

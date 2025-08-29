@@ -30,10 +30,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 导入数据库和模型
-from database import get_db
-from models import KnowledgeBase, KnowledgeDocument, Student
-from dependencies import get_current_user_id
-from schemas.knowledge_schemas import (
+from project.database import get_db
+from project.models import KnowledgeBase, KnowledgeDocument, Student
+from project.dependencies import get_current_user_id
+from project.schemas.knowledge_schemas import (
     KnowledgeBaseSimpleBase, KnowledgeBaseSimpleCreate, KnowledgeBaseSimpleResponse,
     KnowledgeDocumentSimpleBase, KnowledgeDocumentSimpleCreate, KnowledgeDocumentSimpleResponse,
     KnowledgeDocumentUrlCreate, KnowledgeSearchResponse
@@ -306,7 +306,7 @@ class ThumbnailGenerator:
 
 # ===== 知识库基础管理 =====
 
-@router.post("/knowledge-bases", response_model=KnowledgeBaseSimpleResponse, summary="创建知识库")
+@router.post("/kb", response_model=KnowledgeBaseSimpleResponse, summary="创建知识库")
 async def create_knowledge_base(
     kb_data: KnowledgeBaseSimpleCreate,
     current_user_id: int = Depends(get_current_user_id),
@@ -355,7 +355,7 @@ async def create_knowledge_base(
             detail="创建知识库失败"
         )
 
-@router.get("/knowledge-bases", response_model=List[KnowledgeBaseSimpleResponse], summary="获取知识库列表")
+@router.get("/kb", response_model=List[KnowledgeBaseSimpleResponse], summary="获取知识库列表")
 async def get_knowledge_bases(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -402,7 +402,7 @@ async def get_knowledge_bases(
             detail="获取知识库列表失败"
         )
 
-@router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseSimpleResponse, summary="获取知识库详情")
+@router.get("/kb/{kb_id}", response_model=KnowledgeBaseSimpleResponse, summary="获取知识库详情")
 async def get_knowledge_base(
     kb_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -439,7 +439,7 @@ async def get_knowledge_base(
     
     return KnowledgeBaseSimpleResponse(**kb_dict)
 
-@router.put("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseSimpleResponse, summary="更新知识库")
+@router.put("/kb/{kb_id}", response_model=KnowledgeBaseSimpleResponse, summary="更新知识库")
 async def update_knowledge_base(
     kb_id: int,
     kb_data: KnowledgeBaseSimpleBase,
@@ -498,7 +498,7 @@ async def update_knowledge_base(
             detail="更新知识库失败"
         )
 
-@router.delete("/knowledge-bases/{kb_id}", summary="删除知识库")
+@router.delete("/kb/{kb_id}", summary="删除知识库")
 async def delete_knowledge_base(
     kb_id: int,
     background_tasks: BackgroundTasks,
@@ -809,7 +809,7 @@ async def process_url_content(
 
 # ===== 高级文档管理 =====
 
-@router.post("/knowledge-bases/{kb_id}/documents/upload", response_model=KnowledgeDocumentSimpleResponse, summary="智能文档上传")
+@router.post("/kb/{kb_id}/documents/upload", response_model=KnowledgeDocumentSimpleResponse, summary="智能文档上传")
 async def upload_document(
     kb_id: int,
     background_tasks: BackgroundTasks,
@@ -931,7 +931,7 @@ async def upload_document(
             detail="文档上传失败"
         )
 
-@router.post("/knowledge-bases/{kb_id}/documents/add-url", response_model=KnowledgeDocumentSimpleResponse, summary="添加网址内容")
+@router.post("/kb/{kb_id}/documents/add-url", response_model=KnowledgeDocumentSimpleResponse, summary="添加网址内容")
 async def add_url_document(
     kb_id: int,
     background_tasks: BackgroundTasks,
@@ -1013,7 +1013,7 @@ async def add_url_document(
 
 # ===== 文档查询和管理 =====
 
-@router.get("/knowledge-bases/{kb_id}/documents", response_model=List[KnowledgeDocumentSimpleResponse], summary="获取文档列表")
+@router.get("/kb/{kb_id}/documents", response_model=List[KnowledgeDocumentSimpleResponse], summary="获取文档列表")
 async def get_documents(
     kb_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -1071,7 +1071,7 @@ async def get_documents(
             detail="获取文档列表失败"
         )
 
-@router.get("/knowledge-bases/{kb_id}/documents/{document_id}", response_model=KnowledgeDocumentSimpleResponse, summary="获取文档详情")
+@router.get("/kb/{kb_id}/documents/{document_id}", response_model=KnowledgeDocumentSimpleResponse, summary="获取文档详情")
 async def get_document(
     kb_id: int,
     document_id: int,
@@ -1094,7 +1094,7 @@ async def get_document(
     
     return document
 
-@router.put("/knowledge-bases/{kb_id}/documents/{document_id}", response_model=KnowledgeDocumentSimpleResponse, summary="更新文档信息")
+@router.put("/kb/{kb_id}/documents/{document_id}", response_model=KnowledgeDocumentSimpleResponse, summary="更新文档信息")
 async def update_document(
     kb_id: int,
     document_id: int,
@@ -1152,7 +1152,7 @@ async def update_document(
             detail="更新文档失败"
         )
 
-@router.delete("/knowledge-bases/{kb_id}/documents/{document_id}", summary="删除文档")
+@router.delete("/kb/{kb_id}/documents/{document_id}", summary="删除文档")
 async def delete_document(
     kb_id: int,
     document_id: int,
@@ -1226,7 +1226,7 @@ async def delete_document(
             detail="删除文档失败"
         )
 
-@router.get("/knowledge-bases/{kb_id}/documents/stats", summary="获取文档统计信息")
+@router.get("/kb/{kb_id}/documents/stats", summary="获取文档统计信息")
 async def get_document_stats(
     kb_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -1297,7 +1297,7 @@ async def get_document_stats(
             detail="获取文档统计失败"
         )
 
-@router.get("/knowledge-bases/{kb_id}/documents/{document_id}/status", summary="获取文档处理状态")
+@router.get("/kb/{kb_id}/documents/{document_id}/status", summary="获取文档处理状态")
 async def get_document_processing_status(
     kb_id: int,
     document_id: int,
@@ -1358,7 +1358,7 @@ async def get_document_processing_status(
 
 # ===== 高级搜索和统计 =====
 
-@router.get("/knowledge-bases/{kb_id}/search", response_model=KnowledgeSearchResponse, summary="智能搜索")
+@router.get("/kb/{kb_id}/search", response_model=KnowledgeSearchResponse, summary="智能搜索")
 async def search_knowledge(
     kb_id: int,
     q: str = Query(..., min_length=1, max_length=200, description="搜索关键词"),
@@ -1474,7 +1474,7 @@ async def search_knowledge(
             detail="搜索失败"
         )
 
-@router.get("/knowledge-bases/{kb_id}/analytics", summary="知识库分析统计")
+@router.get("/kb/{kb_id}/analytics", summary="知识库分析统计")
 async def get_knowledge_base_analytics(
     kb_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -1636,7 +1636,7 @@ async def get_top_file_types(kb_id: int, user_id: int, db: Session) -> List[Dict
 
 # ===== 批量操作 =====
 
-@router.post("/knowledge-bases/{kb_id}/documents/batch-delete", summary="批量删除文档")
+@router.post("/kb/{kb_id}/documents/batch-delete", summary="批量删除文档")
 async def batch_delete_documents(
     kb_id: int,
     document_ids: List[int],
@@ -1730,7 +1730,7 @@ async def batch_delete_documents(
             detail="批量删除文档失败"
         )
 
-@router.get("/knowledge-bases/{kb_id}/export", summary="导出知识库")
+@router.get("/kb/{kb_id}/export", summary="导出知识库")
 async def export_knowledge_base(
     kb_id: int,
     current_user_id: int = Depends(get_current_user_id),

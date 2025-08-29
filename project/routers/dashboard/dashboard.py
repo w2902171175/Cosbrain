@@ -5,13 +5,13 @@ from typing import List, Optional
 import json
 
 # 导入数据库和模型
-from database import get_db
-from models import (
+from project.database import get_db
+from project.models import (
     Student, Project, Course, UserCourse, ChatRoom, ProjectMember
 )
-from dependencies import get_current_user_id
+from project.dependencies import get_current_user_id
 from sqlalchemy import or_
-import schemas
+import project.schemas as schemas
 
 router = APIRouter(
     prefix="/dashboard",

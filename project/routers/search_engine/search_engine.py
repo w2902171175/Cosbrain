@@ -7,12 +7,12 @@ import requests
 import logging
 
 # 导入数据库和模型
-from database import get_db
-from models import UserSearchEngineConfig
-from dependencies import get_current_user_id
-import schemas
-from ai_providers.search_provider import call_web_search_api
-from ai_providers.security_utils import decrypt_key, encrypt_key
+from project.database import get_db
+from project.models import UserSearchEngineConfig
+from project.dependencies import get_current_user_id
+import project.schemas as schemas
+from project.ai_providers.search_provider import call_web_search_api
+from project.ai_providers.security_utils import decrypt_key, encrypt_key
 
 # 配置日志
 logger = logging.getLogger(__name__)

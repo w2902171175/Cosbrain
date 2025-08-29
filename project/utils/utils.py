@@ -7,10 +7,10 @@ from sqlalchemy.sql import func
 from sqlalchemy import and_, or_
 from fastapi import HTTPException, status
 
-from models.models import Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, ChatMessage, PointTransaction, Achievement, UserAchievement
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
+from project.models import Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, ChatMessage, PointTransaction, Achievement, UserAchievement
+from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 
 def _get_text_part(value: Any) -> str:

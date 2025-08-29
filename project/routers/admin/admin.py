@@ -5,12 +5,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Literal, Optional
 
-# 使用正确的相对导入
-from database import get_db
-from models.models import Student, Achievement, PointTransaction, KnowledgeArticle, KnowledgeDocument, KnowledgeDocumentChunk, Note
-from dependencies.dependencies import get_current_user_id, is_admin_user
-from utils.utils import _award_points
-import schemas.schemas as schemas
+# 使用正确的绝对导入
+from project.database import get_db
+from project.models import Student, Achievement, PointTransaction, KnowledgeArticle, KnowledgeDocument, KnowledgeDocumentChunk, Note
+from project.dependencies.dependencies import get_current_user_id, is_admin_user
+from project.utils.utils import _award_points
+import project.schemas.schemas as schemas
 
 router = APIRouter(prefix="/admin", tags=["管理员"])
 

@@ -58,6 +58,11 @@ pytz==2024.1
 # 异步支持
 asyncio-mqtt==0.16.1
 
+# 缓存和性能优化
+redis==5.0.1
+python-magic==0.4.27
+bleach==6.1.0
+
 # 开发和调试工具（可选）
 pytest==8.0.2
 pytest-asyncio==0.23.7

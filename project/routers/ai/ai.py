@@ -13,20 +13,20 @@ import os
 import uuid
 import traceback
 
-from database import get_db, SessionLocal
-from models import Student, Project, Course, KnowledgeBase, KnowledgeArticle, Note, AIConversation, AIConversationMessage, AIConversationTemporaryFile, KnowledgeDocument
-from dependencies import get_current_user_id
-import schemas
+from project.database import get_db, SessionLocal
+from project.models import Student, Project, Course, KnowledgeBase, KnowledgeArticle, Note, AIConversation, AIConversationMessage, AIConversationTemporaryFile, KnowledgeDocument
+from project.dependencies import get_current_user_id
+import project.schemas as schemas
 
-import oss_utils
-from ai_providers.agent_orchestrator import get_all_available_tools_for_llm, invoke_agent
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, INITIAL_CANDIDATES_K, get_user_model_for_provider
-from ai_providers.document_processor import extract_text_from_document
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.llm_provider import generate_conversation_title_from_llm
-from ai_providers.rerank_provider import get_rerank_scores_from_api
-from ai_providers.security_utils import decrypt_key
-from ai_providers.config import get_user_model_for_provider
+import project.oss_utils as oss_utils
+from project.ai_providers.agent_orchestrator import get_all_available_tools_for_llm, invoke_agent
+from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, INITIAL_CANDIDATES_K, get_user_model_for_provider
+from project.ai_providers.document_processor import extract_text_from_document
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.llm_provider import generate_conversation_title_from_llm
+from project.ai_providers.rerank_provider import get_rerank_scores_from_api
+from project.ai_providers.security_utils import decrypt_key
+from project.ai_providers.config import get_user_model_for_provider
 
 router = APIRouter(
     prefix="/ai",
