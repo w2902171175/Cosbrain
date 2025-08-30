@@ -50,9 +50,9 @@ from project.utils import (
 )
 
 # AI功能
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 # 配置日志
 logger = logging.getLogger(__name__)

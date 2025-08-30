@@ -20,7 +20,7 @@ from project.utils import (_get_text_part, generate_embedding_safe, populate_use
                   validate_ownership, _award_points, _check_and_award_achievements, get_projects_with_details,
                   get_resource_or_404, get_user_by_id_or_404, check_resource_permission, debug_operation,
                   commit_or_rollback, create_and_add_resource)
-from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
 from project.ai_providers.embedding_provider import get_embeddings_from_api
 from project.ai_providers.security_utils import decrypt_key
 

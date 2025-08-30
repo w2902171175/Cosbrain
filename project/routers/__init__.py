@@ -6,7 +6,8 @@
 
 # 从各个子包导入路由器
 from .admin import router as admin
-from .ai import router as ai
+from .ai import ai_router as ai  # 使用新的企业级AI路由作为主路由
+from .ai import ai_admin_router, ai_monitoring_router  # 导入AI管理和监控路由
 from .achievement_points import router as achievement_points
 from .auth import router as auth
 from .chatrooms import router as chatrooms
@@ -25,7 +26,7 @@ from .tts import router as tts
 
 # 导出所有路由器
 __all__ = [
-    "admin", "ai", "achievement_points", "auth", "chatrooms", 
+    "admin", "ai", "ai_admin_router", "ai_monitoring_router", "achievement_points", "auth", "chatrooms", 
     "course_notes", "courses", "dashboard", "forum", "knowledge",
     "llm", "mcp", "projects", "quick_notes", "recommend", 
     "search_engine", "tts"

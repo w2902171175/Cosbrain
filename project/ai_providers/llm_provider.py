@@ -1,31 +1,50 @@
 # ai_providers/llm_provider.py
 """
-LLM服务提供者实现
+企业级LLM服务提供者实现
+支持多种提供商、监控、缓存、重试、限流等功能
 """
+import asyncio
 import httpx
+import json
 from typing import List, Dict, Any, Optional
 from openai import AsyncOpenAI, APIError, RateLimitError, AuthenticationError
-from .ai_base import LLMProvider
-from .config import DEFAULT_LLM_API_CONFIG
+
+from .ai_base import (
+    LLMProvider, 
+    with_monitoring, 
+    with_retry
+)
+from .ai_config import DEFAULT_LLM_API_CONFIG
+
+# 企业级功能标志
+try:
+    from . import ENTERPRISE_FEATURES
+except ImportError:
+    ENTERPRISE_FEATURES = False
 
 
 class OpenAIProvider(LLMProvider):
-    """OpenAI LLM服务提供者"""
+    """OpenAI LLM服务提供者 - 企业级版本"""
     
     def __init__(self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None):
-        super().__init__(api_key, base_url, model)
+        super().__init__("openai", api_key, base_url, model)
         
-        # 如果没有指定base_url，使用默认的OpenAI URL
-        if not base_url:
-            base_url = DEFAULT_LLM_API_CONFIG["openai"]["base_url"]
-        
-        # 如果没有指定模型，使用默认模型
-        if not model:
-            model = DEFAULT_LLM_API_CONFIG["openai"]["default_model"]
+        # 设置默认配置
+        if not self.base_url:
+            self.base_url = DEFAULT_LLM_API_CONFIG["openai"]["base_url"]
+        if not self.model:
+            self.model = DEFAULT_LLM_API_CONFIG["openai"]["default_model"]
             
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self.default_model = model
+        self.client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
+        
+        self.logger.info("OpenAI provider initialized", extra={
+            "base_url": self.base_url,
+            "model": self.model,
+            "api_key": self._sanitize_api_key(api_key)
+        })
     
+    @with_monitoring("chat_completion")
+    @with_retry()
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -39,7 +58,7 @@ class OpenAIProvider(LLMProvider):
         try:
             # 准备请求参数
             completion_params = {
-                "model": model or self.default_model,
+                "model": model or self.model,
                 "messages": messages,
                 "temperature": temperature,
                 "top_p": top_p
@@ -51,34 +70,56 @@ class OpenAIProvider(LLMProvider):
                 if tool_choice:
                     completion_params["tool_choice"] = tool_choice
             
+            self.logger.info(f"Sending chat completion request", extra={
+                "model": completion_params["model"],
+                "message_count": len(messages),
+                "has_tools": bool(tools),
+                "temperature": temperature
+            })
+            
             # 调用OpenAI API
             completion = await self.client.chat.completions.create(**completion_params)
             
             # 转换为字典格式
-            return completion.model_dump()
+            result = completion.model_dump()
+            
+            self.logger.info("Chat completion successful", extra={
+                "usage": result.get("usage", {}),
+                "model": result.get("model")
+            })
+            
+            return result
             
         except AuthenticationError as e:
-            print(f"ERROR_OPENAI_API: OpenAI API 认证失败，请检查 API Key: {e}")
+            self.logger.error("OpenAI API authentication failed", error=e, extra={
+                "api_key": self._sanitize_api_key(self.api_key)
+            })
             raise
         except RateLimitError as e:
-            print(f"ERROR_OPENAI_API: OpenAI API 请求频率限制，请稍后重试: {e}")
+            self.logger.warning("OpenAI API rate limit exceeded", error=e)
             raise
         except APIError as e:
-            print(f"ERROR_OPENAI_API: OpenAI API 错误: {e}")
+            self.logger.error("OpenAI API error", error=e)
             raise
         except Exception as e:
-            print(f"ERROR_OPENAI_API: 未知 OpenAI API 错误: {e}")
+            self.logger.error("Unexpected OpenAI API error", error=e)
             raise
 
 
 class CustomOpenAIProvider(LLMProvider):
-    """自定义OpenAI兼容服务提供者"""
+    """自定义OpenAI兼容服务提供者 - 企业级版本"""
     
     def __init__(self, api_key: str, base_url: str, model: str):
-        super().__init__(api_key, base_url, model)
+        super().__init__("custom_openai", api_key, base_url, model)
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self.default_model = model
+        
+        self.logger.info("Custom OpenAI provider initialized", extra={
+            "base_url": base_url,
+            "model": model
+        })
     
+    @with_monitoring("chat_completion")
+    @with_retry()
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -91,7 +132,7 @@ class CustomOpenAIProvider(LLMProvider):
         """使用自定义OpenAI兼容API执行聊天完成请求"""
         try:
             completion_params = {
-                "model": model or self.default_model,
+                "model": model or self.model,
                 "messages": messages,
                 "temperature": temperature,
                 "top_p": top_p
@@ -102,23 +143,39 @@ class CustomOpenAIProvider(LLMProvider):
                 if tool_choice:
                     completion_params["tool_choice"] = tool_choice
             
+            self.logger.info(f"Sending request to custom OpenAI API", extra={
+                "model": completion_params["model"],
+                "message_count": len(messages)
+            })
+            
             completion = await self.client.chat.completions.create(**completion_params)
-            return completion.model_dump()
+            result = completion.model_dump()
+            
+            self.logger.info("Custom OpenAI API request successful")
+            return result
             
         except Exception as e:
-            print(f"ERROR_CUSTOM_OPENAI_API: 自定义OpenAI API 错误: {e}")
+            self.logger.error("Custom OpenAI API error", error=e)
             raise
 
 
 class HttpxLLMProvider(LLMProvider):
-    """基于httpx的通用LLM服务提供者"""
+    """基于httpx的通用LLM服务提供者 - 企业级版本"""
     
     def __init__(self, api_key: str, base_url: str, model: str, provider_type: str):
-        super().__init__(api_key, base_url, model)
+        super().__init__(provider_type, api_key, base_url, model)
         self.provider_type = provider_type
         self.config = DEFAULT_LLM_API_CONFIG.get(provider_type, {})
         self.chat_url = f"{base_url.rstrip('/')}{self.config.get('chat_path', '/chat/completions')}"
+        
+        self.logger.info(f"HttpxLLM provider initialized", extra={
+            "provider_type": provider_type,
+            "chat_url": self.chat_url,
+            "model": model
+        })
     
+    @with_monitoring("chat_completion")
+    @with_retry()
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -148,23 +205,58 @@ class HttpxLLMProvider(LLMProvider):
                 data["tool_choice"] = tool_choice
         
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    self.chat_url,
-                    headers=headers,
-                    json=data
-                )
-                response.raise_for_status()
-                return response.json()
-                
+            # 使用企业级HTTP客户端
+            if ENTERPRISE_FEATURES:
+                async with await self._get_http_client() as client:
+                    self.logger.info(f"Sending request to {self.provider_type}", extra={
+                        "url": self.chat_url,
+                        "model": data["model"],
+                        "message_count": len(messages)
+                    })
+                    
+                    response = await client.post(
+                        self.chat_url,
+                        headers=headers,
+                        json=data
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+            else:
+                # 基础HTTP客户端
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        self.chat_url,
+                        headers=headers,
+                        json=data
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+            
+            self.logger.info(f"{self.provider_type} API request successful", extra={
+                "usage": result.get("usage", {})
+            })
+            
+            return result
+            
         except httpx.HTTPStatusError as e:
-            print(f"ERROR_{self.provider_type.upper()}_API: HTTP {e.response.status_code} 错误: {e.response.text}")
+            error_detail = ""
+            try:
+                error_detail = e.response.text
+            except:
+                pass
+            
+            self.logger.error(f"{self.provider_type} API HTTP error", error=e, extra={
+                "status_code": e.response.status_code,
+                "response_text": error_detail[:500]  # 限制错误文本长度
+            })
             raise
+            
         except httpx.RequestError as e:
-            print(f"ERROR_{self.provider_type.upper()}_API: 请求错误: {e}")
+            self.logger.error(f"{self.provider_type} API request error", error=e)
             raise
+            
         except Exception as e:
-            print(f"ERROR_{self.provider_type.upper()}_API: 未知错误: {e}")
+            self.logger.error(f"{self.provider_type} API unexpected error", error=e)
             raise
 
 
@@ -175,7 +267,7 @@ def create_llm_provider(
     model: Optional[str] = None
 ) -> LLMProvider:
     """
-    LLM提供者工厂函数
+    LLM提供者工厂函数 - 企业级版本
     
     Args:
         provider_type: 提供者类型 (openai, custom_openai, deepseek, siliconflow, etc.)
@@ -209,7 +301,7 @@ def create_llm_provider(
         return HttpxLLMProvider(api_key, base_url, model, provider_type)
 
 
-# --- 兼容性包装函数 ---
+# 兼容性包装函数
 async def generate_conversation_title_from_llm(
         messages: List[Dict[str, Any]],
         user_llm_api_type: str,
@@ -221,11 +313,9 @@ async def generate_conversation_title_from_llm(
     根据对话消息内容，调用LLM自动生成一个简洁的对话标题。
     最多取最近的10条消息作为输入。
     """
-    import json
     import re
     
     if not messages:
-        print("WARNING_LLM_TITLE: 对话消息为空，无法生成标题。")
         return "无题对话"
 
     # 提取最近的10条消息进行总结
@@ -245,7 +335,6 @@ async def generate_conversation_title_from_llm(
             llm_context_messages.append({"role": "assistant", "content": f"（工具结果: {output_info}...）"})
 
     if not llm_context_messages:
-        print("WARNING_LLM_TITLE: 过滤后没有有效的对话消息作为生成标题的上下文。")
         return "新对话"
 
     # 构建发送给LLM的完整消息，要求生成标题
@@ -254,8 +343,6 @@ async def generate_conversation_title_from_llm(
     # 将对话历史作为用户消息的一部分传递给LLM
     llm_input_messages = [{"role": "system", "content": system_prompt}] + llm_context_messages
     llm_input_messages.append({"role": "user", "content": "请根据以上对话内容，生成一个简洁的标题。"})
-
-    print(f"DEBUG_LLM_TITLE: 准备调用LLM生成标题，消息数量: {len(llm_input_messages)}")
 
     try:
         # 创建LLM提供者
@@ -281,7 +368,6 @@ async def generate_conversation_title_from_llm(
         if not clean_title:  # 如果清理后变为空，给一个默认标题
             clean_title = "无标题对话"
 
-        print(f"DEBUG_LLM_TITLE: LLM成功生成标题: '{clean_title}'")
         return clean_title
     except Exception as e:
         print(f"ERROR_LLM_TITLE: 调用LLM生成标题失败: {e}. 返回默认标题。")

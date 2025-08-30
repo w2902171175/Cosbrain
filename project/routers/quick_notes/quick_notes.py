@@ -11,9 +11,9 @@ from project.utils import (_get_text_part, generate_embedding_safe, get_user_res
                   debug_operation, commit_or_rollback, create_and_add_resource, update_embedding_safe)
 
 import schemas
-from ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 router = APIRouter(
     prefix="/daily-records",

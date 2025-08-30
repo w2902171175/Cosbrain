@@ -17,10 +17,9 @@ from project.utils.utils import (_get_text_part, _award_points, _check_and_award
                   process_skills_field, build_user_combined_text, update_embedding_safe, 
                   debug_operation, commit_or_rollback, get_user_by_id_or_404, update_fields_from_dict)
 import project.schemas.schemas as schemas
-from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_user_model_for_provider
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.security_utils import decrypt_key
-from ai_providers.config import get_user_model_for_provider
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_user_model_for_provider
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.security_utils import decrypt_key
 
 router = APIRouter(
     tags=["认证管理"],

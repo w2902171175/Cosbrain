@@ -39,9 +39,9 @@ from project.schemas.knowledge_schemas import (
     KnowledgeDocumentUrlCreate, KnowledgeSearchResponse
 )
 import oss_utils
-from ai_providers.document_processor import extract_text_from_document, chunk_text
-from ai_providers.embedding_provider import get_embeddings_from_api
-from ai_providers.config import get_user_model_for_provider
+from project.ai_providers.document_processor import extract_text_from_document, chunk_text
+from project.ai_providers.embedding_provider import get_embeddings_from_api
+from project.ai_providers.ai_config import get_user_model_for_provider
 
 # 内容类型枚举
 class ContentType(str, Enum):

@@ -33,7 +33,8 @@ from project.models import (
 # 路由模块
 from project.routers import (
     admin, projects, dashboard, course_notes, quick_notes, auth, achievement_points, 
-    tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, ai, recommend
+    tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, ai, recommend,
+    ai_admin_router, ai_monitoring_router
 )
 # 导入收藏系统模块
 from project.routers.collections import router as collections_router
@@ -84,6 +85,8 @@ app.include_router(chatrooms)
 # 收藏系统 - 基于文件夹的新架构（统一路由）
 app.include_router(collections_router)  # 新一代收藏管理系统
 app.include_router(ai)
+app.include_router(ai_admin_router)  # AI管理路由
+app.include_router(ai_monitoring_router)  # AI监控路由
 app.include_router(recommend)
 
 # === 认证配置 ===

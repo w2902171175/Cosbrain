@@ -1,127 +1,163 @@
-# ai_providers/rerank_provider.py
 """
-重排服务提供者实现
+企业级重排序提供者实现
 """
+
+import sys
+from pathlib import Path
+from typing import Dict, Any, List
 import httpx
-from typing import List, Dict, Any, Optional
-from .ai_base import RerankProvider
-from .config import DEFAULT_RERANK_CONFIGS
 
+# 添加企业级组件路径
+enterprise_path = Path(__file__).parent.parent.parent / "logs"
+if str(enterprise_path) not in sys.path:
+    sys.path.insert(0, str(enterprise_path))
 
-class SiliconFlowRerankProvider(RerankProvider):
-    """SiliconFlow重排服务提供者"""
+from .ai_base import BaseRerankProvider, EnterpriseDecorator
+from .ai_config import get_enterprise_config
+
+class EnterpriseRerankProvider(BaseRerankProvider):
+    """企业级重排序提供者"""
     
-    def __init__(self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None):
-        super().__init__(api_key, base_url, model)
+    def __init__(self, provider_name: str = "cohere", **kwargs):
+        # 从企业配置获取参数
+        config = get_enterprise_config()
+        rerank_config = config.get_rerank_config(provider_name)
         
-        config = DEFAULT_RERANK_CONFIGS["siliconflow"]
-        self.base_url = base_url or config["base_url"]
-        self.model = model or config["default_model"]
-        self.rerank_url = f"{self.base_url.rstrip('/')}{config['rerank_path']}"
+        if not rerank_config:
+            raise ValueError(f"Rerank provider {provider_name} not found in configuration")
+        
+        if not rerank_config.api_key:
+            raise ValueError(f"API key not configured for rerank provider {provider_name}")
+        
+        super().__init__(
+            provider_name=provider_name,
+            api_key=rerank_config.api_key,
+            api_base=rerank_config.api_base,
+            model=rerank_config.model,
+            timeout=rerank_config.timeout,
+            max_retries=rerank_config.max_retries
+        )
+        
+        self.rerank_config = rerank_config
     
+    @EnterpriseDecorator.with_retry(max_retries=3)
+    @EnterpriseDecorator.with_timeout(timeout_seconds=30.0)
     async def rerank(
         self,
         query: str,
         documents: List[str],
-        model: Optional[str] = None,
-        top_k: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
-        """对文档进行重排"""
-        if not documents:
-            return []
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "model": model or self.model,
-            "query": query,
-            "documents": documents
-        }
-        
-        if top_k is not None:
-            data["top_k"] = top_k
-        
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+        **kwargs
+    ) -> Dict[str, Any]:
+        """重排序文档"""
+        async with self._request_context("rerank", query=query, documents=documents, **kwargs) as request_id:
+            
+            # 限制文档数量
+            max_docs = kwargs.get("max_documents", self.rerank_config.max_documents)
+            if len(documents) > max_docs:
+                documents = documents[:max_docs]
+            
+            # 构建请求参数
+            request_data = {
+                "model": kwargs.get("model", self.model),
+                "query": query,
+                "documents": documents,
+                "top_k": kwargs.get("top_k", len(documents)),
+                "return_documents": kwargs.get("return_documents", True)
+            }
+            
+            # 准备HTTP请求
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            # 执行请求
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    self.rerank_url,
+                    f"{self.api_base}/rerank",
                     headers=headers,
-                    json=data
+                    json=request_data
                 )
                 response.raise_for_status()
-                result = response.json()
                 
-                # 提取重排结果
-                return result.get("results", [])
+                result_data = response.json()
                 
-        except httpx.HTTPStatusError as e:
-            print(f"ERROR_SILICONFLOW_RERANK: HTTP {e.response.status_code} 错误: {e.response.text}")
-            # 返回原始顺序
-            return [{"index": i, "relevance_score": 0.0, "document": doc} 
-                   for i, doc in enumerate(documents)]
-        except httpx.RequestError as e:
-            print(f"ERROR_SILICONFLOW_RERANK: 请求错误: {e}")
-            return [{"index": i, "relevance_score": 0.0, "document": doc} 
-                   for i, doc in enumerate(documents)]
-        except Exception as e:
-            print(f"ERROR_SILICONFLOW_RERANK: 未知错误: {e}")
-            return [{"index": i, "relevance_score": 0.0, "document": doc} 
-                   for i, doc in enumerate(documents)]
-
-
-def create_rerank_provider(
-    provider_type: str,
-    api_key: str,
-    base_url: Optional[str] = None,
-    model: Optional[str] = None
-) -> RerankProvider:
-    """
-    重排提供者工厂函数
+                # 解析响应
+                result = {
+                    "results": result_data.get("results", []),
+                    "model": result_data.get("model", self.model),
+                    "usage": result_data.get("usage", {}),
+                    "request_id": request_id
+                }
+                
+                return result
     
-    Args:
-        provider_type: 提供者类型
-        api_key: API密钥
-        base_url: API基础URL（可选）
-        model: 模型名称（可选）
+    async def _make_request(self, **kwargs) -> Any:
+        """实现基础请求方法"""
+        if kwargs.get("test"):
+            # 健康检查的简单测试
+            return {"status": "ok", "model": self.model}
         
-    Returns:
-        重排提供者实例
-    """
-    if provider_type == "siliconflow":
-        return SiliconFlowRerankProvider(api_key, base_url, model)
-    else:
-        raise ValueError(f"不支持的重排提供者类型: {provider_type}")
+        return await self.rerank(**kwargs)
 
-
-# --- 兼容性包装函数 ---
 async def get_rerank_scores_from_api(
     query: str,
     documents: List[str],
-    api_key: str,
-    api_type: str = "siliconflow",
-    api_url: Optional[str] = None,
-    rerank_model: Optional[str] = None,
+    api_key: str = None,
+    llm_type: str = None,
+    llm_base_url: str = None,
+    fallback_to_similarity: bool = True,
     **kwargs
-) -> List[Dict[str, Any]]:
+) -> List[float]:
     """
-    向后兼容的重排序API调用函数
-    保持与原ai_core.get_rerank_scores_from_api的接口兼容
+    获取重排序分数
+    
+    Args:
+        query: 查询文本
+        documents: 要重排序的文档列表
+        api_key: API密钥
+        llm_type: LLM类型
+        llm_base_url: LLM基础URL
+        fallback_to_similarity: 是否回退到相似度计算
+        **kwargs: 其他参数
+        
+    Returns:
+        重排序分数列表
     """
     try:
-        provider = create_rerank_provider(
-            provider_type=api_type,
-            api_key=api_key,
-            base_url=api_url,
-            model=rerank_model
-        )
+        # 创建重排序提供者
+        provider = EnterpriseRerankProvider("cohere")
         
-        results = await provider.rerank(query, documents)
-        return results
+        # 执行重排序
+        result = await provider.rerank(query, documents, **kwargs)
         
+        if result and 'results' in result:
+            # 提取分数
+            scores = []
+            for doc_result in result['results']:
+                scores.append(doc_result.get('relevance_score', 0.0))
+            return scores
+        else:
+            # 返回零分数
+            return [0.0] * len(documents)
+            
     except Exception as e:
-        print(f"WARNING: 重排序失败: {e}, 返回原始顺序")
-        return [{"index": i, "relevance_score": 0.0, "document": doc} 
-               for i, doc in enumerate(documents)]
+        if fallback_to_similarity:
+            # 回退到零分数
+            return [0.0] * len(documents)
+        else:
+            raise e
+
+def create_rerank_provider(provider_name: str = "cohere", **kwargs):
+    """
+    创建重排序提供者
+    
+    Args:
+        provider_name: 提供者名称
+        **kwargs: 其他参数
+        
+    Returns:
+        重排序提供者实例
+    """
+    return EnterpriseRerankProvider(provider_name, **kwargs)

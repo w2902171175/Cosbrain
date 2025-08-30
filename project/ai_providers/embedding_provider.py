@@ -1,124 +1,298 @@
-# ai_providers/embedding_provider.py
 """
-嵌入服务提供者实现
+企业级嵌入提供者
+现代化、高性能的向量嵌入服务
 """
-import httpx
-from typing import List, Optional
-from .ai_base import EmbeddingProvider
-from .config import DEFAULT_EMBEDDING_CONFIGS, GLOBAL_PLACEHOLDER_ZERO_VECTOR
 
+import asyncio
+import openai
+from typing import List, Dict, Any, Union, Optional
+from dataclasses import dataclass
+import numpy as np
 
-class SiliconFlowEmbeddingProvider(EmbeddingProvider):
-    """SiliconFlow嵌入服务提供者"""
+from .ai_base import BaseEmbeddingProvider, EnterpriseDecorator
+from .ai_config import get_enterprise_config
+
+@dataclass
+class EmbeddingResult:
+    """嵌入结果"""
+    embeddings: List[List[float]]
+    usage: Dict[str, int]
+    model: str
+    response_time: float
+
+class EnterpriseEmbeddingProvider(BaseEmbeddingProvider):
+    """企业级嵌入提供者"""
     
-    def __init__(self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None):
-        super().__init__(api_key, base_url, model)
-        
-        config = DEFAULT_EMBEDDING_CONFIGS["siliconflow"]
-        self.base_url = base_url or config["base_url"]
-        self.model = model or config["default_model"]
-        self.embeddings_url = f"{self.base_url.rstrip('/')}{config['embeddings_path']}"
-    
-    async def get_embeddings(
+    def __init__(
         self,
-        texts: List[str],
-        model: Optional[str] = None
-    ) -> List[List[float]]:
-        """获取文本嵌入向量"""
-        if not texts:
-            return []
+        provider_name: str = "openai",
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        model: str = "text-embedding-3-small",
+        **kwargs
+    ):
+        # 获取配置
+        config = get_enterprise_config()
+        provider_config = config.providers.get(provider_name)
         
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        if provider_config:
+            api_key = api_key or provider_config.api_key
+            api_base = api_base or provider_config.api_base
+            model = model or provider_config.embedding_model or model
         
-        data = {
-            "model": model or self.model,
-            "input": texts
-        }
+        super().__init__(
+            provider_name=provider_name,
+            api_key=api_key,
+            api_base=api_base or "https://api.openai.com/v1",
+            model=model,
+            **kwargs
+        )
+        
+        # 初始化OpenAI客户端
+        self.openai_client = openai.AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base
+        )
+    
+    @EnterpriseDecorator.with_retry(max_retries=3)
+    @EnterpriseDecorator.with_timeout(timeout_seconds=30.0)
+    async def create_embedding(
+        self,
+        input_text: Union[str, List[str]],
+        model: Optional[str] = None,
+        **kwargs
+    ) -> EmbeddingResult:
+        """创建嵌入向量"""
+        
+        start_time = asyncio.get_event_loop().time()
+        model = model or self.model
         
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    self.embeddings_url,
-                    headers=headers,
-                    json=data
-                )
-                response.raise_for_status()
-                result = response.json()
-                
-                # 提取嵌入向量
-                embeddings = []
-                for item in result.get("data", []):
-                    embeddings.append(item.get("embedding", GLOBAL_PLACEHOLDER_ZERO_VECTOR))
-                
-                return embeddings
-                
-        except httpx.HTTPStatusError as e:
-            print(f"ERROR_SILICONFLOW_EMBEDDING: HTTP {e.response.status_code} 错误: {e.response.text}")
-            # 返回占位符向量
-            return [GLOBAL_PLACEHOLDER_ZERO_VECTOR] * len(texts)
-        except httpx.RequestError as e:
-            print(f"ERROR_SILICONFLOW_EMBEDDING: 请求错误: {e}")
-            return [GLOBAL_PLACEHOLDER_ZERO_VECTOR] * len(texts)
+            # 标准化输入
+            if isinstance(input_text, str):
+                texts = [input_text]
+            else:
+                texts = input_text
+            
+            # 日志记录
+            await self.logger.log_request(
+                operation="create_embedding",
+                request_data={
+                    "model": model,
+                    "input_count": len(texts),
+                    "input_length": sum(len(text) for text in texts)
+                },
+                response_time=0,
+                success=True
+            )
+            
+            # 限流
+            await self.rate_limiter.acquire(tokens=sum(len(text) for text in texts))
+            
+            # 检查缓存
+            cache_key = self.cache_manager.generate_key(
+                "embedding",
+                model=model,
+                input_text=input_text
+            )
+            
+            cached_result = await self.cache_manager.get(cache_key)
+            if cached_result:
+                return EmbeddingResult(**cached_result)
+            
+            # 调用API
+            response = await self.openai_client.embeddings.create(
+                model=model,
+                input=texts,
+                **kwargs
+            )
+            
+            # 处理响应
+            embeddings = [data.embedding for data in response.data]
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+            
+            response_time = asyncio.get_event_loop().time() - start_time
+            
+            result = EmbeddingResult(
+                embeddings=embeddings,
+                usage=usage,
+                model=model,
+                response_time=response_time
+            )
+            
+            # 缓存结果
+            await self.cache_manager.set(
+                cache_key,
+                result.__dict__,
+                ttl=3600  # 1小时
+            )
+            
+            # 更新统计
+            self._total_requests += 1
+            self._successful_requests += 1
+            self._total_tokens += usage["total_tokens"]
+            
+            # 性能监控
+            await self.performance_monitor.record_latency(
+                operation="embedding",
+                latency=response_time
+            )
+            
+            return result
+            
         except Exception as e:
-            print(f"ERROR_SILICONFLOW_EMBEDDING: 未知错误: {e}")
-            return [GLOBAL_PLACEHOLDER_ZERO_VECTOR] * len(texts)
-
-
-def create_embedding_provider(
-    provider_type: str,
-    api_key: str,
-    base_url: Optional[str] = None,
-    model: Optional[str] = None
-) -> EmbeddingProvider:
-    """
-    嵌入提供者工厂函数
+            response_time = asyncio.get_event_loop().time() - start_time
+            self._failed_requests += 1
+            
+            # 错误日志
+            await self.logger.log_request(
+                operation="create_embedding",
+                request_data={
+                    "model": model,
+                    "input_count": len(texts) if 'texts' in locals() else 0
+                },
+                response_time=response_time,
+                success=False,
+                error=str(e)
+            )
+            
+            raise
     
-    Args:
-        provider_type: 提供者类型
-        api_key: API密钥
-        base_url: API基础URL（可选）
-        model: 模型名称（可选）
+    async def batch_create_embedding(
+        self,
+        input_texts: List[str],
+        model: Optional[str] = None,
+        batch_size: int = 100,
+        **kwargs
+    ) -> List[EmbeddingResult]:
+        """批量创建嵌入向量"""
         
-    Returns:
-        嵌入提供者实例
-    """
-    if provider_type == "siliconflow":
-        return SiliconFlowEmbeddingProvider(api_key, base_url, model)
-    else:
-        raise ValueError(f"不支持的嵌入提供者类型: {provider_type}")
+        results = []
+        
+        # 分批处理
+        for i in range(0, len(input_texts), batch_size):
+            batch = input_texts[i:i + batch_size]
+            result = await self.create_embedding(
+                input_text=batch,
+                model=model,
+                **kwargs
+            )
+            results.append(result)
+        
+        return results
+    
+    async def _make_request(self, **kwargs) -> Any:
+        """实现基类抽象方法"""
+        return await self.create_embedding(**kwargs)
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """健康检查"""
+        try:
+            # 测试简单的嵌入请求
+            test_result = await self.create_embedding("test")
+            return {
+                "status": "healthy",
+                "model": self.model,
+                "embedding_dim": len(test_result.embeddings[0]) if test_result.embeddings else 0,
+                "response_time": test_result.response_time
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            "provider_name": self.provider_name,
+            "model": self.model,
+            "total_requests": self._total_requests,
+            "successful_requests": self._successful_requests,
+            "failed_requests": self._failed_requests,
+            "total_tokens": self._total_tokens,
+            "success_rate": (
+                self._successful_requests / self._total_requests
+                if self._total_requests > 0 else 0
+            )
+        }
 
+# 工厂函数
+def create_enterprise_embedding_provider(
+    provider_name: str = "openai",
+    **kwargs
+) -> EnterpriseEmbeddingProvider:
+    """创建企业级嵌入提供者"""
+    return EnterpriseEmbeddingProvider(
+        provider_name=provider_name,
+        **kwargs
+    )
 
-# --- 兼容性包装函数 ---
+# 预定义的提供者配置
+EMBEDDING_PROVIDERS = {
+    "openai": {
+        "class": EnterpriseEmbeddingProvider,
+        "default_model": "text-embedding-3-small"
+    },
+    "openai-large": {
+        "class": EnterpriseEmbeddingProvider,
+        "default_model": "text-embedding-3-large"
+    }
+}
+
 async def get_embeddings_from_api(
     texts: List[str],
-    api_key: str,
-    api_type: str = "siliconflow",
-    api_url: Optional[str] = None,
-    embedding_model: Optional[str] = None,
+    user_id: Optional[str] = None,
+    provider: Optional[str] = None,
+    api_key: Optional[str] = None,
     **kwargs
 ) -> List[List[float]]:
     """
-    向后兼容的嵌入API调用函数
-    保持与原ai_core.get_embeddings_from_api的接口兼容
+    获取文本的嵌入向量
+    
+    Args:
+        texts: 要嵌入的文本列表
+        user_id: 用户ID（可选）
+        provider: 提供者名称（可选）
+        api_key: API密钥（可选）
+        **kwargs: 其他参数
+        
+    Returns:
+        嵌入向量列表
     """
     try:
-        provider = create_embedding_provider(
-            provider_type=api_type,
-            api_key=api_key,
-            base_url=api_url,
-            model=embedding_model
+        # 创建嵌入提供者
+        embedding_provider = create_enterprise_embedding_provider(
+            provider_name=provider or "openai",
+            api_key=api_key
         )
         
-        # 如果API密钥是占位符，返回零向量
-        if api_key == "dummy_key" or api_key == "dummy_key_for_testing_without_api":
+        # 获取嵌入
+        result = await embedding_provider.get_embeddings(texts)
+        
+        if result and hasattr(result, 'embeddings'):
+            return result.embeddings
+        else:
+            # 返回零向量
+            from .ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
             return [GLOBAL_PLACEHOLDER_ZERO_VECTOR] * len(texts)
-        
-        embeddings = await provider.get_embeddings(texts)
-        return embeddings
-        
+            
     except Exception as e:
-        print(f"WARNING: 嵌入生成失败: {e}, 返回零向量")
+        # 出错时返回零向量
+        from .ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
         return [GLOBAL_PLACEHOLDER_ZERO_VECTOR] * len(texts)
+
+# 向后兼容的别名
+create_embedding_provider = create_enterprise_embedding_provider
+
+__all__ = [
+    "EnterpriseEmbeddingProvider",
+    "EmbeddingResult", 
+    "create_enterprise_embedding_provider",
+    "create_embedding_provider",
+    "EMBEDDING_PROVIDERS",
+    "get_embeddings_from_api"
+]

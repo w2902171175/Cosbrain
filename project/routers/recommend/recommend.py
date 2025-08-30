@@ -6,7 +6,7 @@ from typing import List
 # 导入数据库和模型
 from project.database import get_db
 import project.schemas as schemas
-from project.ai_providers.config import INITIAL_CANDIDATES_K, FINAL_TOP_K
+from project.ai_providers.ai_config import INITIAL_CANDIDATES_K, FINAL_TOP_K
 from project.ai_providers.matching_engine import (
     find_matching_courses_for_student,
     find_matching_projects_for_student, 

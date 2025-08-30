@@ -7,7 +7,7 @@ from typing import Optional
 from gtts import gTTS
 from openai import AsyncOpenAI
 from .ai_base import TTSProvider
-from .config import DEFAULT_TTS_CONFIGS
+from .ai_config import DEFAULT_TTS_CONFIGS
 
 
 class OpenAITTSProvider(TTSProvider):

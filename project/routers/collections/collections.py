@@ -36,7 +36,7 @@ from project.dependencies.dependencies import get_current_user_id
 from project.utils.utils import _get_text_part
 import project.schemas as schemas
 import project.oss_utils as oss_utils
-from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_user_model_for_provider
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_user_model_for_provider
 from project.ai_providers.embedding_provider import get_embeddings_from_api
 from project.ai_providers.security_utils import decrypt_key
 

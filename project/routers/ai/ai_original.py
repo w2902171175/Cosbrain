@@ -20,18 +20,17 @@ import project.schemas as schemas
 
 import project.oss_utils as oss_utils
 from project.ai_providers.agent_orchestrator import get_all_available_tools_for_llm, invoke_agent
-from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, INITIAL_CANDIDATES_K, get_user_model_for_provider
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, INITIAL_CANDIDATES_K, get_user_model_for_provider
 from project.ai_providers.document_processor import extract_text_from_document
 from project.ai_providers.embedding_provider import get_embeddings_from_api
 from project.ai_providers.llm_provider import generate_conversation_title_from_llm
 from project.ai_providers.rerank_provider import get_rerank_scores_from_api
 from project.ai_providers.security_utils import decrypt_key
-from project.ai_providers.config import get_user_model_for_provider
 
 router = APIRouter(
     prefix="/ai",
-    tags=["AI"],
-    responses={404: {"description": "Not found"}},
+    tags=["AI智能服务"],
+    responses={404: {"description": "资源未找到"}},
 )
 
 # 辅助函数：清理可选的 JSON 字符串参数
@@ -491,7 +490,7 @@ async def ai_qa(
 
     user = db.query(Student).filter(Student.id == current_user_id).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未找到")
 
     kb_ids_json = _clean_optional_json_string_input(kb_ids_json)
     preferred_tools_json = _clean_optional_json_string_input(preferred_tools_json)

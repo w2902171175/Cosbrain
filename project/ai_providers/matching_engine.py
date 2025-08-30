@@ -22,7 +22,7 @@ from .security_utils import decrypt_key
 from .llm_provider import create_llm_provider
 from .embedding_provider import create_embedding_provider  
 from .rerank_provider import create_rerank_provider
-from .config import DUMMY_API_KEY
+from .ai_config import DUMMY_API_KEY
 
 # --- 匹配相关的全局常量 ---
 INITIAL_CANDIDATES_K = 50

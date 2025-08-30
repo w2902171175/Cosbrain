@@ -9,7 +9,7 @@ from sqlalchemy import and_, or_
 from fastapi import HTTPException, status
 
 from project.models import Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, ChatMessage, PointTransaction, Achievement, UserAchievement
-from project.ai_providers.config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
 from project.ai_providers.embedding_provider import get_embeddings_from_api
 from project.ai_providers.security_utils import decrypt_key
 

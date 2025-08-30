@@ -5,7 +5,7 @@
 import httpx
 from typing import Dict, Any, Optional, List
 from .ai_base import SearchProvider
-from .config import DEFAULT_SEARCH_CONFIGS
+from .ai_config import DEFAULT_SEARCH_CONFIGS
 
 
 class BingSearchProvider(SearchProvider):

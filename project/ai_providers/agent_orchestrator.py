@@ -20,7 +20,7 @@ from .security_utils import decrypt_key
 from .llm_provider import create_llm_provider
 from .search_provider import create_search_provider
 from .embedding_provider import create_embedding_provider
-from .config import DUMMY_API_KEY
+from .ai_config import DUMMY_API_KEY
 
 # --- 工具定义常量 ---
 WEB_SEARCH_TOOL_SCHEMA = {
