@@ -36,7 +36,7 @@ from project.routers import (
     tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, ai, recommend
 )
 # 导入收藏系统模块
-from project.routers.collections import collections_router, collections_advanced_router
+from project.routers.collections import router as collections_router
 
 # 加载环境变量
 load_dotenv()
@@ -81,9 +81,8 @@ app.include_router(courses)
 app.include_router(knowledge)
 app.include_router(forum)
 app.include_router(chatrooms)
-# 收藏系统 - 基于文件夹的新架构
-app.include_router(collections_router)  # 文件夹为中心的收藏系统
-app.include_router(collections_advanced_router)  # 高级功能（批量操作、统计等）
+# 收藏系统 - 基于文件夹的新架构（统一路由）
+app.include_router(collections_router)  # 新一代收藏管理系统
 app.include_router(ai)
 app.include_router(recommend)
 

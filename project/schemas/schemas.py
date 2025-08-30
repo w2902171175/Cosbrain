@@ -1465,8 +1465,8 @@ class CollectedContentBaseNew(BaseModel):
     title: Optional[str] = Field(None, max_length=200, description="标题")
     type: Optional[Literal[
         "document", "video", "audio", "note", "link", "file", "image",
-        "forum_topic", "course", "project", "chat_message",
-        "code", "bookmark", "contact", "location"
+        "forum_topic", "forum_comment", "forum_topic_attachment", "course", "project", "chat_message",
+        "code", "bookmark", "contact", "location", "text"
     ]] = Field(None, description="内容类型")
     url: Optional[str] = Field(None, description="URL地址")
     content: Optional[str] = Field(None, description="内容描述")
@@ -1723,3 +1723,69 @@ class ShareResponse(BaseModel):
 
 # 更新前向引用
 FolderResponseNew.model_rebuild()
+
+# ================== 聊天室和论坛收藏专用模型 ==================
+
+class ChatMessageCollectionRequest(BaseModel):
+    """聊天室消息收藏请求模型"""
+    folder_id: Optional[int] = Field(None, description="目标文件夹ID")
+    title: Optional[str] = Field(None, max_length=200, description="自定义标题")
+    notes: Optional[str] = Field(None, max_length=1000, description="收藏备注")
+
+class ForumTopicCollectionRequest(BaseModel):
+    """论坛话题收藏请求模型"""
+    folder_id: Optional[int] = Field(None, description="目标文件夹ID")
+    title: Optional[str] = Field(None, max_length=200, description="自定义标题")
+    notes: Optional[str] = Field(None, max_length=1000, description="收藏备注")
+    collect_attachment_only: Optional[bool] = Field(False, description="是否只收藏附件")
+
+class ForumCommentCollectionRequest(BaseModel):
+    """论坛回复收藏请求模型"""
+    folder_id: Optional[int] = Field(None, description="目标文件夹ID")
+    title: Optional[str] = Field(None, max_length=200, description="自定义标题")
+    notes: Optional[str] = Field(None, max_length=1000, description="收藏备注")
+
+class CollectibleMessageResponse(BaseModel):
+    """可收藏的聊天室消息响应模型"""
+    id: int
+    content_text: Optional[str]
+    message_type: str
+    media_url: Optional[str]
+    original_filename: Optional[str]
+    file_size: Optional[int]
+    audio_duration: Optional[float]
+    sender_name: str
+    sent_at: datetime
+    preview_title: str
+    
+    class Config:
+        from_attributes = True
+
+class CollectibleTopicResponse(BaseModel):
+    """可收藏的论坛话题响应模型"""
+    id: int
+    title: Optional[str]
+    content: str
+    author_name: str
+    created_at: datetime
+    has_attachment: bool
+    media_type: Optional[str]
+    media_filename: Optional[str]
+    media_size: Optional[int]
+    likes_count: int
+    comments_count: int
+    views_count: int
+    
+    class Config:
+        from_attributes = True
+
+class CollectionSummaryResponse(BaseModel):
+    """收藏摘要响应模型"""
+    total_collections: int = Field(..., description="总收藏数")
+    chatroom_collections: int = Field(..., description="聊天室收藏数")
+    forum_collections: int = Field(..., description="论坛收藏数")
+    recent_collections: List[CollectedContentResponseNew] = Field(..., description="最近收藏")
+    popular_folders: List[Dict[str, Any]] = Field(..., description="热门文件夹")
+    
+    class Config:
+        from_attributes = True

@@ -204,9 +204,12 @@ rule PotentialMalware
 # 全局配置实例
 production_config = ProductionYaraConfig()
 
-
 def initialize_yara_for_production():
     """初始化生产环境YARA配置"""
+    # 使用环境变量检查是否已经初始化过
+    if os.getenv('YARA_CONFIG_INITIALIZED') == 'true':
+        return True
+        
     try:
         production_config.ensure_directories()
         print(f"✅ YARA生产环境配置初始化完成")
@@ -214,6 +217,9 @@ def initialize_yara_for_production():
         print(f"项目根目录: {production_config.base_path}")
         print(f"规则文件: {os.getenv('YARA_RULES_PATH')}")
         print(f"输出目录: {os.getenv('YARA_OUTPUT_DIR')}")
+        
+        # 设置初始化标志
+        os.environ['YARA_CONFIG_INITIALIZED'] = 'true'
         return True
     except Exception as e:
         print(f"❌ YARA配置初始化失败: {e}")

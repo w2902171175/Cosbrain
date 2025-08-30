@@ -9,6 +9,15 @@
 data/
 data/*
 
+# 日志文件
+*.log
+logs/
+logs/*
+
+# YARA测试文件夹（自动生成）
+test_files/
+test_files/*
+
 # 数据库迁移文件夹
 alembic/
 alembic/*

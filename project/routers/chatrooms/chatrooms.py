@@ -1585,8 +1585,8 @@ async def get_user_storage_quota(
 
 
 # --- 聊天室基础管理接口 ---
-@router.get("/chatrooms/{room_id}", response_model=schemas.ChatRoomResponse, summary="获取指定聊天室详情（增强版）")
-async def get_chat_room_by_id(
+@router.get("/chatrooms/{room_id}", response_model=schemas.ChatRoomResponse, summary="获取指定聊天室详情（增强版）", operation_id="get_chat_room_by_id_enhanced")
+async def get_chat_room_by_id_enhanced(
         room_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
@@ -1667,8 +1667,8 @@ async def get_chat_room_by_id(
         )
 
 
-@router.put("/chatrooms/{room_id}/", response_model=schemas.ChatRoomResponse, summary="更新指定聊天室（增强版）")
-async def update_chat_room(
+@router.put("/chatrooms/{room_id}/", response_model=schemas.ChatRoomResponse, summary="更新指定聊天室（增强版）", operation_id="update_chat_room_enhanced")
+async def update_chat_room_enhanced(
         room_id: int,
         room_data: schemas.ChatRoomUpdate,
         current_user_id: int = Depends(get_current_user_id),
@@ -1907,8 +1907,8 @@ async def cleanup_room_files(file_urls: List[str]):
 
 # --- 入群申请管理 ---
 @router.post("/chat-rooms/{room_id}/join-request", response_model=schemas.ChatRoomJoinRequestResponse,
-          summary="向指定聊天室发起入群申请（增强版）")
-async def send_join_request(
+          summary="向指定聊天室发起入群申请（增强版）", operation_id="send_join_request_enhanced")
+async def send_join_request_enhanced(
         room_id: int,
         request_data: schemas.ChatRoomJoinRequestCreate,
         current_user_id: int = Depends(get_current_user_id),
@@ -3759,8 +3759,8 @@ async def handle_message_read(data: dict, room_id: int, user_id: int, db: Sessio
 # --- 消息撤回和管理功能 ---
 @router.put("/chatrooms/{room_id}/messages/{message_id}/recall", 
          response_model=schemas.ChatMessageResponse,
-         summary="撤回消息（增强版）")
-async def recall_message(
+         summary="撤回消息（增强版）", operation_id="recall_message_enhanced")
+async def recall_message_enhanced(
         room_id: int,
         message_id: int,
         current_user_id: int = Depends(get_current_user_id),
@@ -3845,8 +3845,8 @@ async def recall_message(
 
 
 @router.put("/chatrooms/{room_id}/messages/{message_id}/pin",
-         summary="置顶/取消置顶消息（增强版）")
-async def toggle_pin_message(
+         summary="置顶/取消置顶消息（增强版）", operation_id="toggle_pin_message_enhanced")
+async def toggle_pin_message_enhanced(
         room_id: int,
         message_id: int,
         pin: bool = Query(..., description="true为置顶，false为取消置顶"),
@@ -3934,8 +3934,8 @@ async def toggle_pin_message(
 
 # --- 聊天室成员管理 ---
 @router.get("/chatrooms/{room_id}/members", response_model=List[schemas.ChatRoomMemberResponse],
-         summary="获取指定聊天室的所有成员列表（增强版）")
-async def get_chat_room_members(
+         summary="获取指定聊天室的所有成员列表（增强版）", operation_id="get_chat_room_members_enhanced")
+async def get_chat_room_members_enhanced(
         room_id: int,
         current_user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db),

@@ -14,12 +14,103 @@ sys.path.insert(0, str(project_root))
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import logging
+from logging.handlers import RotatingFileHandler
 from project.utils.database_optimization import db_optimizer
 from project.utils.production_utils import cache_manager
 from project.database import DATABASE_URL
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    """设置日志配置"""
+    # 确保logs目录存在
+    logs_dir = project_root / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    
+    # 配置日志格式
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # 配置轮转文件处理器
+    log_file = logs_dir / "forum_optimization.log"
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    
+    # 配置控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    
+    # 设置根日志记录器
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
+
+def _split_sql_statements(sql_content):
+    """智能分割SQL语句，处理DO块和复杂语句"""
+    import re
+    
+    # 移除注释
+    sql_content = re.sub(r'--.*$', '', sql_content, flags=re.MULTILINE)
+    
+    statements = []
+    current_statement = ""
+    in_do_block = False
+    paren_level = 0
+    
+    lines = sql_content.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # 检测DO块开始
+        if line.upper().startswith('DO $$') or line.upper().startswith('DO $'):
+            in_do_block = True
+            current_statement += line + '\n'
+            continue
+        
+        # 检测DO块结束
+        if in_do_block and ('$$;' in line or '$;' in line):
+            current_statement += line + '\n'
+            statements.append(current_statement.strip())
+            current_statement = ""
+            in_do_block = False
+            continue
+        
+        # 在DO块内部，继续添加
+        if in_do_block:
+            current_statement += line + '\n'
+            continue
+        
+        # 检测函数定义（包含$$）
+        if '$$' in line and not line.endswith(';'):
+            current_statement += line + '\n'
+            in_do_block = True
+            continue
+        
+        # 普通SQL语句处理
+        current_statement += line + '\n'
+        
+        # 检查是否语句结束
+        if line.endswith(';') and paren_level == 0:
+            statements.append(current_statement.strip())
+            current_statement = ""
+    
+    # 添加最后的语句（如果有）
+    if current_statement.strip():
+        statements.append(current_statement.strip())
+    
+    return [stmt for stmt in statements if stmt.strip()]
 
 def init_database_optimizations():
     """初始化数据库优化"""
@@ -55,12 +146,23 @@ def run_migration_script():
         
         logger.info("开始执行数据库迁移...")
         
-        # 执行迁移脚本 - 使用事务块执行整个脚本
+        # 执行迁移脚本 - 智能分割SQL语句
         with engine.connect() as conn:
             try:
-                # 直接执行整个SQL脚本，让PostgreSQL处理语句分割
-                conn.execute(text(migration_sql))
-                conn.commit()
+                # 执行SQL脚本，处理不同类型的语句
+                sql_statements = _split_sql_statements(migration_sql)
+                
+                for i, statement in enumerate(sql_statements):
+                    if statement.strip():
+                        try:
+                            logger.debug(f"执行SQL语句 {i+1}/{len(sql_statements)}")
+                            conn.execute(text(statement))
+                            conn.commit()
+                        except Exception as stmt_error:
+                            logger.warning(f"SQL语句执行警告 ({i+1}): {stmt_error}")
+                            conn.rollback()
+                            continue
+                
                 logger.info("数据库迁移完成!")
             except Exception as e:
                 logger.warning(f"数据库迁移执行中有警告: {e}")
