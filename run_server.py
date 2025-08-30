@@ -3,6 +3,11 @@
 服务器启动脚本
 使用这个脚本来启动FastAPI应用，避免相对导入问题
 """
+import warnings
+# 抑制 passlib bcrypt 版本兼容性警告
+warnings.filterwarnings("ignore", message=".*error reading bcrypt version.*")
+warnings.filterwarnings("ignore", message=".*bcrypt.*", category=UserWarning)
+
 import uvicorn
 import sys
 import os
