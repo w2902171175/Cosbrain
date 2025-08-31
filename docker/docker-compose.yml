@@ -32,13 +32,13 @@ services:
   db-init:
     profiles: ["init"]
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     container_name: cosbrain-db-init
     env_file:
-      - .env
+      - ../.env.docker
     environment:
-      # Compose will expand env vars from .env for the connection string
+      # Compose will expand env vars from .env.docker for the connection string
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-cosbrain}
     depends_on:
       db:
@@ -48,11 +48,11 @@ services:
 
   app:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     container_name: cosbrain-app
     env_file:
-      - .env
+      - ../.env.docker
     depends_on:
       db:
         condition: service_healthy
@@ -61,9 +61,9 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      - ./logs:/app/logs
-      - ./uploaded_files:/app/uploaded_files
-      - ./yara/output:/app/yara/output
+      - ../logs:/app/logs
+      - ../uploaded_files:/app/uploaded_files
+      - ../yara/output:/app/yara/output
     restart: unless-stopped
 
   # Optional local S3-compatible storage for development

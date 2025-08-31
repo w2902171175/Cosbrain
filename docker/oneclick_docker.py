@@ -75,12 +75,24 @@ def ensure_docker_running(timeout: int = 120):
 
 
 def prepare_env_and_dirs():
-    # .env
-    env_file = ROOT / ".env"
+    # .env.docker - Docker 专用环境文件
+    env_docker_file = ROOT / ".env.docker"
     env_example = ROOT / ".env.example"
+    
+    if not env_docker_file.exists():
+        if env_example.exists():
+            shutil.copyfile(env_example, env_docker_file)
+            print("Created .env.docker from .env.example")
+        else:
+            print("Warning: Neither .env.docker nor .env.example exists")
+    else:
+        print("Using existing .env.docker file")
+
+    # 传统的 .env 文件（为了向后兼容）
+    env_file = ROOT / ".env"
     if not env_file.exists() and env_example.exists():
         shutil.copyfile(env_example, env_file)
-        print("Created .env from .env.example")
+        print("Created .env from .env.example (for compatibility)")
 
     # Bind-mount directories
     for p in [ROOT / "logs", ROOT / "uploaded_files", ROOT / "yara" / "output"]:
@@ -95,16 +107,25 @@ def prepare_env_and_dirs():
 
 
 def docker_compose_up(no_build: bool = False):
-    # Optional: pull base services for faster build
+    # Change to docker directory to use correct build context
+    docker_dir = ROOT / "docker"
+    original_cwd = os.getcwd()
+    os.chdir(docker_dir)
+    
     try:
-        run(["docker", "compose", "pull", "db", "redis", "minio", "minio-setup"], check=False)
-    except Exception:
-        pass
+        # Optional: pull base services for faster build
+        try:
+            run(["docker", "compose", "pull", "db", "redis", "minio", "minio-setup"], check=False)
+        except Exception:
+            pass
 
-    if not no_build:
-        run(["docker", "compose", "build", "app"], check=True)
+        if not no_build:
+            run(["docker", "compose", "build", "app"], check=True)
 
-    run(["docker", "compose", "up", "-d"], check=True)
+        run(["docker", "compose", "up", "-d"], check=True)
+    finally:
+        # Restore original working directory
+        os.chdir(original_cwd)
 
 
 def wait_for_app_health(timeout: int = 180) -> bool:
@@ -127,10 +148,16 @@ def wait_for_app_health(timeout: int = 180) -> bool:
 
 
 def follow_app_logs():
+    docker_dir = ROOT / "docker"
+    original_cwd = os.getcwd()
+    os.chdir(docker_dir)
+    
     try:
         run(["docker", "compose", "logs", "-f", "app"], check=True)
     except KeyboardInterrupt:
         pass
+    finally:
+        os.chdir(original_cwd)
 
 
 def main():
@@ -153,7 +180,13 @@ def main():
         print("SUCCESS: App is up at http://localhost:8001 (docs at /docs)")
     else:
         print("WARNING: App health not confirmed; check logs below")
-        run(["docker", "compose", "ps"], check=False)
+        docker_dir = ROOT / "docker"
+        original_cwd = os.getcwd()
+        os.chdir(docker_dir)
+        try:
+            run(["docker", "compose", "ps"], check=False)
+        finally:
+            os.chdir(original_cwd)
 
     if args.logs:
         follow_app_logs()

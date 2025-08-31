@@ -4,6 +4,7 @@
 .env.development
 .env.test
 .env.production
+.env.docker
 
 # 数据文件夹
 data/
