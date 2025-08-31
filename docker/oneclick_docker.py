@@ -131,9 +131,13 @@ def docker_compose_up(no_build: bool = False):
 def wait_for_app_health(timeout: int = 180) -> bool:
     # Try health endpoint
     import requests
+    import logging
+    
+    logger = logging.getLogger(__name__)
     base = "http://localhost:8001"
     health_urls = [f"{base}/health", f"{base}/docs", f"{base}/openapi.json"]
     start = time.time()
+    
     while time.time() - start < timeout:
         for url in health_urls:
             try:
@@ -141,8 +145,8 @@ def wait_for_app_health(timeout: int = 180) -> bool:
                 if r.status_code in (200, 401, 403):
                     print(f"App healthy via {url} -> {r.status_code}")
                     return True
-            except Exception:
-                pass
+            except (requests.RequestException, requests.Timeout, ConnectionError) as e:
+                logger.debug(f"Health check failed for {url}: {e}")
         time.sleep(2)
     return False
 

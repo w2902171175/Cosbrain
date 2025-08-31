@@ -1,6 +1,8 @@
 # project/routers/chatrooms/chatrooms.py
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, File, UploadFile, Form, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
+from websockets.exceptions import ConnectionClosed
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Literal, Union
@@ -10,6 +12,9 @@ from jose import JWTError, jwt
 import uuid, os, asyncio, json, mimetypes, base64, hashlib
 from datetime import datetime, timedelta
 import io
+
+# 设置日志记录器
+logger = logging.getLogger(__name__)
 
 # 可选的 magic 导入 (在 Windows 上可能有问题)
 try:
@@ -223,8 +228,8 @@ class EnhancedConnectionManager:
             old_ws = self.active_connections[room_id][user_id]
             try:
                 await old_ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="新连接替换")
-            except:
-                pass
+            except (ConnectionClosed, RuntimeError) as e:
+                logger.warning(f"Failed to close old WebSocket connection for user {user_id}: {e}")
         
         self.active_connections[room_id][user_id] = websocket
         self.user_connection_count[user_id] = self.user_connection_count.get(user_id, 0) + 1
@@ -294,8 +299,8 @@ class EnhancedConnectionManager:
                         code=status.WS_1001_GOING_AWAY,
                         reason="连接超时"
                     )
-                except:
-                    pass
+                except (ConnectionClosed, RuntimeError) as e:
+                    logger.warning(f"Failed to close stale WebSocket connection for user {user_id}: {e}")
                 self.disconnect(room_id, user_id)
 
 manager = EnhancedConnectionManager()  # 创建增强版连接管理器实例

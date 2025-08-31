@@ -4,6 +4,7 @@ import asyncio
 import uuid
 import hashlib
 import tempfile
+import time
 from typing import Dict, List, Optional, Tuple, Any
 from fastapi import UploadFile, HTTPException
 from PIL import Image, ImageOps
@@ -73,7 +74,7 @@ class ChunkedUploadManager:
             "total_chunks": total_chunks,
             "uploaded_chunks": {},
             "user_id": user_id,
-            "created_at": asyncio.get_event_loop().time()
+            "created_at": time.time()
         }
         
         self.upload_sessions[upload_id] = session_info
@@ -192,8 +193,8 @@ class ChunkedUploadManager:
                     Key=f"forum/attachments/{session['secure_filename']}",
                     UploadId=session["s3_upload_id"]
                 )
-            except:
-                pass
+            except (s3_client.exceptions.NoSuchUpload, s3_client.exceptions.ClientError) as e:
+                logger.warning(f"Failed to abort multipart upload for {upload_id}: {e}")
             
             raise HTTPException(status_code=500, detail="完成上传失败")
     

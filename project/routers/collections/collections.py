@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any, Literal, Union, Tuple
 import numpy as np
+import logging
 from datetime import timedelta, datetime, timezone, date
 from sqlalchemy.sql import func
 from sqlalchemy import and_, or_, desc, asc, text
@@ -39,6 +40,9 @@ import project.oss_utils as oss_utils
 from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR, get_user_model_for_provider
 from project.ai_providers.embedding_provider import get_embeddings_from_api
 from project.ai_providers.security_utils import decrypt_key
+
+# 设置日志记录器
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/collections",
@@ -1766,8 +1770,9 @@ async def _create_collected_content_item_internal(
                 final_thumbnail = extracted_info.get("thumbnail")
             if not final_author:
                 final_author = extracted_info.get("author")
-        except:
-            pass  # 提取失败不影响收藏
+        except (ValueError, httpx.TimeoutException, httpx.HTTPError) as e:
+            logger.warning(f"Failed to extract URL info for {content_data.url}: {e}")
+            # 提取失败不影响收藏
     
     # 设置默认值
     if not final_title:
@@ -1917,8 +1922,8 @@ async def _extract_url_info(url: str) -> Dict[str, Any]:
                     "thumbnail": None,
                     "author": None
                 }
-    except:
-        pass
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError, UnicodeDecodeError) as e:
+        logger.warning(f"Failed to extract URL info from {url}: {e}")
     
     return {}
 

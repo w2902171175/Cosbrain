@@ -5,7 +5,7 @@
 """
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,7 @@ from .security_utils import decrypt_key
 from .llm_provider import create_llm_provider
 from .search_provider import create_search_provider
 from .embedding_provider import create_embedding_provider
-from .ai_config import DUMMY_API_KEY
+from .ai_config import DUMMY_API_KEY, get_user_model_for_provider
 
 # --- 工具定义常量 ---
 WEB_SEARCH_TOOL_SCHEMA = {
@@ -116,7 +116,8 @@ async def execute_tool(
     tool_name: str,
     tool_arguments: Dict[str, Any],
     user_id: int,
-    db: Session
+    db: Session,
+    kb_ids: Optional[List[int]] = None
 ) -> Dict[str, Any]:
     """
     执行指定的工具调用
@@ -125,7 +126,7 @@ async def execute_tool(
         if tool_name == "web_search":
             return await _execute_web_search_tool(tool_arguments, user_id, db)
         elif tool_name == "knowledge_search":
-            return await _execute_rag_tool(tool_arguments, user_id, db)
+            return await _execute_rag_tool(tool_arguments, user_id, db, kb_ids)
         elif tool_name == "mcp_tool_call":
             return await _execute_mcp_tool(tool_arguments, user_id, db)
         elif tool_name == "find_matching_projects":
@@ -214,7 +215,8 @@ async def _execute_web_search_tool(
 async def _execute_rag_tool(
     arguments: Dict[str, Any],
     user_id: int,
-    db: Session
+    db: Session,
+    kb_ids: Optional[List[int]] = None
 ) -> Dict[str, Any]:
     """执行RAG多内容搜索工具 - 支持知识库文档、课程笔记、收藏内容检索"""
     query = arguments.get("query", "")
@@ -243,9 +245,15 @@ async def _execute_rag_tool(
     # 知识库文档块 (上传文档的内容) - 这是知识库的主要内容
     if "knowledge_document" in content_types:
         # 查找用户有权限访问的知识库
-        accessible_kbs = db.query(KnowledgeBase).filter(
+        kb_query = db.query(KnowledgeBase).filter(
             (KnowledgeBase.owner_id == user_id) | (KnowledgeBase.access_type == "public")
-        ).all()
+        )
+        
+        # 如果指定了kb_ids，进一步过滤
+        if kb_ids:
+            kb_query = kb_query.filter(KnowledgeBase.id.in_(kb_ids))
+        
+        accessible_kbs = kb_query.all()
         
         for kb in accessible_kbs:
             document_chunks = db.query(KnowledgeDocumentChunk).filter(
@@ -544,15 +552,60 @@ def get_available_tools(user_id: int, db: Session) -> List[Dict[str, Any]]:
 
 
 async def invoke_agent(
-    messages: List[Dict[str, str]],
-    user_id: int,
-    db: Session,
-    use_tools: bool = True
+    query: Optional[str] = None,
+    db: Session = None,
+    user_id: int = None,
+    conversation_context: Optional[List[Dict[str, Any]]] = None,
+    kb_ids: Optional[List[int]] = None,
+    use_tools: bool = True,
+    preferred_tools: Optional[List[str]] = None,
+    temp_file_ids: Optional[List[int]] = None,
+    llm_api_key: Optional[str] = None,
+    llm_type: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model_id: Optional[str] = None,
+    rag_sources: Optional[List[str]] = None,
+    # 为了向后兼容，保留原始参数
+    messages: Optional[List[Dict[str, str]]] = None,
+    # ai_original.py 使用的参数
+    llm_api_type: Optional[str] = None,
+    past_messages: Optional[List[Dict[str, Any]]] = None,
+    conversation_id_for_temp_files: Optional[int] = None,
+    enable_tool_use: Optional[bool] = None
 ) -> Dict[str, Any]:
     """
     调用智能代理处理用户请求
+    支持多种参数格式以保持向后兼容性
     """
     try:
+        # 参数兼容性处理
+        if llm_api_type is not None:
+            llm_type = llm_api_type
+        if enable_tool_use is not None:
+            use_tools = enable_tool_use
+        if past_messages is not None:
+            conversation_context = past_messages
+        
+        # 如果传入了简单的messages参数（旧版本兼容），构建查询
+        if messages and not query:
+            query = messages[-1].get("content", "") if messages else ""
+            conversation_context = messages[:-1] if len(messages) > 1 else []
+        
+        # 验证必需参数
+        if not query:
+            return {
+                "success": False,
+                "error": "缺少查询内容",
+                "response": None
+            }
+        
+        if not db or not user_id:
+            return {
+                "success": False,
+                "error": "缺少数据库连接或用户ID",
+                "response": None
+            }
+
         # 获取用户信息
         user = db.query(Student).filter(Student.id == user_id).first()
         if not user:
@@ -562,11 +615,21 @@ async def invoke_agent(
                 "response": None
             }
 
-        # 获取API密钥
-        api_key = None
-        if user.llm_api_type == "siliconflow" and user.llm_api_key_encrypted:
-            api_key = decrypt_key(user.llm_api_key_encrypted)
-
+        # 确定API配置 - 优先使用传入的参数，否则使用用户配置
+        effective_llm_type = llm_type or user.llm_api_type
+        effective_llm_base_url = llm_base_url or user.llm_api_base_url
+        effective_llm_model_id = llm_model_id or get_user_model_for_provider(
+            user.llm_model_ids, user.llm_api_type, user.llm_model_id
+        )
+        
+        # API密钥处理
+        api_key = llm_api_key
+        if not api_key and user.llm_api_key_encrypted:
+            try:
+                api_key = decrypt_key(user.llm_api_key_encrypted)
+            except Exception:
+                pass
+        
         if not api_key or api_key == DUMMY_API_KEY:
             return {
                 "success": False,
@@ -575,16 +638,39 @@ async def invoke_agent(
             }
 
         # 创建LLM提供者
-        llm_provider = create_llm_provider("siliconflow", api_key)
+        llm_provider = create_llm_provider(
+            effective_llm_type, 
+            api_key, 
+            effective_llm_base_url, 
+            effective_llm_model_id
+        )
         
-        # 获取可用工具
-        available_tools = get_available_tools(user_id, db) if use_tools else []
+        # 获取可用工具并应用偏好过滤
+        available_tools = []
+        if use_tools:
+            all_tools = await get_all_available_tools_for_llm(db, user_id)
+            if preferred_tools:
+                available_tools = _filter_tools_by_preference(all_tools, preferred_tools, rag_sources)
+            else:
+                available_tools = all_tools
         
         # 构建系统提示
         system_prompt = _build_system_prompt(available_tools)
         
-        # 构建完整消息
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
+        # 构建消息历史
+        full_messages = [{"role": "system", "content": system_prompt}]
+        
+        # 添加对话历史
+        if conversation_context:
+            for msg in conversation_context:
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    full_messages.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
+        
+        # 添加当前查询
+        full_messages.append({"role": "user", "content": query})
         
         # 第一轮LLM调用
         response = await llm_provider.chat_completion(full_messages)
@@ -606,11 +692,16 @@ async def invoke_agent(
                 # 执行工具调用
                 tool_results = []
                 for tool_call in tool_calls:
+                    # 为RAG工具传递rag_sources参数
+                    if tool_call["name"] == "knowledge_search" and rag_sources:
+                        tool_call["arguments"]["content_types"] = rag_sources
+                    
                     result = await execute_tool(
                         tool_call["name"],
                         tool_call["arguments"],
                         user_id,
-                        db
+                        db,
+                        kb_ids=kb_ids
                     )
                     tool_results.append({
                         "tool_name": tool_call["name"],
@@ -619,7 +710,6 @@ async def invoke_agent(
                 
                 # 将工具结果添加到对话中
                 full_messages.append({"role": "assistant", "content": assistant_message})
-                
                 tool_results_text = _format_tool_results(tool_results)
                 full_messages.append({"role": "user", "content": f"工具执行结果：\n{tool_results_text}\n\n请基于这些结果提供最终回答。"})
                 
@@ -629,11 +719,31 @@ async def invoke_agent(
                 if final_response and 'choices' in final_response:
                     assistant_message = final_response['choices'][0]['message']['content']
         
-        return {
+        # 构建返回结果
+        result = {
             "success": True,
             "error": None,
-            "response": assistant_message
+            "response": assistant_message,
+            "content": assistant_message  # 兼容性字段
         }
+        
+        # 为ai_original.py兼容性，添加turn_messages_to_log字段
+        result["turn_messages_to_log"] = [
+            {
+                "role": "user",
+                "content": query,
+                "llm_type_used": effective_llm_type,
+                "llm_model_used": effective_llm_model_id
+            },
+            {
+                "role": "assistant", 
+                "content": assistant_message,
+                "llm_type_used": effective_llm_type,
+                "llm_model_used": effective_llm_model_id
+            }
+        ]
+        
+        return result
         
     except Exception as e:
         print(f"ERROR_AGENT_INVOKE: 代理调用失败: {e}")
@@ -820,3 +930,50 @@ async def get_all_available_tools_for_llm(db, user_id: int) -> List[Dict[str, An
 
     print(f"DEBUG_TOOL: Assembled {len(tools)} available tools for user {user_id}.")
     return tools
+
+
+def _filter_tools_by_preference(
+    available_tools: List[Dict[str, Any]], 
+    preferred_tools: Union[List[str], str, None],
+    rag_sources: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """根据偏好过滤工具"""
+    if preferred_tools is None:
+        return []
+    
+    if preferred_tools == "all":
+        filtered_tools = available_tools
+    elif isinstance(preferred_tools, list):
+        if not preferred_tools:  # 空数组
+            return []
+            
+        filtered_tools = []
+        for tool in available_tools:
+            tool_name = tool.get("name", "")
+            # 根据工具名称匹配类型
+            if ("web_search" in preferred_tools and "web_search" in tool_name) or \
+               ("rag" in preferred_tools and ("knowledge_search" in tool_name or "rag" in tool_name)) or \
+               ("mcp_tool" in preferred_tools and "mcp" in tool_name):
+                filtered_tools.append(tool)
+    else:
+        return []
+    
+    # 为RAG工具添加来源配置
+    if rag_sources:
+        for tool in filtered_tools:
+            if tool.get("name") == "knowledge_search":
+                # 修改工具的参数定义，添加content_types默认值
+                if "input_schema" in tool and "properties" in tool["input_schema"]:
+                    tool["input_schema"]["properties"]["content_types"] = {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["knowledge_document", "note", "collected_content"]
+                        },
+                        "description": "要搜索的内容类型",
+                        "default": rag_sources
+                    }
+                # 为工具实例添加来源配置
+                tool["_rag_sources"] = rag_sources
+    
+    return filtered_tools

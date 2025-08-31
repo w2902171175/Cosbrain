@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import time
 import openai
 from typing import List, Dict, Any, Union, Optional
 from dataclasses import dataclass
@@ -64,7 +65,7 @@ class EnterpriseEmbeddingProvider(BaseEmbeddingProvider):
     ) -> EmbeddingResult:
         """创建嵌入向量"""
         
-        start_time = asyncio.get_event_loop().time()
+        start_time = time.time()
         model = model or self.model
         
         try:
@@ -114,7 +115,7 @@ class EnterpriseEmbeddingProvider(BaseEmbeddingProvider):
                 "total_tokens": response.usage.total_tokens
             }
             
-            response_time = asyncio.get_event_loop().time() - start_time
+            response_time = time.time() - start_time
             
             result = EmbeddingResult(
                 embeddings=embeddings,
@@ -144,7 +145,7 @@ class EnterpriseEmbeddingProvider(BaseEmbeddingProvider):
             return result
             
         except Exception as e:
-            response_time = asyncio.get_event_loop().time() - start_time
+            response_time = time.time() - start_time
             self._failed_requests += 1
             
             # 错误日志

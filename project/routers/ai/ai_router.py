@@ -236,7 +236,14 @@ class ChatRequest(BaseModel):
     model_preference: Optional[str] = None
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: Optional[int] = Field(default=None, gt=0, le=8192)
-    use_tools: bool = True
+    preferred_tools: Optional[Union[List[Literal["rag", "web_search", "mcp_tool"]], str]] = Field(
+        default="all", 
+        description="偏好使用的工具类型：'all'(所有工具)、工具类型数组如['rag','web_search']、null(不使用工具)"
+    )
+    rag_sources: Optional[List[Literal["knowledge_document", "note", "collected_content"]]] = Field(
+        default=["knowledge_document", "note", "collected_content"],
+        description="RAG检索来源：knowledge_document(知识库文档)、note(课程笔记)、collected_content(收藏内容)"
+    )
     context_enhancement: bool = True
     stream: bool = False
     
@@ -297,8 +304,14 @@ class QARequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=32000)
     conversation_id: Optional[int] = None
     kb_ids: Optional[List[int]] = None
-    use_tools: bool = False
-    preferred_tools: Optional[Union[List[Literal["rag", "web_search", "mcp_tool"]], str]] = None
+    preferred_tools: Optional[Union[List[Literal["rag", "web_search", "mcp_tool"]], str]] = Field(
+        default=None,
+        description="偏好使用的工具类型：'all'(所有工具)、工具类型数组如['rag','web_search']、null(不使用工具)"
+    )
+    rag_sources: Optional[List[Literal["knowledge_document", "note", "collected_content"]]] = Field(
+        default=["knowledge_document", "note", "collected_content"],
+        description="RAG检索来源：knowledge_document(知识库文档)、note(课程笔记)、collected_content(收藏内容)"
+    )
     llm_model_id: Optional[str] = None
     
     class Config:
@@ -306,8 +319,8 @@ class QARequest(BaseModel):
             "example": {
                 "query": "什么是机器学习？",
                 "conversation_id": None,
-                "use_tools": True,
-                "preferred_tools": ["rag", "web_search"]
+                "preferred_tools": ["rag", "web_search"],
+                "rag_sources": ["knowledge_document", "note"]
             }
         }
     status: str
@@ -368,6 +381,53 @@ class EnterpriseAIRouter:
         self._rate_limiter[key].append(current_time)
         return True
     
+    def _filter_tools_by_preference(
+        self, 
+        available_tools: List[Dict[str, Any]], 
+        preferred_tools: Union[List[str], str, None],
+        rag_sources: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """根据偏好过滤工具"""
+        if preferred_tools is None:
+            return []
+        
+        if preferred_tools == "all":
+            filtered_tools = available_tools
+        elif isinstance(preferred_tools, list):
+            if not preferred_tools:  # 空数组
+                return []
+                
+            filtered_tools = []
+            for tool in available_tools:
+                tool_name = tool.get("name", "")
+                # 根据工具名称匹配类型
+                if ("web_search" in preferred_tools and "web_search" in tool_name) or \
+                   ("rag" in preferred_tools and ("knowledge_search" in tool_name or "rag" in tool_name)) or \
+                   ("mcp_tool" in preferred_tools and "mcp" in tool_name):
+                    filtered_tools.append(tool)
+        else:
+            return []
+        
+        # 为RAG工具添加来源配置
+        if rag_sources:
+            for tool in filtered_tools:
+                if tool.get("name") == "knowledge_search":
+                    # 修改工具的参数定义，添加content_types默认值
+                    if "input_schema" in tool and "properties" in tool["input_schema"]:
+                        tool["input_schema"]["properties"]["content_types"] = {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["knowledge_document", "note", "collected_content"]
+                            },
+                            "description": "要搜索的内容类型",
+                            "default": rag_sources
+                        }
+                    # 为工具实例添加来源配置
+                    tool["_rag_sources"] = rag_sources
+        
+        return filtered_tools
+    
     async def chat_completion(
         self, 
         request_data: ChatRequest,
@@ -403,9 +463,15 @@ class EnterpriseAIRouter:
             
             # 准备工具
             tools = None
-            if request_data.use_tools:
+            if request_data.preferred_tools is not None:
                 try:
                     tools = get_all_available_tools_for_llm(user_id, db)
+                    # 根据preferred_tools和rag_sources过滤工具
+                    tools = self._filter_tools_by_preference(
+                        tools, 
+                        request_data.preferred_tools, 
+                        request_data.rag_sources
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to get tools for user {user_id}: {e}")
                     tools = None
@@ -612,11 +678,16 @@ async def chat_completion(
     
     支持功能：
     - 多模型智能选择
-    - 工具调用
+    - 智能工具调用（通过preferred_tools参数控制）
     - 上下文增强
     - 流式响应
     - 速率限制
     - 缓存优化
+    
+    工具使用说明：
+    - preferred_tools=null: 不使用任何工具
+    - preferred_tools="all": 使用所有可用工具（默认）
+    - preferred_tools=["rag","web_search"]: 使用指定工具类型
     """
     return await handler.chat_completion(request_data, user_id, db, background_tasks)
 
@@ -976,8 +1047,8 @@ async def ai_qa_endpoint(
     query: str = Form(..., description="用户的问题文本"),
     conversation_id: Optional[int] = Form(None, description="要继续的对话Session ID"),
     kb_ids_json: Optional[str] = Form(None, description="要检索的知识库ID列表JSON字符串"),
-    use_tools: Optional[bool] = Form(False, description="是否启用AI智能工具调用"),
-    preferred_tools_json: Optional[str] = Form(None, description="AI偏好使用的工具类型JSON数组"),
+    preferred_tools_json: Optional[str] = Form(None, description="AI偏好使用的工具类型：'all'(所有工具)、JSON数组如'[\"rag\",\"web_search\"]'、null(不使用工具)"),
+    rag_sources_json: Optional[str] = Form(None, description="RAG检索来源JSON数组：'[\"knowledge_document\",\"note\",\"collected_content\"]'，null为默认全部"),
     llm_model_id: Optional[str] = Form(None, description="本次会话使用的LLM模型ID"),
     uploaded_file: Optional[UploadFile] = File(None, description="可选：上传文件对AI进行提问"),
     user_id: int = Depends(get_current_user_id),
@@ -991,8 +1062,13 @@ async def ai_qa_endpoint(
     - 多轮对话
     - 文件上传分析
     - 知识库检索
-    - 工具调用
+    - 智能工具调用（通过preferred_tools_json控制）
     - 智能代理编排
+    
+    工具使用说明：
+    - preferred_tools_json=null: 不使用任何工具
+    - preferred_tools_json="all": 使用所有可用工具
+    - preferred_tools_json='["rag","web_search"]': 使用指定工具类型
     """
     start_time = time.time()
     
@@ -1026,6 +1102,7 @@ async def ai_qa_endpoint(
         # 清理输入参数
         kb_ids_json = _clean_optional_json_string_input(kb_ids_json)
         preferred_tools_json = _clean_optional_json_string_input(preferred_tools_json)
+        rag_sources_json = _clean_optional_json_string_input(rag_sources_json)
         llm_model_id = _clean_optional_json_string_input(llm_model_id)
 
         # 解析知识库ID
@@ -1041,9 +1118,28 @@ async def ai_qa_endpoint(
                     detail=f"kb_ids 格式不正确: {e}"
                 )
 
+        # 解析RAG来源
+        actual_rag_sources: Optional[List[str]] = ["knowledge_document", "note", "collected_content"]  # 默认全部
+        if rag_sources_json:
+            try:
+                parsed_sources = json.loads(rag_sources_json)
+                if isinstance(parsed_sources, list):
+                    valid_sources = ["knowledge_document", "note", "collected_content"]
+                    invalid_sources = [src for src in parsed_sources if src not in valid_sources]
+                    if invalid_sources:
+                        raise ValueError(f"包含不支持的RAG来源类型：{invalid_sources}")
+                    actual_rag_sources = parsed_sources
+                else:
+                    raise ValueError("rag_sources 必须是数组格式")
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"RAG来源配置格式错误：{str(e)}"
+                )
+
         # 解析偏好工具
         actual_preferred_tools: Optional[List[Literal["rag", "web_search", "mcp_tool"]]] = None
-        if use_tools and preferred_tools_json:
+        if preferred_tools_json:
             try:
                 if preferred_tools_json.strip().lower() == "all":
                     actual_preferred_tools = "all"
@@ -1170,8 +1266,9 @@ async def ai_qa_endpoint(
                 user_id=user_id,
                 conversation_context=past_messages_for_llm,
                 kb_ids=actual_kb_ids,
-                use_tools=use_tools,
+                use_tools=actual_preferred_tools is not None,
                 preferred_tools=actual_preferred_tools,
+                rag_sources=actual_rag_sources,
                 temp_file_ids=temp_file_ids_for_context,
                 llm_api_key=user_llm_api_key,
                 llm_type=user.llm_api_type,
