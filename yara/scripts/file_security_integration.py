@@ -163,8 +163,9 @@ class FileSecurityValidator:
                 # 清理临时文件
                 try:
                     os.unlink(temp_file_path)
-                except:
-                    pass
+                except (OSError, PermissionError) as e:
+                    # 如果文件删除失败，记录警告但不影响主流程
+                    self.logger.warning(f"Failed to delete temporary file {temp_file_path}: {e}")
                     
         except Exception as e:
             self.logger.error(f"YARA扫描失败: {e}")

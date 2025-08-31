@@ -436,53 +436,63 @@ class YARAFileScanner:
 
 def main():
     """主函数 - 演示使用"""
-    print("🛡️ YARA文件安全扫描器")
-    print("=" * 50)
+    import logging
+    
+    # 配置控制台日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler()]
+    )
+    logger = logging.getLogger(__name__)
+    
+    logger.info("🛡️ YARA文件安全扫描器")
+    logger.info("=" * 50)
     
     # 创建扫描器
     scanner = YARAFileScanner()
     
     if not scanner.enabled:
-        print("❌ YARA扫描功能已禁用")
-        print("请在.env.yara文件中设置 ENABLE_YARA_SCAN=true")
+        logger.warning("❌ YARA扫描功能已禁用")
+        logger.info("请在.env.yara文件中设置 ENABLE_YARA_SCAN=true")
         return
     
     # 扫描当前目录
-    print("🔍 扫描当前项目目录...")
+    logger.info("🔍 扫描当前项目目录...")
     results = scanner.scan_directory(".", recursive=True)
     
     if not results:
-        print("✅ 没有找到需要扫描的文件")
+        logger.info("✅ 没有找到需要扫描的文件")
         return
     
     # 获取威胁摘要
     summary = scanner.get_threats_summary(results)
     
-    print(f"\n📊 扫描摘要:")
-    print(f"  总文件数: {len(results)}")
-    print(f"  威胁文件数: {summary['total_threats']}")
-    print(f"  安全文件数: {len(results) - summary['total_threats']}")
+    logger.info(f"\n📊 扫描摘要:")
+    logger.info(f"  总文件数: {len(results)}")
+    logger.info(f"  威胁文件数: {summary['total_threats']}")
+    logger.info(f"  安全文件数: {len(results) - summary['total_threats']}")
     
     if summary['total_threats'] > 0:
-        print(f"\n🚨 威胁分布:")
+        logger.warning(f"\n🚨 威胁分布:")
         for level, count in summary['threats_by_level'].items():
-            print(f"  {level}: {count} 文件")
+            logger.warning(f"  {level}: {count} 文件")
         
-        print(f"\n🎯 威胁规则:")
+        logger.warning(f"\n🎯 威胁规则:")
         for rule, count in summary['threats_by_rule'].items():
-            print(f"  {rule}: {count} 文件")
+            logger.warning(f"  {rule}: {count} 文件")
         
         if summary['high_risk_files']:
-            print(f"\n⚠️ 高风险文件:")
+            logger.error(f"\n⚠️ 高风险文件:")
             for file_path in summary['high_risk_files'][:5]:  # 只显示前5个
-                print(f"  - {file_path}")
+                logger.error(f"  - {file_path}")
     
     # 保存报告
     report_file = scanner.save_scan_report(results)
     if report_file:
-        print(f"\n📄 详细报告已保存至: {report_file}")
+        logger.info(f"\n📄 详细报告已保存至: {report_file}")
     
-    print("\n✅ 扫描完成！")
+    logger.info("\n✅ 扫描完成！")
 
 
 if __name__ == "__main__":

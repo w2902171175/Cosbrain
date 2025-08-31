@@ -8,20 +8,30 @@ import os
 import sys
 
 def main():
-    print("🔍 YARA Python 安装验证")
-    print("=" * 40)
+    import logging
+    
+    # 配置控制台日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler()]
+    )
+    logger = logging.getLogger(__name__)
+    
+    logger.info("🔍 YARA Python 安装验证")
+    logger.info("=" * 40)
     
     # 1. 检查YARA模块
     try:
         import yara
-        print(f"✅ YARA模块导入成功")
-        print(f"   版本: {yara.__version__}")
+        logger.info(f"✅ YARA模块导入成功")
+        logger.info(f"   版本: {yara.__version__}")
     except ImportError as e:
-        print(f"❌ YARA模块导入失败: {e}")
+        logger.error(f"❌ YARA模块导入失败: {e}")
         return False
     
     # 2. 检查环境变量
-    print(f"\n📋 环境变量检查:")
+    logger.info(f"\n📋 环境变量检查:")
     env_vars = [
         'ENABLE_YARA_SCAN',
         'YARA_RULES_PATH', 

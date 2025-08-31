@@ -14,7 +14,7 @@ import uuid
 import traceback
 
 from project.database import get_db, SessionLocal
-from project.models import Student, Project, Course, KnowledgeBase, KnowledgeArticle, Note, AIConversation, AIConversationMessage, AIConversationTemporaryFile, KnowledgeDocument
+from project.models import Student, Project, Course, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, AIConversation, AIConversationMessage, AIConversationTemporaryFile
 from project.dependencies import get_current_user_id
 import project.schemas as schemas
 
@@ -232,7 +232,7 @@ async def semantic_search(
     searchable_items = []
 
     target_types = search_request.item_types if search_request.item_types else ["project", "course",
-                                                                                "knowledge_article", "note"]
+                                                                                "knowledge_document", "note"]
 
     if "project" in target_types:
         # 获取所有项目。如果项目有权限控制，这里需要细化筛选逻辑。
@@ -249,16 +249,18 @@ async def semantic_search(
             if c.embedding is not None:
                 searchable_items.append({"obj": c, "type": "course"})
 
-    if "knowledge_article" in target_types:
-        # 获取用户拥有或公开的知识库中的文章
+    if "knowledge_document" in target_types:
+        # 获取用户拥有或公开的知识库中的文档块（重构后的知识库内容）
         kbs = db.query(KnowledgeBase).filter(
             (KnowledgeBase.owner_id == current_user_id) | (KnowledgeBase.access_type == "public")
         ).all()
         for kb in kbs:
-            articles = db.query(KnowledgeArticle).filter(KnowledgeArticle.kb_id == kb.id).all()
-            for article in articles:
-                if article.embedding is not None:
-                    searchable_items.append({"obj": article, "type": "knowledge_article"})
+            document_chunks = db.query(KnowledgeDocumentChunk).filter(
+                KnowledgeDocumentChunk.kb_id == kb.id,
+                KnowledgeDocumentChunk.embedding.isnot(None)
+            ).all()
+            for chunk in document_chunks:
+                searchable_items.append({"obj": chunk, "type": "knowledge_document"})
 
     if "note" in target_types:
         # 只获取当前用户自己的笔记
@@ -885,15 +887,18 @@ def diagnose_user_rag(
         issues.append("未配置LLM API密钥")
         recommendations.append("添加有效的LLM API密钥")
 
-    # 检查用户内容
+    # 检查用户内容 - 重点关注当前系统支持的内容类型
     kb_count = db.query(KnowledgeBase).filter(KnowledgeBase.owner_id == current_user_id).count()
-    article_count = db.query(KnowledgeArticle).filter(KnowledgeArticle.author_id == current_user_id).count()
-    doc_count = db.query(KnowledgeDocument).filter(KnowledgeDocument.owner_id == current_user_id).count()
+    doc_count = db.query(KnowledgeDocument).filter(KnowledgeDocument.owner_id == current_user_id).count()  # 主要内容
     note_count = db.query(Note).filter(Note.owner_id == current_user_id).count()
 
-    if kb_count == 0 and article_count == 0 and doc_count == 0 and note_count == 0:
+    # 主要检查当前系统支持的内容类型
+    if kb_count == 0 and doc_count == 0 and note_count == 0:
         issues.append("没有任何可搜索的内容")
         recommendations.append("创建知识库、上传文档或添加笔记")
+    elif doc_count == 0 and note_count == 0:
+        issues.append("知识库中没有文档内容")
+        recommendations.append("上传文档到知识库或添加笔记")
 
     return {
         "issues": issues,
@@ -901,7 +906,6 @@ def diagnose_user_rag(
         "status": "ok" if not issues else "has_issues",
         "content_summary": {
             "knowledge_bases": kb_count,
-            "articles": article_count,
             "documents": doc_count,
             "notes": note_count
         }

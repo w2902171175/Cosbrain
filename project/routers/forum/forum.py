@@ -535,14 +535,13 @@ async def create_topic_v2(
         
         # 验证共享内容
         if shared_item_type and shared_item_id:
-            from models import Note, DailyRecord, Course, Project, KnowledgeArticle, CollectedContent
+            from models import Note, DailyRecord, Course, Project, CollectedContent
             
             model_map = {
                 "note": Note,
                 "daily_record": DailyRecord,
                 "course": Course,
                 "project": Project,
-                "knowledge_article": KnowledgeArticle,
                 "collected_content": CollectedContent
             }
             
@@ -777,8 +776,10 @@ async def get_topics_v2(
             if topic.attachments:
                 try:
                     attachments = json.loads(topic.attachments)
-                except:
-                    pass
+                except (json.JSONDecodeError, TypeError) as e:
+                    # 如果解析失败，记录错误并使用空列表
+                    logger.warning(f"Failed to parse attachments for topic {topic.id}: {e}")
+                    attachments = []
             
             # 检查当前用户是否点赞
             user_liked = False
@@ -1097,7 +1098,8 @@ async def update_topic_v2(
         if topic.attachments:
             try:
                 current_attachments = json.loads(topic.attachments)
-            except:
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Failed to parse existing attachments for topic {topic_id}: {e}")
                 current_attachments = []
         
         # 删除指定文件
@@ -1151,7 +1153,8 @@ async def update_topic_v2(
                     history = json.loads(topic.edit_history or "[]")
                     history.append(history_data)
                     topic.edit_history = json.dumps(history[-10:])  # 只保留最近10次修改
-                except:
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Failed to parse edit history for topic {topic.id}: {e}")
                     topic.edit_history = json.dumps([history_data])
         
         db.commit()

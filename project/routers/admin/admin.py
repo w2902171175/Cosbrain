@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 # 使用正确的绝对导入
 from project.database import get_db
-from project.models import Student, Achievement, PointTransaction, KnowledgeArticle, KnowledgeDocument, KnowledgeDocumentChunk, Note
+from project.models import Student, Achievement, PointTransaction, KnowledgeDocument, KnowledgeDocumentChunk, Note
 from project.dependencies.dependencies import get_current_user_id, is_admin_user
 from project.utils.utils import _award_points
 import project.schemas.schemas as schemas
@@ -226,9 +226,8 @@ async def get_rag_status(
         # 暂时注释掉rag_utils导入，提供基本统计
         stats = {"status": "rag_utils module not available"}
 
-        # 统计系统整体数据
-        total_articles = db.query(KnowledgeArticle).count()
-        articles_with_embedding = db.query(KnowledgeArticle).filter(KnowledgeArticle.embedding.isnot(None)).count()
+        # 统计系统整体数据 - 重构后的知识库架构
+        # 主要关注文档块统计 - 这是当前知识库的主要内容
         total_documents = db.query(KnowledgeDocument).count()
         completed_documents = db.query(KnowledgeDocument).filter(KnowledgeDocument.status == "completed").count()
         total_chunks = db.query(KnowledgeDocumentChunk).count()
@@ -241,11 +240,6 @@ async def get_rag_status(
             "status": "ok",
             "performance_metrics": stats,
             "data_statistics": {
-                "articles": {
-                    "total": total_articles,
-                    "with_embedding": articles_with_embedding,
-                    "embedding_rate": articles_with_embedding / total_articles if total_articles > 0 else 0
-                },
                 "documents": {
                     "total": total_documents,
                     "completed": completed_documents,

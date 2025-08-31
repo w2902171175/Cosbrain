@@ -45,7 +45,6 @@ from .models import (
     # 知识库相关模型
     KnowledgeBase,
     KnowledgeBaseFolder,
-    KnowledgeArticle,
     KnowledgeDocument,
     KnowledgeDocumentChunk,
     
@@ -102,7 +101,6 @@ __all__ = [
     # 知识库相关
     "KnowledgeBase",
     "KnowledgeBaseFolder",
-    "KnowledgeArticle",
     "KnowledgeDocument",
     "KnowledgeDocumentChunk",
     

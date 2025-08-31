@@ -407,14 +407,9 @@ class DailyRecordResponse(DailyRecordBase):
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 
-# --- Legacy Collection Schemas (已废弃，保留用于向后兼容) ---
-# 注意：这些模型已被新的 FolderResponseNew 和 CollectedContentResponseNew 替代
-# 保留这些定义以防某些遗留代码仍在使用
-
-    class Config:
-        from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
-        populate_by_name = True
+# NOTE: Legacy Collection Schemas have been removed as they were deprecated.
+# Modern equivalents: FolderResponseNew and CollectedContentResponseNew are now used.
+# If you encounter import errors, please update your code to use the new schemas.
 
 
 # --- ChatRoom Schemas ---
@@ -1094,18 +1089,24 @@ class CourseMaterialResponse(CourseMaterialBase):
         json_encoders = {datetime: lambda dt: dt.isoformat() if dt is not None else None}
 
 
-# --- CollectionItem Schemas (旧版，可以考虑重构或废弃) ---
+# NOTE: Legacy CollectionItem Schemas have been replaced by modern collection system.
+# Please use the new folder-based collection APIs instead.
+# These schemas are preserved temporarily for backward compatibility during migration.
+
 class CollectionItemBase(BaseModel):
+    """@deprecated Use new folder-based collection system instead"""
     user_id: int
     item_type: str
     item_id: int
 
 
 class CollectionItemCreate(CollectionItemBase):
+    """@deprecated Use new folder-based collection system instead"""
     pass
 
 
 class CollectionItemResponse(BaseModel):
+    """@deprecated Use new folder-based collection system instead"""
     id: int
     user_id: int
     item_type: str
@@ -1226,7 +1227,7 @@ class AIQAResponse(BaseModel):
     llm_model_used: Optional[str] = None
     conversation_id: int = Field(..., description="当前问答所关联的对话Session ID。")
     turn_messages: List["AIConversationMessageResponse"] = Field(..., description="当前轮次（包括用户问题和AI回复）产生的完整消息序列。")
-    source_articles: Optional[List[Dict[str, Any]]] = None
+    source_articles: Optional[List[Dict[str, Any]]] = Field(None, description="搜索到的源内容（可能包含文档块、笔记等各种类型）")
     search_results: Optional[List[Dict[str, Any]]] = None
 
     class Config:

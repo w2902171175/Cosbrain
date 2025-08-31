@@ -38,6 +38,7 @@ from project.routers import (
 )
 # 导入收藏系统模块
 from project.routers.collections import router as collections_router
+from project.routers.collections.program_collections import router as program_collections_router
 
 # 加载环境变量
 load_dotenv()
@@ -84,6 +85,7 @@ app.include_router(forum)
 app.include_router(chatrooms)
 # 收藏系统 - 基于文件夹的新架构（统一路由）
 app.include_router(collections_router)  # 新一代收藏管理系统
+app.include_router(program_collections_router)  # 类似GitHub星标的收藏功能
 app.include_router(ai)
 app.include_router(ai_admin_router)  # AI管理路由
 app.include_router(ai_monitoring_router)  # AI监控路由

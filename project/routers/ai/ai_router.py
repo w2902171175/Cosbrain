@@ -26,8 +26,8 @@ from pydantic import BaseModel, Field, validator, ConfigDict
 from project.database import get_db, SessionLocal
 from project.dependencies import get_current_user_id
 from project.models import (
-    Student, Project, Course, KnowledgeBase, KnowledgeArticle, Note, 
-    AIConversation, AIConversationMessage, AIConversationTemporaryFile, KnowledgeDocument
+    Student, Project, Course, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, 
+    AIConversation, AIConversationMessage, AIConversationTemporaryFile
 )
 import project.schemas as schemas
 import project.oss_utils as oss_utils
@@ -833,7 +833,7 @@ async def semantic_search(
 
         searchable_items = []
         target_types = request.item_types if request.item_types else [
-            "project", "course", "knowledge_article", "note"
+            "project", "course", "knowledge_document", "note"
         ]
 
         # 收集可搜索的内容
@@ -849,15 +849,18 @@ async def semantic_search(
                 if c.embedding is not None:
                     searchable_items.append({"obj": c, "type": "course"})
 
-        if "knowledge_article" in target_types:
+        if "knowledge_document" in target_types:
+            # 搜索知识库文档块（重构后的知识库内容）
             kbs = db.query(KnowledgeBase).filter(
                 (KnowledgeBase.owner_id == user_id) | (KnowledgeBase.access_type == "public")
             ).all()
             for kb in kbs:
-                articles = db.query(KnowledgeArticle).filter(KnowledgeArticle.kb_id == kb.id).all()
-                for article in articles:
-                    if article.embedding is not None:
-                        searchable_items.append({"obj": article, "type": "knowledge_article"})
+                document_chunks = db.query(KnowledgeDocumentChunk).filter(
+                    KnowledgeDocumentChunk.kb_id == kb.id,
+                    KnowledgeDocumentChunk.embedding.isnot(None)
+                ).all()
+                for chunk in document_chunks:
+                    searchable_items.append({"obj": chunk, "type": "knowledge_document"})
 
         if "note" in target_types:
             notes = db.query(Note).filter(Note.owner_id == user_id).all()
@@ -1338,7 +1341,7 @@ async def rag_diagnosis(
             "knowledge_bases": {
                 "owned_count": 0,
                 "accessible_count": 0,
-                "total_articles": 0
+                "total_document_chunks": 0
             },
             "notes": {
                 "total_count": 0,
@@ -1357,12 +1360,16 @@ async def rag_diagnosis(
         diagnosis_result["knowledge_bases"]["owned_count"] = len(owned_kbs)
         diagnosis_result["knowledge_bases"]["accessible_count"] = len(accessible_kbs)
 
-        total_articles = 0
+        # 统计知识库主要内容 - 文档块
+        total_document_chunks = 0
         for kb in accessible_kbs:
-            articles_count = db.query(KnowledgeArticle).filter(KnowledgeArticle.kb_id == kb.id).count()
-            total_articles += articles_count
+            # 统计文档块数量
+            chunks_count = db.query(KnowledgeDocumentChunk).join(KnowledgeDocument).filter(
+                KnowledgeDocument.knowledge_base_id == kb.id
+            ).count()
+            total_document_chunks += chunks_count
 
-        diagnosis_result["knowledge_bases"]["total_articles"] = total_articles
+        diagnosis_result["knowledge_bases"]["total_document_chunks"] = total_document_chunks
 
         # 检查笔记
         user_notes = db.query(Note).filter(Note.owner_id == user_id).all()
@@ -1389,8 +1396,8 @@ async def rag_diagnosis(
             recommendations.append("请配置LLM API提供者以启用RAG功能")
         if not user.llm_api_key_encrypted:
             recommendations.append("请配置LLM API密钥")
-        if total_articles == 0:
-            recommendations.append("建议创建或导入知识库文章以丰富RAG检索内容")
+        if total_document_chunks == 0:
+            recommendations.append("建议上传文档到知识库以丰富RAG检索内容")
         if len(notes_with_embeddings) < len(user_notes):
             recommendations.append("部分笔记缺少嵌入向量，建议重新生成")
 

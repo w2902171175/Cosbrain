@@ -63,33 +63,6 @@ class KnowledgeBaseFolderSimpleResponse(KnowledgeBaseFolderSimpleBase):
 
 # ===== 文章Schema（简化版） =====
 
-class KnowledgeArticleSimpleBase(BaseModel):
-    """简化的知识库文章基础模型"""
-    title: Optional[str] = Field(None, max_length=200, description="文章标题")
-    content: Optional[str] = Field(None, description="文章内容")
-    version: Optional[str] = Field("1.0", description="版本号")
-    tags: Optional[str] = Field(None, max_length=200, description="标签")
-    kb_folder_id: Optional[int] = Field(None, description="所属文件夹ID")
-
-class KnowledgeArticleSimpleCreate(KnowledgeArticleSimpleBase):
-    """创建文章的模型"""
-    pass
-
-class KnowledgeArticleSimpleResponse(KnowledgeArticleSimpleBase):
-    """文章响应模型"""
-    id: int
-    kb_id: int
-    author_id: int
-    combined_text: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            datetime: lambda dt: dt.isoformat() if dt is not None else None
-        }
-
 # ===== 文档Schema（简化版） =====
 
 class KnowledgeDocumentSimpleBase(BaseModel):
@@ -178,7 +151,7 @@ class KnowledgeSearchResponse(BaseModel):
 
 class KnowledgeBaseStats(BaseModel):
     """知识库统计信息"""
-    total_articles: int = Field(0, description="文章总数")
+    total_document_chunks: int = Field(0, description="文档块总数")
     total_documents: int = Field(0, description="文档总数")
     total_folders: int = Field(0, description="文件夹总数")
     recent_updates: List[Any] = Field([], description="最近更新")

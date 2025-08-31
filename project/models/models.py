@@ -110,7 +110,6 @@ class Student(Base):
 
     notes = relationship("Note", back_populates="owner")
     knowledge_bases = relationship("KnowledgeBase", back_populates="owner")
-    knowledge_articles = relationship("KnowledgeArticle", back_populates="author")
     user_courses = relationship("UserCourse", back_populates="student")
     collection_items = relationship("CollectionItem", back_populates="user")
     daily_records = relationship("DailyRecord", back_populates="owner")
@@ -362,7 +361,7 @@ class CollectedContent(Base):
 
     access_count = Column(Integer, default=0, nullable=False, comment="访问（查看）次数")
     shared_item_type = Column(String, nullable=True,
-                              comment="如果收藏平台内部内容，记录其类型（例如'project', 'course', 'forum_topic', 'note', 'daily_record', 'knowledge_article', 'chat_message'）")
+                              comment="如果收藏平台内部内容，记录其类型（例如'project', 'course', 'forum_topic', 'note', 'daily_record', 'knowledge_document', 'chat_message'）")
     shared_item_id = Column(Integer, nullable=True, comment="如果收藏平台内部内容，记录其ID")
 
     combined_text = Column(Text, nullable=True, comment="用于AI模型嵌入的组合文本")
@@ -813,7 +812,6 @@ class KnowledgeBase(Base):
     updated_at = Column(DateTime, onupdate=func.now())
 
     owner = relationship("Student", back_populates="knowledge_bases")
-    articles = relationship("KnowledgeArticle", back_populates="knowledge_base", cascade="all, delete-orphan")
     documents = relationship("KnowledgeDocument", back_populates="knowledge_base",
                              cascade="all, delete-orphan")
     kb_folders = relationship("KnowledgeBaseFolder", back_populates="knowledge_base", cascade="all, delete-orphan")
@@ -859,7 +857,6 @@ class KnowledgeBaseFolder(Base):
     )
     # END MODIFICATION FOR KnowledgeBaseFolder relationships
 
-    articles = relationship("KnowledgeArticle", back_populates="kb_folder", cascade="all, delete-orphan")
     documents = relationship("KnowledgeDocument", back_populates="kb_folder", cascade="all, delete-orphan")
 
     __table_args__ = (
@@ -870,30 +867,6 @@ class KnowledgeBaseFolder(Base):
         Index('_kb_folder_linked_unique_idx', 'kb_id', 'linked_folder_type', 'linked_folder_id', unique=True,
               postgresql_where=text("linked_folder_type IS NOT NULL AND linked_folder_id IS NOT NULL")),
     )
-
-
-class KnowledgeArticle(Base):
-    __tablename__ = "knowledge_articles"
-
-    id = Column(Integer, primary_key=True, index=True)
-    kb_id = Column(Integer, ForeignKey("knowledge_bases.id"))
-    author_id = Column(Integer, ForeignKey("students.id"))
-    title = Column(String, index=True)
-    content = Column(Text)
-    version = Column(String)
-    tags = Column(String)
-
-    kb_folder_id = Column(Integer, ForeignKey("knowledge_base_folders.id"), nullable=True, index=True,
-                          comment="所属知识库文件夹ID")
-    combined_text = Column(Text)
-    embedding = Column(Vector(1024))
-
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, onupdate=func.now())
-
-    knowledge_base = relationship("KnowledgeBase", back_populates="articles")
-    author = relationship("Student", back_populates="knowledge_articles")
-    kb_folder = relationship("KnowledgeBaseFolder", back_populates="articles")
 
 
 class KnowledgeDocument(Base):

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from project.models import Student, KnowledgeBase, UserMcpConfig, UserSearchEngineConfig
+from project.models import Student, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, CollectedContent, UserMcpConfig, UserSearchEngineConfig
 
 # 导入AI提供者和工具
 from .security_utils import decrypt_key
@@ -45,18 +45,27 @@ WEB_SEARCH_TOOL_SCHEMA = {
 
 RAG_TOOL_SCHEMA = {
     "name": "knowledge_search",
-    "description": "从用户的知识库中搜索相关信息，适用于个人文档、笔记、项目资料等查询",
+    "description": "从用户的多种内容源中搜索相关信息，包括知识库文档、课程笔记、收藏内容等",
     "input_schema": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "知识库搜索查询"
+                "description": "搜索查询内容"
             },
             "max_results": {
                 "type": "integer",
                 "description": "最大结果数量，默认为3",
                 "default": 3
+            },
+            "content_types": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["knowledge_document", "note", "collected_content"]
+                },
+                "description": "要搜索的内容类型，可选：knowledge_document(知识库文档), note(课程笔记), collected_content(收藏内容)。默认搜索所有类型",
+                "default": ["knowledge_document", "note", "collected_content"]
             }
         },
         "required": ["query"]
@@ -207,9 +216,10 @@ async def _execute_rag_tool(
     user_id: int,
     db: Session
 ) -> Dict[str, Any]:
-    """执行RAG知识库搜索工具"""
+    """执行RAG多内容搜索工具 - 支持知识库文档、课程笔记、收藏内容检索"""
     query = arguments.get("query", "")
     max_results = arguments.get("max_results", 3)
+    content_types = arguments.get("content_types", ["knowledge_document", "note", "collected_content"])
     
     if not query:
         return {
@@ -227,19 +237,50 @@ async def _execute_rag_tool(
             "data": None
         }
 
-    # 获取用户的知识库文档
-    knowledge_docs = db.query(KnowledgeBase).filter(
-        KnowledgeBase.creator_id == user_id
-    ).all()
+    # 收集所有可搜索的内容
+    searchable_items = []
+    
+    # 知识库文档块 (上传文档的内容) - 这是知识库的主要内容
+    if "knowledge_document" in content_types:
+        # 查找用户有权限访问的知识库
+        accessible_kbs = db.query(KnowledgeBase).filter(
+            (KnowledgeBase.owner_id == user_id) | (KnowledgeBase.access_type == "public")
+        ).all()
+        
+        for kb in accessible_kbs:
+            document_chunks = db.query(KnowledgeDocumentChunk).filter(
+                KnowledgeDocumentChunk.kb_id == kb.id,
+                KnowledgeDocumentChunk.embedding.isnot(None)
+            ).all()
+            for chunk in document_chunks:
+                searchable_items.append({"obj": chunk, "type": "knowledge_document"})
+    
+    # 课程笔记
+    if "note" in content_types:
+        notes = db.query(Note).filter(
+            Note.owner_id == user_id,
+            Note.embedding.isnot(None)
+        ).all()
+        for note in notes:
+            searchable_items.append({"obj": note, "type": "note"})
+    
+    # 收藏内容
+    if "collected_content" in content_types:
+        collected_items = db.query(CollectedContent).filter(
+            CollectedContent.owner_id == user_id,
+            CollectedContent.embedding.isnot(None)
+        ).all()
+        for item in collected_items:
+            searchable_items.append({"obj": item, "type": "collected_content"})
 
-    if not knowledge_docs:
+    if not searchable_items:
         return {
             "success": True,
             "error": None,
             "data": {
                 "query": query,
                 "results": [],
-                "message": "知识库为空"
+                "message": "没有找到可搜索的内容"
             }
         }
 
@@ -274,41 +315,73 @@ async def _execute_rag_tool(
         import numpy as np
         from sklearn.metrics.pairwise import cosine_similarity
         
-        scored_docs = []
-        for doc in knowledge_docs:
-            doc_embedding = None
-            if doc.embedding:
+        scored_items = []
+        for item in searchable_items:
+            obj = item["obj"]
+            item_type = item["type"]
+            
+            item_embedding = None
+            if obj.embedding:
                 try:
-                    if isinstance(doc.embedding, str):
-                        doc_embedding = json.loads(doc.embedding)
-                    elif isinstance(doc.embedding, list):
-                        doc_embedding = doc.embedding
+                    if isinstance(obj.embedding, str):
+                        item_embedding = json.loads(obj.embedding)
+                    elif isinstance(obj.embedding, list):
+                        item_embedding = obj.embedding
                 except:
                     continue
                     
-            if doc_embedding and len(doc_embedding) == len(query_embedding):
+            if item_embedding and len(item_embedding) == len(query_embedding):
                 similarity = cosine_similarity(
                     [query_embedding], 
-                    [doc_embedding]
+                    [item_embedding]
                 )[0][0]
-                scored_docs.append({
-                    "document": doc,
+                scored_items.append({
+                    "object": obj,
+                    "type": item_type,
                     "similarity": similarity
                 })
 
         # 排序并取top结果
-        scored_docs.sort(key=lambda x: x["similarity"], reverse=True)
-        top_docs = scored_docs[:max_results]
+        scored_items.sort(key=lambda x: x["similarity"], reverse=True)
+        top_items = scored_items[:max_results]
 
         results = []
-        for item in top_docs:
-            doc = item["document"]
-            results.append({
-                "title": doc.title,
-                "content": doc.content[:500] + "..." if len(doc.content) > 500 else doc.content,
-                "similarity": item["similarity"],
-                "created_at": doc.created_at.isoformat() if doc.created_at else None
-            })
+        for item in top_items:
+            obj = item["object"]
+            item_type = item["type"]
+            
+            # 根据类型提取不同的字段
+            if item_type == "knowledge_document":
+                # 对于文档块，我们需要获取其父文档信息
+                document = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == obj.document_id).first()
+                document_name = document.file_name if document else f"文档块 {obj.id}"
+                result = {
+                    "type": "知识库文档",
+                    "title": f"{document_name} (第{obj.chunk_index}块)",
+                    "content": obj.content[:500] + "..." if obj.content and len(obj.content) > 500 else obj.content,
+                    "similarity": item["similarity"],
+                    "created_at": obj.created_at.isoformat() if obj.created_at else None
+                }
+            elif item_type == "note":
+                result = {
+                    "type": "课程笔记",
+                    "title": obj.title if hasattr(obj, 'title') else f"笔记 {obj.id}",
+                    "content": obj.content[:500] + "..." if obj.content and len(obj.content) > 500 else obj.content,
+                    "similarity": item["similarity"],
+                    "created_at": obj.created_at.isoformat() if obj.created_at else None
+                }
+            elif item_type == "collected_content":
+                result = {
+                    "type": "收藏内容",
+                    "title": obj.title if hasattr(obj, 'title') else f"收藏 {obj.id}",
+                    "content": obj.content[:500] + "..." if obj.content and len(obj.content) > 500 else obj.content,
+                    "similarity": item["similarity"],
+                    "created_at": obj.created_at.isoformat() if obj.created_at else None
+                }
+            else:
+                continue
+                
+            results.append(result)
 
         return {
             "success": True,
@@ -316,7 +389,8 @@ async def _execute_rag_tool(
             "data": {
                 "query": query,
                 "results": results,
-                "total_searched": len(knowledge_docs)
+                "content_types_searched": content_types,
+                "total_searched": len(searchable_items)
             }
         }
         
