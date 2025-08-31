@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile,
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, ConfigDict
 
 # 项目依赖
 from project.database import get_db, SessionLocal
@@ -229,6 +229,8 @@ async def process_ai_temp_file_in_background(
 
 class ChatRequest(BaseModel):
     """聊天请求模型"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     message: str = Field(..., max_length=AIRouterConfig.MAX_MESSAGE_LENGTH)
     conversation_id: Optional[str] = None
     model_preference: Optional[str] = None
@@ -247,6 +249,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """聊天响应模型"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     conversation_id: str
     message_id: str
     content: str
@@ -733,7 +737,7 @@ async def upload_file(
         file_id = str(uuid.uuid4())
         oss_key = f"ai_uploads/{user_id}/{file_id}/{file.filename}"
         
-        await oss_utils.upload_file_to_oss(oss_key, content)
+        await oss_utils.upload_file_to_oss(content, oss_key, file.content_type)
         
         # 创建处理记录
         temp_file = AIConversationTemporaryFile(

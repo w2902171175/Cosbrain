@@ -278,7 +278,7 @@ class ThumbnailGenerator:
                 
                 # 上传到OSS
                 thumbnail_key = f"knowledge/{user_id}/{kb_id}/thumbnails/{uuid.uuid4().hex}.jpg"
-                return oss_utils.upload_file_to_oss(thumbnail_content, thumbnail_key)
+                return await oss_utils.upload_file_to_oss(thumbnail_content, thumbnail_key, "image/jpeg")
                 
         except Exception as e:
             logger.error(f"生成图片缩略图失败: {str(e)}", extra={
@@ -845,7 +845,7 @@ async def upload_document(
     except Exception as e:
         logger.error("读取上传文件失败", extra={
             "user_id": current_user_id,
-            "filename": file.filename,
+            "uploaded_file": file.filename,
             "error": str(e)
         })
         raise HTTPException(
@@ -877,7 +877,7 @@ async def upload_document(
         file_key = f"knowledge/{current_user_id}/{kb_id}/{content_type.value}/{file_id[:8]}/{safe_filename}"
         
         # 上传到OSS
-        file_url = oss_utils.upload_file_to_oss(file_content, file_key)
+        file_url = await oss_utils.upload_file_to_oss(file_content, file_key, file.content_type)
         
         # 创建文档记录
         db_document = KnowledgeDocument(
@@ -910,7 +910,7 @@ async def upload_document(
             "user_id": current_user_id,
             "kb_id": kb_id,
             "document_id": db_document.id,
-            "filename": safe_filename,
+            "uploaded_file": safe_filename,
             "content_type": content_type.value,
             "file_size": file_size
         })
@@ -922,7 +922,7 @@ async def upload_document(
         logger.error("文档上传失败", extra={
             "user_id": current_user_id,
             "kb_id": kb_id,
-            "filename": safe_filename,
+            "uploaded_file": safe_filename,
             "content_type": content_type.value if content_type else None,
             "error": str(e)
         })
