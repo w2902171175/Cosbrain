@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field
 
 # 项目依赖
 from project.database import get_db
-from project.dependencies import get_current_user_id
-from project.models import Student, AIConversation, AIConversationMessage
+from project.utils import get_current_user_id
+from project.models import User, AIConversation, AIConversationMessage
 
 # AI提供者集成
 from project.ai_providers.provider_manager import AIProviderManager
@@ -310,7 +310,7 @@ async def verify_monitoring_permission(
     db: Session = Depends(get_db)
 ) -> bool:
     """验证监控权限"""
-    user = db.query(Student).filter(Student.id == user_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -625,3 +625,6 @@ async def export_metrics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"导出指标失败: {str(e)}"
         )
+
+# 模块加载日志
+logger.info("📊 AI Monitoring Module - AI监控模块已加载")

@@ -266,7 +266,7 @@ class PerformanceConfig:
     cache_ttl: int = 3600
     cache_max_size: int = 1000
     redis_enabled: bool = False
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     metrics_enabled: bool = True
     health_check_interval: int = 60
 

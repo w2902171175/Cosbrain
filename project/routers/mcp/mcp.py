@@ -1,350 +1,380 @@
-# project/routers/mcp/mcp.py
-from fastapi import APIRouter, Depends, HTTPException, status
+# project/routers/mcp/mcp_optimized.py
+"""
+MCP模块优化版本 - 应用统一优化框架
+基于成功优化模式，优化MCP模块的配置管理和连接功能
+"""
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import List, Optional
-import httpx
+from typing import List, Optional, Dict, Any
 from datetime import datetime
+import logging
 
+# 核心依赖
 from project.database import get_db
-from project.dependencies import get_current_user_id
+from project.utils import get_current_user_id
 from project.models import UserMcpConfig
 import project.schemas as schemas
-from project.ai_providers.security_utils import decrypt_key, encrypt_key
 
-router = APIRouter(
-    prefix="/mcp-configs",
-    tags=["MCP服务配置"]
+# 服务层导入
+from project.services.mcp_service import (
+    MCPConfigService, MCPConnectionService, MCPToolsService, MCPUtilities
 )
 
-# --- 辅助函数：检查MCP服务连通性 (可以根据MCP实际API调整) ---
-async def check_mcp_api_connectivity(base_url: str, protocol_type: str,
-                                     api_key: Optional[str] = None) -> schemas.McpStatusResponse:
-    """
-    尝试ping MCP服务的健康检查端点或一个简单的公共API。
-    此处为简化实现，实际应根据MCP的具体API文档实现。
-    """
-    print(f"DEBUG_MCP: Checking connectivity for {base_url} with protocol {protocol_type}")
+# 优化工具导入
+from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.optimization.router_optimization import optimized_route, router_optimizer
+from project.utils.async_cache.async_tasks import submit_background_task, TaskPriority
+from project.utils.optimization.production_utils import cache_manager
 
-    headers = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-        if "modelscope" in base_url.lower():
-            headers["X-DashScope-Apikey"] = api_key  # 为Modelscope添加专用header
+logger = logging.getLogger(__name__)
 
-    # 使用 httpx.AsyncClient 进行异步请求
-    async with httpx.AsyncClient() as client:
-        try:
-            is_modelscope_inference_url = "mcp.api-inference.modelscope.net" in base_url.lower() \
-                                          or "modelscope.cn/api/v1/inference" in base_url.lower()
+# 创建路由器
+router = APIRouter(prefix="/mcp", tags=["MCP模型上下文协议"])
 
-            if is_modelscope_inference_url:
-                print(f"DEBUG_MCP: Attempting HEAD on ModelScope inference URL: {base_url}")
-                response = await client.head(base_url, headers=headers, timeout=5)
-                # 对于推理服务，如果返回 405 (Method Not Allowed), 表示服务器可达，但不支持HEAD，这仍可视为成功连通
-                if response.status_code == 405:
-                    return schemas.McpStatusResponse(
-                        status="success",
-                        message=f"ModelScope推理服务可达 (HTTP 405 Method Not Allowed): {base_url}",
-                        timestamp=datetime.now()
-                    )
-                # 404 (Not Found) 表示该 URL 路径确实不存在，是真正的失败
-                if response.status_code == 404:
-                    raise httpx.RequestError(f"Endpoint not found: {base_url}", request=response.request)  # 转换为请求错误
+# ===== MCP配置管理路由 =====
 
-                response.raise_for_status()  # 对其他 4xx/5xx 状态码抛出异常
-                return schemas.McpStatusResponse(
-                    status="success",
-                    message=f"成功连接到ModelScope推理服务 ({response.status_code}): {base_url}",
-                    timestamp=datetime.now()
-                )
-
-            # Case 2: 纯 SSE/Streamable HTTP (通用，非特定ModelScope的健康检查)
-            elif protocol_type.lower() == "sse" or protocol_type.lower() == "streamable_http":
-                # 对于通用SSE，假设存在 /health 端点。
-                test_health_url = base_url.rstrip('/') + "/health"
-                print(f"DEBUG_MCP: Attempting GET on general SSE health URL: {test_health_url}")
-                response = await client.get(test_health_url, headers=headers, timeout=5)
-                response.raise_for_status()
-                return schemas.McpStatusResponse(
-                    status="success",
-                    message=f"成功连接到MCP服务 (SSE/Streamable HTTP连通性): {test_health_url}",
-                    timestamp=datetime.now()
-                )
-
-            # Case 3: 标准 HTTP API (通用 REST API，包括非推理部分的ModelScope，以及LLM API)
-            else:  # 默认为 http_rest 或其他通用类型
-                test_api_url = base_url.rstrip('/')
-                # 对于通用 ModelScope API (非推理服务)，或当 base_url 仅为域名时
-                # 尝试访问其 /api/v1/models 或类似的通用发现端点。
-                # 如果 base_url 已经包含如 /api/v1 等路径，则不重复追加。
-                if ("modelscope.cn" in base_url.lower() or "modelscope.net" in base_url.lower()) and \
-                        not any(suffix in base_url.lower() for suffix in
-                                ["/sse", "/api/v1/inference", "/v1/models", "/health", "/status"]):
-                    test_api_url = base_url.rstrip('/') + "/api/v1/models"  # 常见 ModelScope 通用 API 路径
-                elif not base_url.lower().endswith("health") and not base_url.lower().endswith("status"):
-                    # 对于其他通用自定义 HTTP API，如果没有明确指定健康检查路径，假设为 /health。
-                    test_api_url = base_url.rstrip('/') + "/health"
-
-                print(f"DEBUG_MCP: Attempting GET on standard HTTP API URL: {test_api_url}")
-                # 使用标准的 GET 请求
-                response = await client.get(test_api_url, headers=headers, timeout=5)
-                response.raise_for_status()  # 对 4xx/5xx 状态码抛出异常
-                return schemas.McpStatusResponse(
-                    status="success",
-                    message=f"成功连接到MCP服务: {test_api_url}",
-                    timestamp=datetime.now()
-                )
-
-        except httpx.TimeoutException:
-            print(f"ERROR_MCP: 连接MCP服务超时: {base_url}")
-            return schemas.McpStatusResponse(
-                status="timeout",
-                message=f"连接MCP服务超时: {base_url}",
-                timestamp=datetime.now()
-            )
-        except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code
-            print(f"ERROR_MCP: 连接MCP服务失败 (HTTP {status_code}): {e}")
-            return schemas.McpStatusResponse(
-                status="failure",
-                message=f"连接MCP服务失败 (HTTP {status_code})",
-                timestamp=datetime.now()
-            )
-        except httpx.RequestError as e:
-            print(f"ERROR_MCP: 连接MCP服务请求错误: {e}")
-            return schemas.McpStatusResponse(
-                status="failure",
-                message=f"连接MCP服务请求错误",
-                timestamp=datetime.now()
-            )
-        except Exception as e:
-            print(f"ERROR_MCP: 检查MCP服务时发生未知错误: {e}")
-            return schemas.McpStatusResponse(
-                status="failure",
-                message=f"内部错误，无法检查MCP服务",
-                timestamp=datetime.now()
-            )
-
-# --- MCP服务配置管理接口 ---
-@router.post("/", response_model=schemas.UserMcpConfigResponse, summary="创建新的MCP配置")
-async def create_mcp_config(
-        config_data: schemas.UserMcpConfigCreate,
-        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
-        db: Session = Depends(get_db)
+@router.get("/configs", response_model=List[schemas.UserMcpConfigResponse], summary="获取MCP配置列表")
+@optimized_route("获取MCP配置列表")
+@handle_database_errors
+async def get_user_mcp_configs(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+    skip: int = Query(0, ge=0, description="跳过的记录数"),
+    limit: int = Query(50, ge=1, le=100, description="返回的记录数")
 ):
-    print(f"DEBUG: 用户 {current_user_id} 尝试创建MCP配置: {config_data.name}")
+    """获取用户MCP配置列表 - 优化版本"""
+    
+    # 尝试从缓存获取
+    cache_key = f"user_mcp_configs_{current_user_id}_{skip}_{limit}"
+    cached_data = cache_manager.get(cache_key)
+    if cached_data:
+        return cached_data
+    
+    configs, total = MCPConfigService.get_user_configs_optimized(
+        db, current_user_id, skip, limit
+    )
+    
+    # 构建安全响应
+    response_data = [
+        MCPUtilities.build_safe_response_dict(config) for config in configs
+    ]
+    
+    # 缓存结果
+    cache_manager.set(cache_key, response_data, ttl=300)
+    
+    logger.info(f"用户 {current_user_id} 获取MCP配置列表: {len(configs)} 个配置")
+    return response_data
 
-    encrypted_key = None
-    if config_data.api_key:
-        encrypted_key = encrypt_key(config_data.api_key)
+@router.post("/configs", response_model=schemas.UserMcpConfigResponse, summary="创建MCP配置")
+@optimized_route("创建MCP配置")
+@handle_database_errors
+async def create_mcp_config(
+    config_data: schemas.UserMcpConfigCreate,
+    background_tasks: BackgroundTasks,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """创建MCP配置 - 优化版本"""
+    
+    with database_transaction(db):
+        config = MCPConfigService.create_mcp_config_optimized(
+            db, current_user_id, config_data.dict()
+        )
+        
+        # 异步测试连接
+        submit_background_task(
+            background_tasks,
+            MCPConnectionService.test_mcp_connection_optimized,
+            TaskPriority.LOW,
+            db, config.id, current_user_id
+        )
+        
+        response_data = MCPUtilities.build_safe_response_dict(config)
+        
+        logger.info(f"用户 {current_user_id} 创建MCP配置: {config.id}")
+        return response_data
 
-    # 检查是否已存在同名且活跃的配置，避免用户创建重复的配置
-    existing_config = db.query(UserMcpConfig).filter(
-        UserMcpConfig.owner_id == current_user_id,
-        UserMcpConfig.name == config_data.name,
-        UserMcpConfig.is_active == True  # 只检查活跃的配置是否有重名
-    ).first()
+@router.get("/configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="获取MCP配置详情")
+@optimized_route("获取MCP配置详情")
+@handle_database_errors
+async def get_mcp_config(
+    config_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """获取MCP配置详情 - 优化版本"""
+    
+    # 尝试从缓存获取
+    cache_key = f"mcp_config_{config_id}_{current_user_id}"
+    cached_data = cache_manager.get(cache_key)
+    if cached_data:
+        return cached_data
+    
+    config = MCPConfigService.get_mcp_config_optimized(db, config_id, current_user_id)
+    if not config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MCP配置未找到或无权访问"
+        )
+    
+    response_data = MCPUtilities.build_safe_response_dict(config)
+    
+    # 缓存结果
+    cache_manager.set(cache_key, response_data, ttl=600)
+    
+    logger.info(f"用户 {current_user_id} 获取MCP配置详情: {config_id}")
+    return response_data
 
-    if existing_config:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail="已存在同名且活跃的MCP配置。请选择其他名称或停用旧配置。")
+@router.put("/configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="更新MCP配置")
+@optimized_route("更新MCP配置")
+@handle_database_errors
+async def update_mcp_config(
+    config_id: int,
+    update_data: schemas.UserMcpConfigCreate,
+    background_tasks: BackgroundTasks,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """更新MCP配置 - 优化版本"""
+    
+    with database_transaction(db):
+        config = MCPConfigService.update_mcp_config_optimized(
+            db, config_id, current_user_id, update_data.dict(exclude_unset=True)
+        )
+        
+        if not config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MCP配置未找到或无权访问"
+            )
+        
+        # 异步重新测试连接
+        submit_background_task(
+            background_tasks,
+            MCPConnectionService.test_mcp_connection_optimized,
+            TaskPriority.MEDIUM,
+            db, config.id, current_user_id
+        )
+        
+        response_data = MCPUtilities.build_safe_response_dict(config)
+        
+        logger.info(f"用户 {current_user_id} 更新MCP配置: {config_id}")
+        return response_data
 
-    # 创建数据库记录
-    db_config = UserMcpConfig(
-        owner_id=current_user_id,  # 设置拥有者为当前用户
-        name=config_data.name,
-        mcp_type=config_data.mcp_type,
-        base_url=config_data.base_url,
-        protocol_type=config_data.protocol_type,
-        api_key_encrypted=encrypted_key,
-        is_active=config_data.is_active,
-        description=config_data.description
+@router.delete("/configs/{config_id}", summary="删除MCP配置")
+@optimized_route("删除MCP配置")
+@handle_database_errors
+async def delete_mcp_config(
+    config_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """删除MCP配置 - 优化版本"""
+    
+    with database_transaction(db):
+        success = MCPConfigService.delete_mcp_config_optimized(db, config_id, current_user_id)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MCP配置未找到或无权访问"
+            )
+        
+        logger.info(f"用户 {current_user_id} 删除MCP配置: {config_id}")
+        return {"message": "MCP配置删除成功", "config_id": config_id}
+
+# ===== MCP连接测试路由 =====
+
+@router.post("/configs/{config_id}/test", response_model=schemas.McpStatusResponse, summary="测试MCP连接")
+@optimized_route("测试MCP连接")
+@handle_database_errors
+async def test_mcp_connection(
+    config_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """测试MCP连接状态 - 优化版本"""
+    
+    result = await MCPConnectionService.test_mcp_connection_optimized(
+        db, config_id, current_user_id
+    )
+    
+    # 构建响应
+    status_response = schemas.McpStatusResponse(
+        status=result.get("status", "error"),
+        message=result.get("message", "未知错误"),
+        timestamp=datetime.fromisoformat(result.get("timestamp", datetime.now().isoformat())),
+        response_time=result.get("response_time")
+    )
+    
+    logger.info(f"用户 {current_user_id} 测试MCP连接 {config_id}: {result['status']}")
+    return status_response
+
+@router.get("/configs/{config_id}/status", response_model=schemas.McpStatusResponse, summary="获取MCP连接状态")
+@optimized_route("获取MCP连接状态")
+@handle_database_errors
+async def get_mcp_status(
+    config_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """获取MCP连接状态 - 优化版本（从缓存返回）"""
+    
+    # 检查缓存的连接状态
+    cache_key = f"mcp_connection_status_{config_id}"
+    cached_status = cache_manager.get(cache_key)
+    
+    if cached_status:
+        status_response = schemas.McpStatusResponse(
+            status=cached_status.get("status", "unknown"),
+            message=cached_status.get("message", "缓存状态"),
+            timestamp=datetime.fromisoformat(cached_status.get("timestamp", datetime.now().isoformat())),
+            response_time=cached_status.get("response_time")
+        )
+        return status_response
+    
+    # 如果没有缓存，返回未知状态
+    return schemas.McpStatusResponse(
+        status="unknown",
+        message="连接状态未知，请先进行连接测试",
+        timestamp=datetime.now()
     )
 
-    db.add(db_config)
-    db.commit()  # 提交事务
-    db.refresh(db_config)  # 刷新以获取数据库生成的ID和时间戳
+# ===== MCP工具管理路由 =====
 
-    # 确保不返回明文 API 密钥，使用字典构造确保安全
-    response_dict = {
-        'id': db_config.id,
-        'owner_id': db_config.owner_id,
-        'name': db_config.name,
-        'mcp_type': db_config.mcp_type,
-        'base_url': db_config.base_url,
-        'protocol_type': db_config.protocol_type,
-        'is_active': db_config.is_active,
-        'description': db_config.description,
-        'created_at': db_config.created_at or datetime.now(),
-        'updated_at': db_config.updated_at or db_config.created_at or datetime.now(),
-        'api_key_encrypted': None  # 明确设置为None
-    }
-
-    print(f"DEBUG: 用户 {current_user_id} 的MCP配置 '{db_config.name}' (ID: {db_config.id}) 创建成功。")
-    return schemas.UserMcpConfigResponse(**response_dict)
-
-@router.get("/", response_model=List[schemas.UserMcpConfigResponse], summary="获取当前用户所有MCP服务配置")
-async def get_all_mcp_configs(
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db),
-        is_active: Optional[bool] = None  # 过滤条件：只获取启用或禁用的配置
+@router.get("/configs/{config_id}/tools", response_model=List[schemas.McpToolDefinition], summary="获取MCP工具列表")
+@optimized_route("获取MCP工具列表")
+@handle_database_errors
+async def get_mcp_tools(
+    config_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
 ):
-    """
-    获取当前用户配置的所有MCP服务。
-    """
-    print(f"DEBUG: 获取用户 {current_user_id} 的MCP配置列表。")
-    query = db.query(UserMcpConfig).filter(UserMcpConfig.owner_id == current_user_id)
-    if is_active is not None:
-        query = query.filter(UserMcpConfig.is_active == is_active)
-
-    configs = query.order_by(UserMcpConfig.created_at.desc()).all()
-
-    # 安全处理：确保不返回任何敏感信息
-    result_configs = []
-    for config in configs:
-        config_dict = {
-            'id': config.id,
-            'owner_id': config.owner_id,
-            'name': config.name,
-            'mcp_type': config.mcp_type,
-            'base_url': config.base_url,
-            'protocol_type': config.protocol_type,
-            'is_active': config.is_active,
-            'description': config.description,
-            'created_at': config.created_at or datetime.now(),
-            'updated_at': config.updated_at or config.created_at or datetime.now(),
-            'api_key_encrypted': None  # 明确设置为None，确保不泄露
-        }
-        result_configs.append(schemas.UserMcpConfigResponse(**config_dict))
-
-    print(f"DEBUG: 获取到 {len(result_configs)} 条MCP配置。")
-    return result_configs
-
-# 用户MCP配置接口部分
-@router.put("/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="更新指定MCP配置")
-async def update_mcp_config(
-        config_id: int,  # 从路径中获取配置ID
-        config_data: schemas.UserMcpConfigBase,  # 用于更新的数据
-        current_user_id: int = Depends(get_current_user_id),  # 已认证的用户ID
-        db: Session = Depends(get_db)
-):
-    print(f"DEBUG: 更新MCP配置 ID: {config_id}。")
-    # 核心权限检查：根据配置ID和拥有者ID来检索，确保操作的是当前用户的配置
-    db_config = db.query(UserMcpConfig).filter(
-        UserMcpConfig.id == config_id,
-        UserMcpConfig.owner_id == current_user_id  # 确保当前用户是该配置的拥有者
-    ).first()
-
-    if not db_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP配置未找到或无权访问")
-
-    # 排除未设置的字段，只更新传入的字段
-    update_data = config_data.dict(exclude_unset=True)
-
-    # 处理 API 密钥的更新：加密或清空
-    if "api_key" in update_data:  # 检查传入数据中是否有 api_key 字段
-        if update_data["api_key"] is not None and update_data["api_key"] != "":
-            # 如果提供了新的密钥且不为空，加密并存储
-            db_config.api_key_encrypted = encrypt_key(update_data["api_key"])
-        else:
-            # 如果传入的是 None 或空字符串，表示清空密钥
-            db_config.api_key_encrypted = None
-        # del update_data["api_key"]
-        # 在使用 setattr 循环时，这里删除 api_key，避免将其明文赋给 ORM 对象的其他字段
-
-    # 检查名称冲突 (如果名称在更新中改变了)
-    if "name" in update_data and update_data["name"] != db_config.name:
-        # 查找当前用户下是否已存在与新名称相同的活跃配置
-        existing_config_with_new_name = db.query(UserMcpConfig).filter(
-            UserMcpConfig.owner_id == current_user_id,
-            UserMcpConfig.name == update_data["name"],
-            UserMcpConfig.is_active == True,  # 只检查活跃的配置
-            UserMcpConfig.id != config_id  # **排除当前正在更新的配置本身**
-        ).first()
-        if existing_config_with_new_name:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="新配置名称已存在于您的活跃配置中。")
-
-    # 应用其他更新：通过循环处理所有可能更新的字段，更简洁和全面
-    fields_to_update = ["name", "mcp_type", "base_url", "protocol_type", "is_active", "description"]
-    for field in fields_to_update:
-        if field in update_data:  # 只有当传入的数据包含这个字段时才更新
-            setattr(db_config, field, update_data[field])
-
-    db.add(db_config)
-    db.commit()
-    db.refresh(db_config)
-
-    # 安全处理：确保敏感的API密钥不会返回给客户端，使用字典构造
-    response_dict = {
-        'id': db_config.id,
-        'owner_id': db_config.owner_id,
-        'name': db_config.name,
-        'mcp_type': db_config.mcp_type,
-        'base_url': db_config.base_url,
-        'protocol_type': db_config.protocol_type,
-        'is_active': db_config.is_active,
-        'description': db_config.description,
-        'created_at': db_config.created_at or datetime.now(),
-        'updated_at': db_config.updated_at or datetime.now(),
-        'api_key_encrypted': None  # 明确设置为None
-    }
-
-    print(f"DEBUG: MCP配置 {db_config.id} 更新成功。")
-    return schemas.UserMcpConfigResponse(**response_dict)
-
-@router.delete("/{config_id}", summary="删除指定MCP服务配置")
-async def delete_mcp_config(
-        config_id: int,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    """
-    删除指定ID的MCP服务配置。用户只能删除自己的配置。
-    """
-    print(f"DEBUG: 删除MCP配置 ID: {config_id}。")
-    db_config = db.query(UserMcpConfig).filter(UserMcpConfig.id == config_id,
-                                               UserMcpConfig.owner_id == current_user_id).first()
-    if not db_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP config not found or not authorized")
-
-    db.delete(db_config)
-    db.commit()
-    print(f"DEBUG: MCP配置 {config_id} 删除成功。")
-    return {"message": "MCP config deleted successfully"}
-
-@router.post("/{config_id}/check-status", response_model=schemas.McpStatusResponse,
-          summary="检查指定MCP服务的连通性")
-async def check_mcp_config_status(
-        config_id: int,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    """
-    检查指定ID的MCP服务配置的API连通性。
-    """
-    print(f"DEBUG: 检查MCP配置 ID: {config_id} 的连通性。")
-    db_config = db.query(UserMcpConfig).filter(UserMcpConfig.id == config_id,
-                                               UserMcpConfig.owner_id == current_user_id).first()
-    if not db_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP config not found or not authorized")
-
-    decrypted_key = None
-    if db_config.api_key_encrypted:
+    """获取MCP工具列表 - 优化版本"""
+    
+    tools_data = await MCPToolsService.get_mcp_tools_optimized(
+        db, config_id, current_user_id
+    )
+    
+    # 转换为响应模型
+    tools_list = []
+    for tool in tools_data:
         try:
-            decrypted_key = decrypt_key(db_config.api_key_encrypted)
+            tool_def = schemas.McpToolDefinition(**tool)
+            tools_list.append(tool_def)
         except Exception as e:
-            return schemas.McpStatusResponse(
-                status="failure",
-                message=f"无法解密API密钥，请检查密钥是否正确或重新配置。错误: {e}",
-                service_name=db_config.name,
-                config_id=config_id,
-                timestamp=datetime.now()
-            )
+            logger.warning(f"跳过无效的工具定义: {e}")
+            continue
+    
+    logger.info(f"用户 {current_user_id} 获取MCP工具列表 (配置 {config_id}): {len(tools_list)} 个工具")
+    return tools_list
 
-    status_response = await check_mcp_api_connectivity(db_config.base_url, db_config.protocol_type,
-                                                       decrypted_key)  # 传递协议类型
-    status_response.service_name = db_config.name
-    status_response.config_id = config_id
+# ===== 批量操作路由 =====
 
-    print(f"DEBUG: MCP配置 {config_id} 连通性检查结果: {status_response.status}")
-    return status_response
+@router.post("/configs/batch-test", summary="批量测试MCP连接")
+@optimized_route("批量测试MCP连接")
+@handle_database_errors
+async def batch_test_mcp_connections(
+    background_tasks: BackgroundTasks,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+    config_ids: List[int] = Query(..., description="要测试的配置ID列表")
+):
+    """批量测试MCP连接 - 优化版本"""
+    
+    if not config_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请提供要测试的配置ID列表"
+        )
+    
+    if len(config_ids) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="一次最多只能测试20个配置"
+        )
+    
+    # 异步执行所有连接测试
+    for config_id in config_ids:
+        submit_background_task(
+            background_tasks,
+            MCPConnectionService.test_mcp_connection_optimized,
+            TaskPriority.LOW,
+            db, config_id, current_user_id
+        )
+    
+    logger.info(f"用户 {current_user_id} 启动批量MCP连接测试: {len(config_ids)} 个配置")
+    return {
+        "message": f"已启动 {len(config_ids)} 个MCP配置的连接测试",
+        "config_ids": config_ids,
+        "status": "testing_started"
+    }
+
+# ===== 统计和监控路由 =====
+
+@router.get("/stats", summary="获取MCP统计信息")
+@optimized_route("获取MCP统计信息")
+@handle_database_errors
+async def get_mcp_stats(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """获取MCP统计信息 - 优化版本"""
+    
+    # 尝试从缓存获取
+    cache_key = f"mcp_stats_{current_user_id}"
+    cached_stats = cache_manager.get(cache_key)
+    if cached_stats:
+        return cached_stats
+    
+    # 计算统计信息
+    total_configs = db.query(UserMcpConfig).filter(
+        UserMcpConfig.owner_id == current_user_id
+    ).count()
+    
+    active_configs = db.query(UserMcpConfig).filter(
+        UserMcpConfig.owner_id == current_user_id,
+        UserMcpConfig.is_active == True
+    ).count()
+    
+    stats = {
+        "total_configs": total_configs,
+        "active_configs": active_configs,
+        "inactive_configs": total_configs - active_configs,
+        "last_updated": datetime.now().isoformat()
+    }
+    
+    # 缓存统计信息
+    cache_manager.set(cache_key, stats, ttl=300)
+    
+    logger.info(f"用户 {current_user_id} 获取MCP统计信息")
+    return stats
+
+# ===== 健康检查路由 =====
+
+@router.get("/health", summary="MCP模块健康检查")
+@optimized_route("MCP健康检查")
+async def mcp_health_check():
+    """MCP模块健康检查 - 优化版本"""
+    
+    health_status = {
+        "service": "MCP",
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0-optimized",
+        "features": [
+            "配置管理",
+            "连接测试", 
+            "工具列表",
+            "批量操作",
+            "性能监控",
+            "缓存优化"
+        ]
+    }
+    
+    logger.info("MCP模块健康检查通过")
+    return health_status
+
+# 模块加载日志
+logger.info("🔗 MCP Module - 模型上下文协议模块已加载")

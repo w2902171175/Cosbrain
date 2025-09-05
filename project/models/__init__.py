@@ -1,116 +1,120 @@
 # project/models/__init__.py
 """
-模型包：包含所有数据库模型定义
+模型包：按照功能模块组织的 SQLAlchemy 模型定义
 """
 
-from .models import (
-    # 项目相关模型
-    ProjectApplication,
-    ProjectMember,
-    Project,
-    ProjectFile,
-    ProjectLike,
-    
-    # 用户相关模型
-    Student,
-    UserFollow,
-    UserMcpConfig,
-    UserSearchEngineConfig,
-    UserTTSConfig,
-    
-    # 笔记相关模型
-    Note,
-    DailyRecord,
-    Folder,
-    CollectedContent,
-    CollectionItem,
-    
-    # 聊天相关模型
-    ChatRoom,
-    ChatMessage,
-    ChatRoomMember,
-    ChatRoomJoinRequest,
-    
-    # 论坛相关模型
-    ForumTopic,
-    ForumComment,
-    ForumLike,
-    
-    # 课程相关模型
-    Course,
-    UserCourse,
-    CourseMaterial,
-    CourseLike,
-    
-    # 知识库相关模型
-    KnowledgeBase,
-    KnowledgeBaseFolder,
-    KnowledgeDocument,
-    KnowledgeDocumentChunk,
-    
-    # AI 对话相关模型
-    AIConversationMessage,
-    AIConversationTemporaryFile,
-    AIConversation,
-    
-    # 积分和成就相关模型
-    PointTransaction,
-    Achievement,
-    UserAchievement,
+# ===== 导入所有模块 =====
+
+# ===== 用户认证相关模型 =====
+from .auth import User, UserProfile, UserSettings
+
+# ===== 项目相关模型 =====
+from .projects import (
+    Project, ProjectApplication, ProjectMember, 
+    ProjectFile, ProjectLike
 )
 
+# ===== 论坛相关模型 =====
+from .forum import (
+    ForumTopic, ForumComment, ForumLike, UserFollow
+)
+
+# ===== 聊天室相关模型 =====
+from .chatrooms import (
+    ChatRoom, ChatMessage, ChatRoomMember, 
+    ChatRoomJoinRequest
+)
+
+# ===== 课程相关模型 =====
+from .courses import (
+    Course, UserCourse, CourseMaterial, CourseLike
+)
+
+# ===== 笔记和日记相关模型 =====
+from .course_notes import (
+    Note, Folder
+)
+
+# ===== 快速笔记相关模型 =====
+from .quick_notes import (
+    DailyRecord
+)
+
+# ===== 收藏相关模型 =====
+from .collections import CollectedContent
+
+# ===== LLM和AI对话相关模型 =====
+from .llm import (
+    LLMProvider, UserLLMConfig, LLMConversation, LLMMessage,
+    AIConversation, AIConversationMessage, 
+    AIConversationTemporaryFile
+)
+
+# ===== 成就和积分相关模型 =====
+from .achievement_points import (
+    Achievement, UserAchievement, PointTransaction
+)
+
+# ===== MCP配置相关模型 =====
+from .mcp import UserMcpConfig
+
+# ===== 搜索引擎配置相关模型 =====
+from .search_engine import UserSearchEngineConfig
+
+# ===== TTS配置相关模型 =====
+from .tts import UserTTSConfig
+
+# ===== 知识库相关模型 =====
+from .knowledge import (
+    KnowledgeBase, KnowledgeBaseFolder, 
+    KnowledgeDocument, KnowledgeDocumentChunk
+)
+
+# ===== 推荐系统相关模型 =====
+from .recommendation import (
+    UserBehavior, RecommendationLog, KnowledgeItem, ForumPost
+)
+
+# ===== 导出所有模型 =====
 __all__ = [
-    # 项目相关
-    "ProjectApplication",
-    "ProjectMember", 
-    "Project",
-    "ProjectFile",
-    "ProjectLike",
+    # 用户认证
+    'User', 'UserProfile', 'UserSettings',
     
-    # 用户相关
-    "Student",
-    "UserFollow",
-    "UserMcpConfig",
-    "UserSearchEngineConfig", 
-    "UserTTSConfig",
+    # 项目
+    'Project', 'ProjectApplication', 'ProjectMember', 
+    'ProjectFile', 'ProjectLike',
     
-    # 笔记相关
-    "Note",
-    "DailyRecord", 
-    "Folder",
-    "CollectedContent",
-    "CollectionItem",
+    # 论坛
+    'ForumTopic', 'ForumComment', 'ForumLike', 'UserFollow',
     
-    # 聊天相关
-    "ChatRoom",
-    "ChatMessage",
-    "ChatRoomMember",
-    "ChatRoomJoinRequest",
+    # 聊天室
+    'ChatRoom', 'ChatMessage', 'ChatRoomMember', 
+    'ChatRoomJoinRequest',
     
-    # 论坛相关
-    "ForumTopic",
-    "ForumComment",
-    "ForumLike",
+    # 课程
+    'Course', 'UserCourse', 'CourseMaterial', 'CourseLike',
     
-    # 课程相关
-    "Course",
-    "UserCourse",
-    "CourseMaterial",
-    "CourseLike",
+    # 笔记和日记
+    'Note', 'DailyRecord', 'Folder',
     
-    # 知识库相关
-    "KnowledgeBase",
-    "KnowledgeBaseFolder",
-    "KnowledgeDocument",
-    "KnowledgeDocumentChunk",
+    # 收藏
+    'CollectedContent',
     
-    # AI 对话相关
-    "AIConversationMessage",
-    "AIConversationTemporaryFile",
-    "AIConversation",
+    # LLM和AI对话
+    'LLMProvider', 'UserLLMConfig', 'LLMConversation', 'LLMMessage',
+    'AIConversation', 'AIConversationMessage', 
+    'AIConversationTemporaryFile',
     
-    # 积分和成就
-    "PointTransaction",
-    "Achievement", 
-    "UserAchievement",
+    # 成就和积分
+    'Achievement', 'UserAchievement', 'PointTransaction',
+    
+    # 配置
+    'UserMcpConfig', 'UserSearchEngineConfig', 'UserTTSConfig',
+    
+    # 知识库
+    'KnowledgeBase', 'KnowledgeBaseFolder', 
+    'KnowledgeDocument', 'KnowledgeDocumentChunk',
+    
+    # 推荐系统
+    'UserBehavior', 'RecommendationLog', 'KnowledgeItem', 'ForumPost',
 ]

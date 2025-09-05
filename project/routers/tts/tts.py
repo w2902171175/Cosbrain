@@ -1,258 +1,390 @@
-# project/routers/tts/tts.py
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+# project/routers/tts.py
+"""
+TTS模块路由层 - 优化版本
+集成优化框架提供高性能的TTS配置管理和语音合成API
+"""
+from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Body
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from typing import List, Optional
+import logging
 
-# 导入数据库和模型
+# 核心导入
 from project.database import get_db
-from project.models import UserTTSConfig
-from project.schemas.schemas import UserTTSConfigCreate, UserTTSConfigUpdate, UserTTSConfigResponse
-from project.dependencies.dependencies import get_current_user_id
+from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.optimization.router_optimization import optimized_route
+import project.schemas as schemas
+from project.services.tts_service import TTSConfigService, TTSSynthesisService, TTSUtilities
 
-from jose import JWTError, jwt
-from project.dependencies.dependencies import SECRET_KEY, ALGORITHM
-from project.ai_providers.security_utils import encrypt_key
+# 工具导入
+from project.utils.optimization.production_utils import cache_manager
+from project.utils import get_current_user_id
 
-router = APIRouter(
-    prefix="/users/me/tts_configs",
-    tags=["TTS配置管理"],
-    responses={404: {"description": "Not found"}},
-)
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/tts", tags=["TTS语音合成"])
 
-async def get_active_tts_config(
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-) -> Optional[UserTTSConfig]:
-    """获取当前用户激活的TTS配置"""
-    return db.query(UserTTSConfig).filter(
-        UserTTSConfig.owner_id == current_user_id,
-        UserTTSConfig.is_active == True
-    ).first()
-
-@router.post("", response_model=UserTTSConfigResponse, summary="为当前用户创建新的TTS配置")
-async def create_user_tts_config(
-        tts_config_data: UserTTSConfigCreate,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
+@router.get("/configs", response_model=schemas.PaginatedResponse)
+@optimized_route
+@handle_database_errors
+async def get_tts_configs(
+    skip: int = Query(0, ge=0, description="跳过的记录数"),
+    limit: int = Query(50, ge=1, le=100, description="返回的记录数"),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 用户 {current_user_id} 尝试创建新的TTS配置: {tts_config_data.name}")
-
-    # 检查配置名称是否已存在
-    existing_config = db.query(UserTTSConfig).filter(
-        UserTTSConfig.owner_id == current_user_id,
-        UserTTSConfig.name == tts_config_data.name
-    ).first()
-    if existing_config:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail=f"已存在同名TTS配置: '{tts_config_data.name}'。")
-
-    # 检查是否有其他配置被意外设置为 active (防止前端逻辑错误，这里再确认一次)
-    # 理论上数据库约束会处理，但在此业务逻辑层再做一遍，保证数据一致性
-    if tts_config_data.is_active:
-        active_config_for_user = db.query(UserTTSConfig).filter(
-            UserTTSConfig.owner_id == current_user_id,
-            UserTTSConfig.is_active == True
-        ).first()
-        if active_config_for_user:
-            active_config_for_user.is_active = False  # 将旧的激活配置设为非激活
-            db.add(active_config_for_user)
-            print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{active_config_for_user.name}' 置为非激活。")
-
-    encrypted_key = None
-    if tts_config_data.api_key:
-        try:
-            encrypted_key = encrypt_key(tts_config_data.api_key)
-        except Exception as e:
-            print(f"ERROR: 加密TTS API密钥失败: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加密API密钥失败。")
-
-    new_tts_config = UserTTSConfig(
-        owner_id=current_user_id,
-        name=tts_config_data.name,
-        tts_type=tts_config_data.tts_type,
-        api_key_encrypted=encrypted_key,
-        base_url=tts_config_data.base_url,
-        model_id=tts_config_data.model_id,
-        voice_name=tts_config_data.voice_name,
-        is_active=tts_config_data.is_active  # 如果创建时就设为激活，则激活
-    )
-
-    db.add(new_tts_config)
+    """
+    获取用户TTS配置列表
+    
+    - **skip**: 分页跳过的记录数
+    - **limit**: 返回的记录数量限制
+    """
     try:
-        db.commit()
-    except IntegrityError as e:
-        db.rollback()
-        print(f"ERROR_DB: 创建TTS配置发生完整性约束错误: {e}")
-        # 捕获数据库层面的活跃配置唯一性冲突
-        if "_owner_id_active_tts_config_uc" in str(e):  # 根据models.py中的唯一约束名称判断
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                                detail="每个用户只能有一个激活的TTS配置。请先设置现有配置为非激活，或更新现有激活配置。")
-        elif "_owner_id_tts_config_name_uc" in str(e):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="TTS配置名称已存在。")
-        else:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail="创建TTS配置失败，请检查输入或联系管理员。")
+        # 检查缓存
+        cache_key = f"user_tts_configs_{current_user_id}_{skip}_{limit}"
+        cached_result = cache_manager.get(cache_key)
+        if cached_result:
+            return cached_result
+        
+        configs, total = TTSConfigService.get_user_tts_configs_optimized(
+            db, current_user_id, skip, limit
+        )
+        
+        # 构建响应
+        config_list = [TTSUtilities.build_safe_response_dict(config) for config in configs]
+        result = {
+            "items": config_list,
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "has_more": skip + limit < total
+        }
+        
+        # 缓存结果
+        cache_manager.set(cache_key, result, ttl=300)  # 5分钟缓存
+        
+        logger.info(f"用户 {current_user_id} 获取TTS配置列表: {len(config_list)} 个配置")
+        return result
+        
+    except Exception as e:
+        logger.error(f"获取TTS配置列表失败: {e}")
+        raise HTTPException(status_code=500, detail="获取TTS配置列表失败")
 
-    db.refresh(new_tts_config)
-    print(f"DEBUG: 用户 {current_user_id} 成功创建TTS配置: {new_tts_config.name} (ID: {new_tts_config.id})")
-    return new_tts_config
-
-@router.get("", response_model=List[UserTTSConfigResponse], summary="获取当前用户的所有TTS配置")
-async def get_user_tts_configs(
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
+@router.post("/configs", response_model=schemas.Response)
+@optimized_route
+@handle_database_errors
+@database_transaction
+async def create_tts_config(
+    config_data: Dict[str, Any] = Body(..., description="TTS配置数据"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 获取用户 {current_user_id} 的所有TTS配置。")
-    tts_configs = db.query(UserTTSConfig).filter(UserTTSConfig.owner_id == current_user_id).all()
-    return tts_configs
-
-@router.get("/{config_id}", response_model=UserTTSConfigResponse, summary="获取指定TTS配置详情")
-async def get_single_user_tts_config(
-        config_id: int,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    print(f"DEBUG: 获取用户 {current_user_id} 的TTS配置 ID: {config_id}。")
-    tts_config = db.query(UserTTSConfig).filter(
-        UserTTSConfig.id == config_id,
-        UserTTSConfig.owner_id == current_user_id
-    ).first()
-    if not tts_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
-    return tts_config
-
-@router.put("/{config_id}", response_model=UserTTSConfigResponse, summary="更新指定TTS配置")
-async def update_user_tts_config(
-        config_id: int,
-        tts_config_data: UserTTSConfigUpdate,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    print(f"DEBUG: 用户 {current_user_id} 尝试更新TTS配置 ID: {config_id}。")
-    db_tts_config = db.query(UserTTSConfig).filter(
-        UserTTSConfig.id == config_id,
-        UserTTSConfig.owner_id == current_user_id
-    ).first()
-    if not db_tts_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
-
-    update_data = tts_config_data.dict(exclude_unset=True)
-
-    # 如果尝试改变名称，检查新名称是否冲突
-    if "name" in update_data and update_data["name"] is not None and update_data["name"] != db_tts_config.name:
-        existing_name_config = db.query(UserTTSConfig).filter(
-            UserTTSConfig.owner_id == current_user_id,
-            UserTTSConfig.name == update_data["name"],
-            UserTTSConfig.id != config_id
-        ).first()
-        if existing_name_config:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                                detail=f"TTS配置名称 '{update_data['name']}' 已被使用。")
-
-    # 特殊处理 is_active 字段的逻辑：确保只有一个配置为 active
-    if "is_active" in update_data and update_data["is_active"] is True:
-        # 找到当前用户的所有其他处于 active 状态的配置，并将其设为 False
-        active_configs = db.query(UserTTSConfig).filter(
-            UserTTSConfig.owner_id == current_user_id,
-            UserTTSConfig.is_active == True,
-            UserTTSConfig.id != config_id  # 排除当前正在更新的配置
-        ).all()
-        for config_to_deactivate in active_configs:
-            config_to_deactivate.is_active = False
-            db.add(config_to_deactivate)
-            print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{config_to_deactivate.name}' 置为非激活。")
-    # 如果 is_active 从 True 变为 False，不需要特殊处理，直接更新即可
-
-    # 特殊处理 api_key：加密后再存储
-    if "api_key" in update_data and update_data["api_key"] is not None:
-        try:
-            db_tts_config.api_key_encrypted = encrypt_key(update_data["api_key"])
-            del update_data["api_key"]  # 从 update_data 中移除，防止通用循环再次处理
-        except Exception as e:
-            print(f"ERROR: 加密TTS API密钥失败: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加密API密钥失败。")
-
-    for key, value in update_data.items():
-        setattr(db_tts_config, key, value)
-
-    db.add(db_tts_config)
+    """
+    创建新的TTS配置
+    
+    - **config_data**: TTS配置数据，包含名称、提供商类型、API密钥等
+    """
     try:
-        db.commit()
-    except IntegrityError as e:
-        db.rollback()
-        print(f"ERROR_DB: 更新TTS配置发生完整性约束错误: {e}")
-        # 根据 models.py 中的唯一约束名称判断
-        if "_owner_id_active_tts_config_uc" in str(e):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="每个用户只能有一个激活的TTS配置。")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新TTS配置失败。")
+        # 创建配置
+        new_config = TTSConfigService.create_tts_config_optimized(
+            db, current_user_id, config_data
+        )
+        
+        # 后台任务：清理相关缓存
+        background_tasks.add_task(
+            TTSUtilities.clear_user_cache, 
+            current_user_id
+        )
+        
+        result = TTSUtilities.build_safe_response_dict(new_config)
+        
+        logger.info(f"用户 {current_user_id} 创建TTS配置 {new_config.id}")
+        return {
+            "message": "TTS配置创建成功",
+            "data": result
+        }
+        
+    except ValueError as e:
+        logger.warning(f"TTS配置创建参数错误: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"创建TTS配置失败: {e}")
+        raise HTTPException(status_code=500, detail="创建TTS配置失败")
 
-    db.refresh(db_tts_config)
-    print(f"DEBUG: 用户 {current_user_id} 成功更新TTS配置 ID: {config_id}.")
-    return db_tts_config
-
-@router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除指定TTS配置")
-async def delete_user_tts_config(
-        config_id: int,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
+@router.get("/configs/{config_id}", response_model=schemas.Response)
+@optimized_route
+@handle_database_errors
+async def get_tts_config(
+    config_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
 ):
-    print(f"DEBUG: 用户 {current_user_id} 尝试删除TTS配置 ID: {config_id}。")
-    db_tts_config = db.query(UserTTSConfig).filter(
-        UserTTSConfig.id == config_id,
-        UserTTSConfig.owner_id == current_user_id
-    ).first()
-    if not db_tts_config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
-
-    db.delete(db_tts_config)
-    db.commit()
-    print(f"DEBUG: 用户 {current_user_id} 成功删除TTS配置 ID: {config_id}.")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-@router.put("/{config_id}/set_active", response_model=UserTTSConfigResponse,
-         summary="设置指定TTS配置为激活状态")
-async def set_active_user_tts_config(
-        config_id: int,
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    print(f"DEBUG: 用户 {current_user_id} 尝试设置TTS配置 ID: {config_id} 为激活状态。")
-
-    # 1. 找到并验证要激活的配置
-    db_tts_config_to_activate = db.query(UserTTSConfig).filter(
-        UserTTSConfig.id == config_id,
-        UserTTSConfig.owner_id == current_user_id
-    ).first()
-    if not db_tts_config_to_activate:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TTS配置未找到或无权访问。")
-
-    # 2. 将用户所有其他TTS配置的 is_active 设为 False
-    # 排除当前要激活的配置
-    configs_to_deactivate = db.query(UserTTSConfig).filter(
-        UserTTSConfig.owner_id == current_user_id,
-        UserTTSConfig.is_active == True,
-        UserTTSConfig.id != config_id
-    ).all()
-
-    for config in configs_to_deactivate:
-        config.is_active = False
-        db.add(config)
-        print(f"DEBUG: 将用户 {current_user_id} 的旧激活TTS配置 '{config.name}' 置为非激活。")
-
-    # 3. 将目标配置设为 True
-    db_tts_config_to_activate.is_active = True
-    db.add(db_tts_config_to_activate)
-
+    """
+    获取指定的TTS配置详情
+    
+    - **config_id**: TTS配置ID
+    """
     try:
-        db.commit()
-    except IntegrityError as e:
-        db.rollback()
-        # 理论上这里的唯一约束已经在模型中用 postgresql_where 处理，并在这里的应用层逻辑中确保了唯一性。
-        # 但为防止意外，保留捕获。
-        print(f"ERROR_DB: 设置激活TTS配置发生完整性约束错误: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="设置激活TTS配置失败。")
+        # 检查缓存
+        cache_key = f"tts_config_{config_id}_{current_user_id}"
+        cached_result = cache_manager.get(cache_key)
+        if cached_result:
+            return cached_result
+        
+        config = TTSConfigService.get_tts_config_optimized(
+            db, config_id, current_user_id
+        )
+        
+        if not config:
+            raise HTTPException(status_code=404, detail="TTS配置不存在")
+        
+        result = {
+            "message": "获取TTS配置成功",
+            "data": TTSUtilities.build_safe_response_dict(config)
+        }
+        
+        # 缓存结果
+        cache_manager.set(cache_key, result, ttl=600)  # 10分钟缓存
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取TTS配置失败: {e}")
+        raise HTTPException(status_code=500, detail="获取TTS配置失败")
 
-    db.refresh(db_tts_config_to_activate)
-    print(f"DEBUG: 用户 {current_user_id} 成功设置TTS配置 ID: {config_id} 为激活状态。")
-    return db_tts_config_to_activate
+@router.put("/configs/{config_id}", response_model=schemas.Response)
+@optimized_route
+@handle_database_errors
+@database_transaction
+async def update_tts_config(
+    config_id: int,
+    update_data: Dict[str, Any] = Body(..., description="更新数据"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """
+    更新TTS配置
+    
+    - **config_id**: TTS配置ID
+    - **update_data**: 要更新的数据
+    """
+    try:
+        updated_config = TTSConfigService.update_tts_config_optimized(
+            db, config_id, current_user_id, update_data
+        )
+        
+        if not updated_config:
+            raise HTTPException(status_code=404, detail="TTS配置不存在")
+        
+        # 后台任务：清理缓存
+        background_tasks.add_task(
+            TTSUtilities.clear_config_cache, 
+            config_id
+        )
+        background_tasks.add_task(
+            TTSUtilities.clear_user_cache, 
+            current_user_id
+        )
+        
+        result = TTSUtilities.build_safe_response_dict(updated_config)
+        
+        logger.info(f"用户 {current_user_id} 更新TTS配置 {config_id}")
+        return {
+            "message": "TTS配置更新成功",
+            "data": result
+        }
+        
+    except ValueError as e:
+        logger.warning(f"TTS配置更新参数错误: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新TTS配置失败: {e}")
+        raise HTTPException(status_code=500, detail="更新TTS配置失败")
+
+@router.delete("/configs/{config_id}", response_model=schemas.Response)
+@optimized_route
+@handle_database_errors
+@database_transaction
+async def delete_tts_config(
+    config_id: int,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """
+    删除TTS配置
+    
+    - **config_id**: 要删除的TTS配置ID
+    """
+    try:
+        success = TTSConfigService.delete_tts_config_optimized(
+            db, config_id, current_user_id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="TTS配置不存在")
+        
+        # 后台任务：清理缓存
+        background_tasks.add_task(
+            TTSUtilities.clear_config_cache, 
+            config_id
+        )
+        background_tasks.add_task(
+            TTSUtilities.clear_user_cache, 
+            current_user_id
+        )
+        
+        logger.info(f"用户 {current_user_id} 删除TTS配置 {config_id}")
+        return {"message": "TTS配置删除成功"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除TTS配置失败: {e}")
+        raise HTTPException(status_code=500, detail="删除TTS配置失败")
+
+@router.post("/synthesize", response_model=schemas.Response)
+@optimized_route
+@handle_database_errors
+async def synthesize_text(
+    synthesis_request: Dict[str, Any] = Body(
+        ..., 
+        description="语音合成请求",
+        example={
+            "text": "要转换的文本",
+            "voice_config": {
+                "voice": "default",
+                "speed": 1.0,
+                "pitch": 0
+            }
+        }
+    ),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """
+    文本转语音合成
+    
+    - **text**: 要转换为语音的文本
+    - **voice_config**: 语音配置参数（可选）
+    """
+    try:
+        text = synthesis_request.get("text")
+        if not text or not text.strip():
+            raise HTTPException(status_code=400, detail="文本内容不能为空")
+        
+        voice_config = synthesis_request.get("voice_config", {})
+        
+        # 执行语音合成
+        synthesis_result = await TTSSynthesisService.synthesize_text_optimized(
+            db, current_user_id, text.strip(), voice_config
+        )
+        
+        if synthesis_result.get("status") == "error":
+            raise HTTPException(
+                status_code=400, 
+                detail=synthesis_result.get("message", "语音合成失败")
+            )
+        
+        logger.info(f"用户 {current_user_id} 完成文本转语音: {len(text)} 字符")
+        return {
+            "message": "语音合成成功",
+            "data": synthesis_result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"语音合成失败: {e}")
+        raise HTTPException(status_code=500, detail="语音合成服务错误")
+
+@router.get("/providers", response_model=schemas.Response)
+@optimized_route
+async def get_tts_providers():
+    """
+    获取支持的TTS提供商列表
+    """
+    try:
+        providers = [
+            {
+                "name": "Azure Cognitive Services",
+                "type": "azure",
+                "description": "微软Azure语音服务",
+                "features": ["多语言", "自然语音", "SSML支持"]
+            },
+            {
+                "name": "Google Cloud Text-to-Speech",
+                "type": "google",
+                "description": "谷歌云语音合成服务",
+                "features": ["WaveNet", "多语言", "语音调节"]
+            },
+            {
+                "name": "Amazon Polly",
+                "type": "amazon",
+                "description": "亚马逊Polly语音合成",
+                "features": ["Neural TTS", "SSML", "语音标记"]
+            },
+            {
+                "name": "OpenAI TTS",
+                "type": "openai",
+                "description": "OpenAI文本转语音",
+                "features": ["高质量", "多种声音", "实时合成"]
+            },
+            {
+                "name": "ElevenLabs",
+                "type": "elevenlabs",
+                "description": "ElevenLabs AI语音",
+                "features": ["AI克隆", "情感表达", "高质量"]
+            }
+        ]
+        
+        return {
+            "message": "获取TTS提供商列表成功",
+            "data": {
+                "providers": providers,
+                "total": len(providers)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"获取TTS提供商列表失败: {e}")
+        raise HTTPException(status_code=500, detail="获取提供商列表失败")
+
+@router.get("/health", response_model=schemas.Response)
+@optimized_route
+async def tts_health_check():
+    """TTS模块健康检查"""
+    try:
+        # 检查缓存连接
+        cache_status = "healthy" if cache_manager.is_connected() else "error"
+        
+        health_data = {
+            "status": "healthy",
+            "module": "TTS",
+            "timestamp": logger.info("TTS模块健康检查"),
+            "cache_status": cache_status,
+            "version": "2.0.0"
+        }
+        
+        return {
+            "message": "TTS模块运行正常",
+            "data": health_data
+        }
+        
+    except Exception as e:
+        logger.error(f"TTS健康检查失败: {e}")
+        return {
+            "message": "TTS模块健康检查异常",
+            "data": {
+                "status": "error",
+                "error": str(e)
+            }
+        }
+
+# 模块加载日志
+logger.info("🎤 TTS Module - 语音合成模块已加载")

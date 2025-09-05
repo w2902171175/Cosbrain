@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from project.models import Student, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, CollectedContent, UserMcpConfig, UserSearchEngineConfig
+from project.models import User, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, CollectedContent, UserMcpConfig, UserSearchEngineConfig
 
 # 导入AI提供者和工具
 from .security_utils import decrypt_key
@@ -163,7 +163,7 @@ async def _execute_web_search_tool(
         }
 
     # 获取用户配置
-    user = db.query(Student).filter(Student.id == user_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return {
             "success": False,
@@ -231,7 +231,7 @@ async def _execute_rag_tool(
         }
 
     # 获取用户配置
-    user = db.query(Student).filter(Student.id == user_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return {
             "success": False,
@@ -607,7 +607,7 @@ async def invoke_agent(
             }
 
         # 获取用户信息
-        user = db.query(Student).filter(Student.id == user_id).first()
+        user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return {
                 "success": False,

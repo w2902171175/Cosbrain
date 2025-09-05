@@ -212,17 +212,17 @@ def initialize_yara_for_production():
         
     try:
         production_config.ensure_directories()
-        print(f"✅ YARA生产环境配置初始化完成")
-        print(f"环境类型: {'生产环境' if production_config.is_production else '开发环境'}")
-        print(f"项目根目录: {production_config.base_path}")
-        print(f"规则文件: {os.getenv('YARA_RULES_PATH')}")
-        print(f"输出目录: {os.getenv('YARA_OUTPUT_DIR')}")
+        print(f"   ✅ YARA生产环境配置初始化完成")
+        print(f"   📍 环境类型: {'生产环境' if production_config.is_production else '开发环境'}")
+        print(f"   📁 项目根目录: {production_config.base_path}")
+        print(f"   📋 规则文件: {os.getenv('YARA_RULES_PATH')}")
+        print(f"   📤 输出目录: {os.getenv('YARA_OUTPUT_DIR')}")
         
         # 设置初始化标志
         os.environ['YARA_CONFIG_INITIALIZED'] = 'true'
         return True
     except Exception as e:
-        print(f"❌ YARA配置初始化失败: {e}")
+        print(f"   ❌ YARA配置初始化失败: {e}")
         return False
 
 

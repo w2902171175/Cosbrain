@@ -16,19 +16,43 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 # === 项目内部导入 ===
+
+# 设置启动日志格式（必须在其他项目模块导入之前）
+from project.utils.logging.startup_logger import setup_startup_logging, print_startup_summary
+setup_startup_logging()
+
+# 组件加载状态显示
+def print_component_loading_header():
+    """显示组件加载开始标题"""
+    print("\n📋 组件加载状态")
+    print("-" * 60)
+
+# 显示组件加载header
+print_component_loading_header()
+
 # 核心模块
 from project.database import get_db
-from project.dependencies.dependencies import (
+from project.utils import (
     SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
-    create_access_token, get_current_user_id, verify_password, get_password_hash, is_admin_user
+    create_access_token, get_current_user_id, verify_password, get_password_hash, is_admin_user,
+    _award_points, _check_and_award_achievements, _get_text_part
 )
-from project.utils.utils import _award_points, _check_and_award_achievements, _get_text_part
+
+# 记录production_utils的初始化日志（在startup_logger设置后）
+try:
+    from project.utils.optimization.production_utils import log_production_utils_initialization
+    log_production_utils_initialization()
+except ImportError:
+    pass
 
 # 数据模型
 from project.models import (
-    Student, Project, UserCourse, ForumTopic, ForumComment, ForumLike, 
+    User, Project, UserCourse, ForumTopic, ForumComment, ForumLike, 
     ChatMessage, Achievement, UserAchievement, PointTransaction
 )
+
+# 加载环境变量
+load_dotenv()
 
 # 路由模块
 from project.routers import (
@@ -39,9 +63,6 @@ from project.routers import (
 # 导入收藏系统模块
 from project.routers.collections import router as collections_router
 from project.routers.collections.program_collections import router as program_collections_router
-
-# 加载环境变量
-load_dotenv()
 
 # === FastAPI 应用实例 ===
 app = FastAPI(
@@ -94,3 +115,19 @@ app.include_router(recommend)
 # === 认证配置 ===
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")  # 指向登录接口的URL
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+# === 应用事件处理器 ===
+@app.on_event("startup")
+async def startup_event():
+    """应用启动事件"""
+    # 打印启动完成信息
+    print_startup_summary()
+
+
+@app.on_event("shutdown") 
+async def shutdown_event():
+    """应用关闭事件"""
+    from project.utils.logging.startup_logger import restore_logging
+    restore_logging()
+    print("\n👋 应用已安全关闭")

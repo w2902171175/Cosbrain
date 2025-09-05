@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 # 导入模型和Schema
-from project.models import Student, Project, Course
+from project.models import User, Project, Course
 from project.schemas import MatchedProject, MatchedStudent, MatchedCourse
 
 # 导入AI提供者和工具
@@ -272,7 +272,7 @@ def _parse_weekly_hours_from_availability(availability_str: Optional[str]) -> Op
     return None
 
 
-def _calculate_time_match_score(student: Student, item: Union[Project, Course]) -> float:
+def _calculate_time_match_score(student: User, item: Union[Project, Course]) -> float:
     """计算基于时间与投入度的匹配分数"""
     if isinstance(item, Project):
         score_hours = 0.0
@@ -395,7 +395,7 @@ def _calculate_location_match_score(student_location: Optional[str], target_loca
 
 
 async def _generate_match_rationale_llm(
-        student: Student,
+        student: User,
         target_item: Union[Project, Course],
         sim_score: float,
         proficiency_score: float,
@@ -467,7 +467,7 @@ async def find_matching_projects_for_student(
     """为指定学生推荐项目"""
     print(f"INFO_AI_MATCHING: 为学生 {student_id} 推荐项目。")
     
-    student = db.query(Student).filter(Student.id == student_id).first()
+    student = db.query(User).filter(User.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="学生未找到。")
 
@@ -634,7 +634,7 @@ async def find_matching_courses_for_student(
     """为指定学生推荐课程"""
     print(f"INFO_AI_MATCHING: 为学生 {student_id} 推荐课程。")
     
-    student = db.query(Student).filter(Student.id == student_id).first()
+    student = db.query(User).filter(User.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="学生未找到。")
 
@@ -771,7 +771,7 @@ async def find_matching_students_for_project(
     # 获取项目创建者的API密钥
     project_api_key = None
     if project.creator_id:
-        project_creator = db.query(Student).filter(Student.id == project.creator_id).first()
+        project_creator = db.query(User).filter(User.id == project.creator_id).first()
         if project_creator and project_creator.llm_api_type == "siliconflow" and project_creator.llm_api_key_encrypted:
             try:
                 project_api_key = decrypt_key(project_creator.llm_api_key_encrypted)
@@ -796,7 +796,7 @@ async def find_matching_students_for_project(
     project_embedding = project_embedding_np.reshape(1, -1)
 
     # 获取所有学生
-    all_students = db.query(Student).all()
+    all_students = db.query(User).all()
     if not all_students:
         return []
 
@@ -892,3 +892,34 @@ async def find_matching_students_for_project(
         )
 
     return final_recommendations
+
+
+class MatchingEngine:
+    """匹配引擎类，整合所有匹配功能"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+    
+    async def find_matching_projects(self, student_id: int) -> List[MatchedProject]:
+        """查找匹配的项目"""
+        try:
+            return await find_matching_projects_for_student(self.db, student_id)
+        except Exception as e:
+            print(f"Error finding matching projects: {e}")
+            return []
+    
+    async def find_matching_students(self, project_id: int) -> List[MatchedStudent]:
+        """查找匹配的学生"""
+        try:
+            return await find_matching_students_for_project(self.db, project_id)
+        except Exception as e:
+            print(f"Error finding matching students: {e}")
+            return []
+    
+    async def find_matching_courses(self, student_id: int) -> List[MatchedCourse]:
+        """查找匹配的课程"""
+        try:
+            return await find_matching_courses_for_student(self.db, student_id)
+        except Exception as e:
+            print(f"Error finding matching courses: {e}")
+            return []

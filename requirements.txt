@@ -1,3 +1,7 @@
+# === 高级监控依赖 ===
+prometheus-client>=0.19.0       # Prometheus监控客户端
+aiohttp>=3.8.0                  # 异步HTTP客户端（用于Webhook告警）
+
 # Web框架和API
 fastapi==0.111.0
 uvicorn[standard]==0.27.1
@@ -44,11 +48,15 @@ gTTS==2.5.1
 # HTTP请求
 requests==2.32.3
 httpx==0.27.2
+aiohttp>=3.8.0  # 异步HTTP客户端，用于LLM性能测试
 
 # 数据验证
 pydantic==2.8.2
 pydantic-settings==2.3.4
 email-validator==2.1.2
+
+# 类型检查支持
+typing-extensions>=4.0.0  # LLM路由类型安全增强
 
 # 工具库
 python-dateutil==2.8.2
@@ -59,14 +67,26 @@ asyncio-mqtt==0.16.1
 
 # 缓存和性能优化
 redis==5.0.1
-python-magic-bin==0.4.14; platform_system == "Windows"  # 仅在Windows安装
+python-magic>=0.4.27; platform_system == "Windows"  # 仅在Windows安装，修复语法警告
 bleach==6.1.0
 
+# 知识库增强功能依赖
+jieba==0.42.1                   # 中文分词，用于智能推荐
+schedule==1.2.0                 # 任务调度，用于监控告警
+
 # 开发和调试工具（可选）
-pytest==8.0.2
-pytest-asyncio==0.23.7
+pytest>=8.0.0  # 更新版本以支持LLM增强功能测试
+pytest-asyncio>=0.23.0  # 更新版本以支持异步测试
 
 boto3==1.37.38
+
+# === LLM路由增强功能依赖 ===
+# 以上已集成的依赖：
+# - aiohttp>=3.8.0: 异步HTTP客户端，用于性能测试和监控
+# - pytest>=8.0.0: 测试框架，支持LLM功能单元测试
+# - pytest-asyncio>=0.23.0: 异步测试支持
+# - typing-extensions>=4.0.0: 类型检查支持，提升代码安全性
+# 注意：statistics 是Python标准库，无需额外安装
 
 # 安全增强依赖（已安装）
 filetype==1.2.0  # 文件类型检测增强

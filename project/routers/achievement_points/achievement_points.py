@@ -1,133 +1,147 @@
 # project/routers/achievement_points/achievement_points.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional, Literal
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from typing import List, Optional
 
-# 导入数据库和模型
 from project.database import get_db
-from project.models import Student, Achievement, UserAchievement, PointTransaction
-from project.dependencies import get_current_user_id
-from project.schemas import StudentResponse, AchievementResponse, UserAchievementResponse, PointTransactionResponse
-import project.schemas as schemas
+from project.utils.core.error_decorators import database_transaction
+from project.models.achievement_points import Achievement, UserAchievement, PointTransaction
+from project.models.auth import User
+from project.services.achievement_points_service import (
+    AchievementPointsService, PointsService, AchievementPointsUtils
+)
+from project.utils import get_current_user
+from project.utils.core.common_utils import _check_and_award_achievements
 
-# 创建路由器
 router = APIRouter(
-    prefix="",  # 不使用前缀，因为路由已经包含完整路径
-    tags=["积分成就"],
-    responses={404: {"description": "Not found"}},
+    prefix="/achievement-points",
+    tags=["achievement-points"]
 )
 
 
-# --- 成就定义查询接口 (所有用户可访问) ---
-@router.get("/achievements/definitions", response_model=List[AchievementResponse],
-            summary="获取所有成就定义（可供所有用户查看）")
-async def get_all_achievement_definitions(
-        db: Session = Depends(get_db),
-        is_active: Optional[bool] = None,  # 过滤条件：只获取启用或禁用的成就
-        criteria_type: Optional[str] = None  # 过滤条件：按类型过滤
+@router.get("/achievements", summary="获取成就定义列表")
+async def get_achievement_definitions(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页大小"),
+    active_only: bool = Query(True, description="是否只获取激活的成就"),
+    db: Session = Depends(get_db)
 ):
-    """
-    获取平台所有成就的定义列表。非管理员用户也可访问此接口以了解成就体系。
-    可选择按激活状态和条件类型过滤。
-    """
-    print("DEBUG_ACHIEVEMENT: 获取所有成就定义。")
-    query = db.query(Achievement)
-
-    if is_active is not None:
-        query = query.filter(Achievement.is_active == is_active)
-    if criteria_type:
-        query = query.filter(Achievement.criteria_type == criteria_type)
-
-    achievements = query.order_by(Achievement.name).all()
-    print(f"DEBUG_ACHIEVEMENT: 获取到 {len(achievements)} 条成就定义。")
-    return achievements
-
-
-@router.get("/achievements/definitions/{achievement_id}", response_model=AchievementResponse,
-            summary="获取指定成就定义详情")
-async def get_achievement_definition_by_id(
-        achievement_id: int,
-        db: Session = Depends(get_db)
-):
-    """
-    获取指定ID的成就定义详情。非管理员用户也可访问。
-    """
-    print(f"DEBUG_ACHIEVEMENT: 获取成就定义 ID: {achievement_id} 的详情。")
-    achievement = db.query(Achievement).filter(Achievement.id == achievement_id).first()
-    if not achievement:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成就定义未找到。")
-    return achievement
-
-
-# --- 用户积分和成就查询接口 ---
-@router.get("/users/me/points", response_model=schemas.StudentResponse, summary="获取当前用户积分余额和上次登录时间")
-async def get_my_points_and_login_status(
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    """
-    获取当前用户总积分余额和上次登录时间。
-    """
-    print(f"DEBUG_POINTS_QUERY: 获取用户 {current_user_id} 的积分信息。")
-    user = db.query(Student).filter(Student.id == current_user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户未找到。")
-    return user  # StudentResponse 会自动包含 total_points 和 last_login_at
-
-
-@router.get("/users/me/points/history", response_model=List[PointTransactionResponse], summary="获取当前用户积分交易历史")
-async def get_my_points_history(
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db),
-        transaction_type: Optional[Literal["EARN", "CONSUME", "ADMIN_ADJUST"]] = None,
-        limit: int = 20,
-        offset: int = 0
-):
-    """
-    获取当前用户的积分交易历史记录。
-    可按交易类型过滤，并支持分页。
-    """
-    print(f"DEBUG_POINTS_QUERY: 获取用户 {current_user_id} 的积分历史。")
-    query = db.query(PointTransaction).filter(PointTransaction.user_id == current_user_id)
-
-    if transaction_type:
-        query = query.filter(PointTransaction.transaction_type == transaction_type)
-
-    transactions = query.order_by(PointTransaction.created_at.desc()).offset(offset).limit(limit).all()
-    print(f"DEBUG_POINTS_QUERY: 获取到 {len(transactions)} 条积分交易记录。")
-    return transactions
-
-
-@router.get("/users/me/achievements", response_model=List[UserAchievementResponse], summary="获取当前用户已获得的成就列表")
-async def get_my_achievements(
-        current_user_id: int = Depends(get_current_user_id),
-        db: Session = Depends(get_db)
-):
-    """
-    获取当前用户已获得的成就列表，包含成就的详细元数据。
-    """
-    print(f"DEBUG_ACHIEVEMENT_QUERY: 获取用户 {current_user_id} 的已获得成就列表。")
-    # 使用 joinedload 预加载关联的 Achievement 对象，避免 N+1 查询问题
-    user_achievements = db.query(UserAchievement).options(
-        joinedload(UserAchievement.achievement)  # 预加载成就定义
-    ).filter(UserAchievement.user_id == current_user_id).all()
-
-    # 填充 UserAchievementResponse 中的成就详情字段
-    response_list = []
-    for ua in user_achievements:
-        response_data = UserAchievementResponse(
-            id=ua.id,
-            user_id=ua.user_id,
-            achievement_id=ua.achievement_id,
-            earned_at=ua.earned_at,
-            is_notified=ua.is_notified,
-            # 从关联的 achievement 对象中获取数据
-            achievement_name=ua.achievement.name if ua.achievement else None,
-            achievement_description=ua.achievement.description if ua.achievement else None,
-            badge_url=ua.achievement.badge_url if ua.achievement else None,
-            reward_points=ua.achievement.reward_points if ua.achievement else 0
+    """获取成就定义列表"""
+    with database_transaction(db):
+        return await AchievementPointsService.get_achievement_definitions(
+            db=db,
+            page=page,
+            page_size=page_size,
+            active_only=active_only
         )
-        response_list.append(response_data)
 
-    print(f"DEBUG_ACHIEVEMENT_QUERY: 用户 {current_user_id} 获取到 {len(response_list)} 个成就。")
-    return response_list
+
+@router.get("/users/{user_id}/points", summary="获取用户积分信息")
+async def get_user_points(
+    user_id: int,
+    include_history: bool = Query(False, description="是否包含积分历史"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取用户积分信息"""
+    # 检查权限：只能查看自己的积分或管理员可以查看任何人的积分
+    if current_user.id != user_id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="没有权限查看该用户的积分信息")
+
+    with database_transaction(db):
+        return await AchievementPointsService.get_user_points(
+            db=db,
+            user_id=user_id,
+            include_history=include_history
+        )
+
+
+@router.get("/users/{user_id}/points/history", summary="获取用户积分历史")
+async def get_user_points_history(
+    user_id: int,
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页大小"),
+    action: Optional[str] = Query(None, description="操作类型过滤"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取用户积分历史记录"""
+    # 检查权限
+    if current_user.id != user_id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="没有权限查看该用户的积分历史")
+
+    with database_transaction(db):
+        return await AchievementPointsService.get_points_history(
+            db=db,
+            user_id=user_id,
+            page=page,
+            page_size=page_size,
+            action_filter=action
+        )
+
+
+@router.get("/users/{user_id}/achievements", summary="获取用户成就")
+async def get_user_achievements(
+    user_id: int,
+    include_locked: bool = Query(False, description="是否包含未解锁的成就"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取用户成就信息"""
+    # 检查权限
+    if current_user.id != user_id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="没有权限查看该用户的成就信息")
+
+    with database_transaction(db):
+        return await AchievementPointsService.get_user_achievements(
+            db=db,
+            user_id=user_id,
+            include_locked=include_locked
+        )
+
+
+@router.post("/achievements/init", summary="初始化默认成就")
+async def initialize_achievements(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """初始化默认成就到数据库"""
+    # 检查管理员权限
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+
+    with database_transaction(db):
+        count = AchievementPointsService.initialize_default_achievements(db)
+        return {"message": f"成功初始化 {count} 个默认成就"}
+
+
+@router.post("/users/{user_id}/check-achievements", summary="检查用户成就")
+async def check_user_achievements(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """手动触发用户成就检查"""
+    # 检查权限：只能检查自己的成就或管理员可以检查任何人的成就
+    if current_user.id != user_id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="没有权限触发该用户的成就检查")
+
+    with database_transaction(db):
+        # 触发成就检查
+        await AchievementPointsUtils.trigger_achievement_check(db, user_id)
+        return {"message": "成就检查已完成"}
+
+
+@router.get("/leaderboard", summary="获取积分排行榜")
+async def get_points_leaderboard(
+    limit: int = Query(10, ge=1, le=100, description="排行榜数量"),
+    period: str = Query("all_time", description="时间段 (all_time, monthly, weekly)"),
+    db: Session = Depends(get_db)
+):
+    """获取积分排行榜"""
+    with database_transaction(db):
+        return await AchievementPointsUtils.get_leaderboard(
+            db=db,
+            limit=limit,
+            period=period
+        )
