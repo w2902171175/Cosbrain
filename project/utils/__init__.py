@@ -131,9 +131,13 @@ from .auth import (
 # 文件处理模块
 from .uploads import (
     ChunkedUploadManager,
-    DirectUploadManager, 
+    OSSDirectUploadManager, 
     ImageOptimizer,
     upload_single_file,
+    upload_avatar,
+    chunked_upload_manager,
+    image_optimizer,
+    oss_direct_manager
 )
 
 # 缓存和异步处理模块
@@ -289,9 +293,13 @@ __all__ = [
     
     # 文件处理
     "ChunkedUploadManager",
-    "DirectUploadManager", 
+    "OSSDirectUploadManager", 
     "ImageOptimizer",
     "upload_single_file",
+    "upload_avatar",
+    "chunked_upload_manager",
+    "image_optimizer",
+    "oss_direct_manager",
     
     # 缓存和异步
     # "ChatRoomCache",
