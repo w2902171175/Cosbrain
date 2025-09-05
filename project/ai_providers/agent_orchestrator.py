@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from project.models import User, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, CollectedContent, UserMcpConfig, UserSearchEngineConfig
+from project.models import User, KnowledgeBase, KnowledgeDocument, KnowledgeDocumentChunk, Note, CollectedContent, UserMcpConfig, UserSearchEngineConfig, Folder
 
 # 导入AI提供者和工具
 from .security_utils import decrypt_key
@@ -66,6 +66,51 @@ RAG_TOOL_SCHEMA = {
                 },
                 "description": "要搜索的内容类型，可选：knowledge_document(知识库文档), note(课程笔记), collected_content(收藏内容)。默认搜索所有类型",
                 "default": ["knowledge_document", "note", "collected_content"]
+            },
+            "kb_ids": {
+                "type": "array",
+                "items": {
+                    "type": "integer"
+                },
+                "description": "指定要搜索的知识库ID列表，仅对knowledge_document类型有效"
+            },
+            "note_folder_ids": {
+                "type": "array",
+                "items": {
+                    "type": "integer"
+                },
+                "description": "指定要搜索的课程笔记文件夹ID列表，仅对note类型有效"
+            },
+            "collection_folder_ids": {
+                "type": "array",
+                "items": {
+                    "type": "integer"
+                },
+                "description": "指定要搜索的收藏文件夹ID列表，仅对collected_content类型有效"
+            },
+            "include_starred_kb": {
+                "type": "boolean",
+                "description": "是否包含用户收藏的知识库，默认为False",
+                "default": False
+            },
+            "include_starred_note_folders": {
+                "type": "boolean",
+                "description": "是否包含用户收藏的课程笔记文件夹，默认为False",
+                "default": False
+            },
+            "starred_kb_ids": {
+                "type": "array",
+                "items": {
+                    "type": "integer"
+                },
+                "description": "从用户收藏的知识库中选择特定的知识库ID列表。如果指定此参数，将忽略include_starred_kb参数"
+            },
+            "starred_note_folder_ids": {
+                "type": "array",
+                "items": {
+                    "type": "integer"
+                },
+                "description": "从用户收藏的课程笔记文件夹中选择特定的文件夹ID列表。如果指定此参数，将忽略include_starred_note_folders参数"
             }
         },
         "required": ["query"]
@@ -222,6 +267,13 @@ async def _execute_rag_tool(
     query = arguments.get("query", "")
     max_results = arguments.get("max_results", 3)
     content_types = arguments.get("content_types", ["knowledge_document", "note", "collected_content"])
+    kb_ids_param = arguments.get("kb_ids", kb_ids)  # 优先使用参数中的kb_ids
+    note_folder_ids = arguments.get("note_folder_ids")
+    collection_folder_ids = arguments.get("collection_folder_ids")
+    include_starred_kb = arguments.get("include_starred_kb", False)
+    include_starred_note_folders = arguments.get("include_starred_note_folders", False)
+    starred_kb_ids = arguments.get("starred_kb_ids")  # 新增：指定的收藏知识库ID
+    starred_note_folder_ids = arguments.get("starred_note_folder_ids")  # 新增：指定的收藏笔记文件夹ID
     
     if not query:
         return {
@@ -244,14 +296,44 @@ async def _execute_rag_tool(
     
     # 知识库文档块 (上传文档的内容) - 这是知识库的主要内容
     if "knowledge_document" in content_types:
-        # 查找用户有权限访问的知识库
-        kb_query = db.query(KnowledgeBase).filter(
-            (KnowledgeBase.owner_id == user_id) | (KnowledgeBase.access_type == "public")
-        )
+        # 初始化知识库ID集合
+        final_kb_ids = set()
         
-        # 如果指定了kb_ids，进一步过滤
-        if kb_ids:
-            kb_query = kb_query.filter(KnowledgeBase.id.in_(kb_ids))
+        # 处理指定的知识库ID
+        if kb_ids_param:
+            final_kb_ids.update(kb_ids_param)
+        
+        # 处理收藏相关参数（优先级：starred_kb_ids > include_starred_kb）
+        if starred_kb_ids:
+            # 验证指定的收藏知识库ID是否确实被用户收藏
+            verified_starred_kb_ids = db.query(CollectedContent.shared_item_id).filter(
+                CollectedContent.owner_id == user_id,
+                CollectedContent.shared_item_type == "knowledge_base",
+                CollectedContent.status == "active",
+                CollectedContent.shared_item_id.in_(starred_kb_ids)
+            ).all()
+            final_kb_ids.update([item.shared_item_id for item in verified_starred_kb_ids])
+        elif include_starred_kb:
+            # 获取用户收藏的所有知识库ID
+            starred_kb_results = db.query(CollectedContent.shared_item_id).filter(
+                CollectedContent.owner_id == user_id,
+                CollectedContent.shared_item_type == "knowledge_base",
+                CollectedContent.status == "active"
+            ).all()
+            final_kb_ids.update([item.shared_item_id for item in starred_kb_results])
+        
+        # 构建最终查询
+        if final_kb_ids:
+            # 有指定的知识库ID，只查询这些知识库（需要验证权限）
+            kb_query = db.query(KnowledgeBase).filter(
+                ((KnowledgeBase.owner_id == user_id) | (KnowledgeBase.access_type == "public")) &
+                KnowledgeBase.id.in_(list(final_kb_ids))
+            )
+        else:
+            # 没有指定任何知识库ID，查询用户有权限访问的所有知识库
+            kb_query = db.query(KnowledgeBase).filter(
+                (KnowledgeBase.owner_id == user_id) | (KnowledgeBase.access_type == "public")
+            )
         
         accessible_kbs = kb_query.all()
         
@@ -265,19 +347,59 @@ async def _execute_rag_tool(
     
     # 课程笔记
     if "note" in content_types:
-        notes = db.query(Note).filter(
+        note_query = db.query(Note).filter(
             Note.owner_id == user_id,
             Note.embedding.isnot(None)
-        ).all()
+        )
+        
+        # 处理课程笔记文件夹选择
+        folder_ids_to_search = []
+        
+        # 如果指定了note_folder_ids，添加到搜索列表
+        if note_folder_ids:
+            folder_ids_to_search.extend(note_folder_ids)
+        
+        # 处理收藏相关参数（优先级：starred_note_folder_ids > include_starred_note_folders）
+        if starred_note_folder_ids:
+            # 验证指定的收藏笔记文件夹ID是否确实被用户收藏
+            verified_starred_folder_ids = db.query(CollectedContent.shared_item_id).filter(
+                CollectedContent.owner_id == user_id,
+                CollectedContent.shared_item_type == "note_folder",
+                CollectedContent.status == "active",
+                CollectedContent.shared_item_id.in_(starred_note_folder_ids)
+            ).all()
+            folder_ids_to_search.extend([item.shared_item_id for item in verified_starred_folder_ids])
+        elif include_starred_note_folders:
+            # 获取用户收藏的所有笔记文件夹ID
+            starred_folder_ids = db.query(CollectedContent.shared_item_id).filter(
+                CollectedContent.owner_id == user_id,
+                CollectedContent.shared_item_type == "note_folder",
+                CollectedContent.status == "active"
+            ).all()
+            folder_ids_to_search.extend([item.shared_item_id for item in starred_folder_ids])
+        
+        # 应用文件夹过滤（如果有指定文件夹或收藏文件夹）
+        if folder_ids_to_search:
+            # 去重
+            unique_folder_ids = list(set(folder_ids_to_search))
+            note_query = note_query.filter(Note.folder_id.in_(unique_folder_ids))
+        
+        notes = note_query.all()
         for note in notes:
             searchable_items.append({"obj": note, "type": "note"})
     
     # 收藏内容
     if "collected_content" in content_types:
-        collected_items = db.query(CollectedContent).filter(
+        collected_query = db.query(CollectedContent).filter(
             CollectedContent.owner_id == user_id,
             CollectedContent.embedding.isnot(None)
-        ).all()
+        )
+        
+        # 如果指定了collection_folder_ids，进一步过滤
+        if collection_folder_ids:
+            collected_query = collected_query.filter(CollectedContent.folder_id.in_(collection_folder_ids))
+        
+        collected_items = collected_query.all()
         for item in collected_items:
             searchable_items.append({"obj": item, "type": "collected_content"})
 
