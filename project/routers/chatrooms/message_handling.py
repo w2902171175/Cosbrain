@@ -7,7 +7,7 @@ from datetime import datetime
 
 from project.database import get_db
 from project.utils import get_current_user_id
-from project.models import ChatRoom, ChatRoomMember, ChatMessage
+from project.models import ChatRoom, ChatRoomMember, ChatMessage, User
 import project.schemas as schemas
 from project.services.message_service import MessageService
 from project.utils.security.permissions import check_room_access
@@ -169,7 +169,8 @@ async def forward_message(
             message_id=message_id,
             from_room_id=room_id,
             to_room_id=forward_data.to_room_id,
-            user_id=current_user_id
+            user_id=current_user_id,
+            additional_message=forward_data.message
         )
         
         # 清除相关缓存
@@ -192,6 +193,165 @@ async def forward_message(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="转发消息失败"
+        )
+
+
+@router.post("/chatrooms/{room_id}/messages/batch-forward", response_model=schemas.ForwardOperationResponse, summary="批量转发消息")
+async def batch_forward_messages(
+    room_id: int,
+    forward_data: schemas.BatchForwardMessageRequest,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """批量转发选中的消息到多个聊天室"""
+    try:
+        # 检查原聊天室访问权限
+        check_room_access(db, room_id, current_user_id)
+        
+        # 执行批量转发
+        result = await MessageService.batch_forward_messages(
+            db=db,
+            message_ids=forward_data.message_ids,
+            from_room_id=room_id,
+            to_room_ids=forward_data.to_room_ids,
+            user_id=current_user_id,
+            additional_message=forward_data.message
+        )
+        
+        # 清除相关缓存
+        for to_room_id in forward_data.to_room_ids:
+            await cache.invalidate_room_cache(to_room_id)
+        
+        logger.info(f"用户 {current_user_id} 批量转发了 {len(forward_data.message_ids)} 条消息到 {len(forward_data.to_room_ids)} 个聊天室")
+        
+        return schemas.ForwardOperationResponse(
+            success=result["success"],
+            message="批量转发完成",
+            total_messages=result["total_messages"],
+            total_rooms=result["total_rooms"],
+            successful_forwards=result["successful_forwards"],
+            failed_forwards=result["failed_forwards"],
+            results=result["results"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量转发消息失败: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="批量转发消息失败"
+        )
+
+
+@router.post("/chatrooms/{room_id}/files/forward", response_model=schemas.ForwardOperationResponse, summary="转发文件到多个聊天室")
+async def forward_file_to_rooms(
+    room_id: int,
+    forward_data: schemas.ForwardFileRequest,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """转发文件到多个聊天室"""
+    try:
+        # 检查原聊天室访问权限
+        check_room_access(db, room_id, current_user_id)
+        
+        # 执行文件转发
+        result = await MessageService.forward_file_to_rooms(
+            db=db,
+            file_message_id=forward_data.file_message_id,
+            from_room_id=room_id,
+            to_room_ids=forward_data.to_room_ids,
+            user_id=current_user_id,
+            additional_message=forward_data.message
+        )
+        
+        # 清除相关缓存
+        for to_room_id in forward_data.to_room_ids:
+            await cache.invalidate_room_cache(to_room_id)
+        
+        logger.info(f"用户 {current_user_id} 转发文件 {forward_data.file_message_id} 到 {len(forward_data.to_room_ids)} 个聊天室")
+        
+        return schemas.ForwardOperationResponse(
+            success=result["success"],
+            message=f"文件 {result.get('file_name', '未知文件')} 转发完成",
+            total_rooms=result["total_rooms"],
+            successful_forwards=result["successful_forwards"],
+            failed_forwards=result["failed_forwards"],
+            results=result["results"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"转发文件失败: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="转发文件失败"
+        )
+
+
+@router.get("/chatrooms/{room_id}/messages/selectable", response_model=List[schemas.ChatMessageResponse], summary="获取可选择转发的消息")
+async def get_selectable_messages(
+    room_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+    start_message_id: Optional[int] = Query(None, description="起始消息ID"),
+    end_message_id: Optional[int] = Query(None, description="结束消息ID"),
+    include_media: bool = Query(True, description="是否包含媒体文件"),
+    max_messages: int = Query(50, ge=1, le=100, description="最大消息数量")
+):
+    """获取可选择转发的消息列表"""
+    try:
+        # 获取可选择的消息
+        messages = await MessageService.get_selectable_messages(
+            db=db,
+            room_id=room_id,
+            user_id=current_user_id,
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
+            include_media=include_media,
+            max_messages=max_messages
+        )
+        
+        # 转换为响应模型
+        response_messages = []
+        for message in messages:
+            # 获取发送者信息
+            sender = db.query(User).filter(User.id == message.sender_id).first()
+            sender_name = sender.username if sender else f"用户{message.sender_id}"
+            
+            # 构建响应
+            message_response = schemas.ChatMessageResponse(
+                id=message.id,
+                room_id=message.room_id,
+                sender_id=message.sender_id,
+                content_text=message.content_text,
+                message_type=message.message_type,
+                media_url=message.media_url,
+                original_filename=message.original_filename,
+                file_size=message.file_size_bytes,
+                audio_duration=message.audio_duration,
+                reply_to_message_id=message.reply_to_message_id,
+                is_pinned=message.is_pinned,
+                sent_at=message.sent_at or message.created_at,
+                created_at=message.created_at,
+                updated_at=message.updated_at,
+                sender_name=sender_name
+            )
+            response_messages.append(message_response)
+        
+        return response_messages
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取可选择消息失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取可选择消息失败"
         )
 
 @router.get("/chatrooms/{room_id}/media", response_model=List[schemas.ChatMessageResponse], summary="获取聊天室媒体文件")

@@ -2,6 +2,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import desc, or_
 from typing import List, Optional
 from datetime import datetime
 
@@ -82,7 +83,75 @@ async def create_chat_room(
             detail="创建聊天室失败"
         )
 
-@router.get("/chatrooms/", response_model=List[schemas.ChatRoomResponse], summary="获取当前用户所属的所有聊天室")
+@router.get("/chatrooms/accessible", response_model=dict, summary="获取用户可访问的聊天室列表")
+async def get_user_accessible_chatrooms(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1, description="页码"),
+    size: int = Query(50, ge=1, le=100, description="每页数量"),
+    search: Optional[str] = Query(None, description="搜索关键词")
+):
+    """获取用户可访问的聊天室列表（用于转发选择）"""
+    try:
+        # 构建查询：用户是成员的聊天室
+        query = db.query(ChatRoom).join(
+            ChatRoomMember, 
+            ChatRoom.id == ChatRoomMember.room_id
+        ).filter(
+            ChatRoomMember.user_id == current_user_id,
+            ChatRoomMember.status == "active"
+        )
+        
+        # 搜索过滤
+        if search:
+            query = query.filter(
+                or_(
+                    ChatRoom.name.contains(search),
+                    ChatRoom.description.contains(search)
+                )
+            )
+        
+        # 排序：按最后活动时间降序
+        query = query.order_by(desc(ChatRoom.updated_at))
+        
+        # 分页
+        total = query.count()
+        rooms = query.offset((page - 1) * size).limit(size).all()
+        
+        # 构建响应数据
+        room_list = []
+        for room in rooms:
+            # 获取成员数量
+            member_count = db.query(ChatRoomMember).filter(
+                ChatRoomMember.room_id == room.id,
+                ChatRoomMember.status == "active"
+            ).count()
+            
+            room_data = {
+                "id": room.id,
+                "name": room.name,
+                "description": room.description,
+                "room_type": room.room_type,
+                "member_count": member_count,
+                "created_at": room.created_at,
+                "updated_at": room.updated_at
+            }
+            room_list.append(room_data)
+        
+        return {
+            "items": room_list,
+            "total": total,
+            "page": page,
+            "size": size,
+            "total_pages": (total + size - 1) // size
+        }
+        
+    except Exception as e:
+        logger.error(f"获取用户可访问聊天室失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取聊天室列表失败"
+        )
 async def get_all_chat_rooms(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),

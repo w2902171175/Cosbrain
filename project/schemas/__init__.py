@@ -52,6 +52,7 @@ from .chatrooms import (
     ChatRoomJoinRequestCreate, ChatRoomJoinRequestProcess, ChatRoomJoinRequestResponse,
     ChatMessageBase, ChatMessageCreate, ChatMessageResponse,
     ChatRoomSettingsUpdate, BatchCleanupOptions, ProcessJoinRequestAction, ForwardMessageRequest,
+    BatchForwardMessageRequest, ForwardOperationResponse, ForwardFileRequest, MessageSelectionRequest,
     ChatMessageCollectionRequest, CollectibleMessageResponse
 )
 
@@ -82,6 +83,20 @@ from .collections import (
     CollectionStatsRequest, CollectionStatsResponse,
     ImportRequest, ExportRequest, ShareRequest, ShareResponse,
     CollectionSummaryResponse
+)
+
+# ===== 分享系统模块导入 =====
+from .sharing import (
+    ShareContentRequest, ShareContentResponse, ShareLinkResponse,
+    QuickShareRequest, QuickShareResponse,
+    ShareToForumRequest, ShareToForumResponse,
+    ShareToChatroomRequest, ShareToChatroomResponse,
+    ShareStatsResponse, ShareLogResponse,
+    ShareTemplateBase, ShareTemplateCreate, ShareTemplateResponse, ShareTemplateUpdate,
+    ShareableContentPreview,
+    ForumTopicRepostRequest, ForumTopicRepostResponse,
+    SocialShareRequest, SocialShareResponse,
+    CopyLinkRequest, CopyLinkResponse
 )
 
 # ===== AI模块导入 =====
@@ -179,6 +194,7 @@ __all__ = [
     "ChatRoomJoinRequestCreate", "ChatRoomJoinRequestProcess", "ChatRoomJoinRequestResponse",
     "ChatMessageBase", "ChatMessageCreate", "ChatMessageResponse",
     "ChatRoomSettingsUpdate", "BatchCleanupOptions", "ProcessJoinRequestAction", "ForwardMessageRequest",
+    "BatchForwardMessageRequest", "ForwardOperationResponse", "ForwardFileRequest", "MessageSelectionRequest",
     "ChatMessageCollectionRequest", "CollectibleMessageResponse",
     
     # 课程模块
@@ -200,6 +216,18 @@ __all__ = [
     "BatchOperationRequest", "BatchOperationResponse",
     "CollectionStatsRequest", "CollectionStatsResponse",
     "ImportRequest", "ExportRequest", "ShareRequest", "ShareResponse",
+    
+    # 分享功能模式
+    "ShareContentRequest", "ShareContentResponse", "ShareLinkResponse",
+    "QuickShareRequest", "QuickShareResponse",
+    "ShareToForumRequest", "ShareToForumResponse",
+    "ShareToChatroomRequest", "ShareToChatroomResponse",
+    "ShareStatsResponse", "ShareLogResponse",
+    "ShareTemplateBase", "ShareTemplateCreate", "ShareTemplateResponse", "ShareTemplateUpdate",
+    "ShareableContentPreview",
+    "ForumTopicRepostRequest", "ForumTopicRepostResponse",
+    "SocialShareRequest", "SocialShareResponse",
+    "CopyLinkRequest", "CopyLinkResponse",
     "CollectionSummaryResponse",
     
     # AI模块
@@ -244,6 +272,15 @@ __all__ = [
     "KnowledgeBaseVisibilityUpdate", "KnowledgeBaseFolderVisibilityUpdate",
     "KnowledgeDocumentSimpleBase", "KnowledgeDocumentSimpleCreate", "KnowledgeDocumentUrlCreate", "KnowledgeDocumentSimpleResponse",
     "KnowledgeSearchResult", "KnowledgeSearchResponse", "KnowledgeBaseStats",
+    
+    # 分享系统模块
+    "ShareContentRequest", "ShareContentResponse", "ShareLinkResponse",
+    "QuickShareRequest", "QuickShareResponse",
+    "ShareToForumRequest", "ShareToForumResponse",
+    "ShareToChatroomRequest", "ShareToChatroomResponse",
+    "ShareStatsResponse", "ShareLogResponse",
+    "ShareTemplateBase", "ShareTemplateCreate", "ShareTemplateResponse", "ShareTemplateUpdate",
+    "ShareableContentPreview",
 ]
 
 # ===== 向后兼容性别名 =====

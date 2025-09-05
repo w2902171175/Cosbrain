@@ -2,7 +2,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.sql import func
 from sqlalchemy import desc, and_, or_
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from project.models import ChatMessage, ChatRoom, ChatRoomMember, User
 import project.schemas as schemas
@@ -174,9 +174,10 @@ class MessageService:
         message_id: int,
         from_room_id: int,
         to_room_id: int,
-        user_id: int
+        user_id: int,
+        additional_message: Optional[str] = None
     ) -> ChatMessage:
-        """转发消息"""
+        """转发单个消息"""
         # 检查原消息
         original_message = db.query(ChatMessage).filter(
             ChatMessage.id == message_id,
@@ -202,15 +203,25 @@ class MessageService:
                 detail="您不是目标聊天室的成员"
             )
         
+        # 构建转发内容
+        forward_content = f"[转发消息]"
+        if additional_message:
+            forward_content = f"{additional_message}\n\n{forward_content}"
+        
+        if original_message.content_text:
+            forward_content += f"\n{original_message.content_text}"
+        
         # 创建转发消息
         forwarded_message = ChatMessage(
             room_id=to_room_id,
             sender_id=user_id,
-            content=f"[转发] {original_message.content}",
-            message_type="forward",
+            content_text=forward_content,
+            message_type=original_message.message_type,
             media_url=original_message.media_url,
-            forwarded_from_id=message_id,
-            created_at=datetime.now()
+            original_filename=original_message.original_filename,
+            file_size_bytes=original_message.file_size_bytes,
+            audio_duration=original_message.audio_duration,
+            reply_to_message_id=None  # 转发消息不保持回复关系
         )
         
         db.add(forwarded_message)
@@ -218,6 +229,263 @@ class MessageService:
         db.refresh(forwarded_message)
         
         return forwarded_message
+
+    @staticmethod
+    async def batch_forward_messages(
+        db: Session,
+        message_ids: List[int],
+        from_room_id: int,
+        to_room_ids: List[int],
+        user_id: int,
+        additional_message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """批量转发消息到多个聊天室"""
+        results = []
+        successful_forwards = 0
+        failed_forwards = 0
+        
+        # 验证原消息存在
+        original_messages = db.query(ChatMessage).filter(
+            ChatMessage.id.in_(message_ids),
+            ChatMessage.room_id == from_room_id,
+            ChatMessage.deleted_at.is_(None)
+        ).all()
+        
+        if not original_messages:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="未找到有效的原消息"
+            )
+        
+        # 验证用户对所有目标聊天室的访问权限
+        accessible_rooms = db.query(ChatRoomMember.room_id).filter(
+            ChatRoomMember.room_id.in_(to_room_ids),
+            ChatRoomMember.user_id == user_id,
+            ChatRoomMember.status == "active"
+        ).all()
+        
+        accessible_room_ids = [room.room_id for room in accessible_rooms]
+        
+        for to_room_id in to_room_ids:
+            if to_room_id not in accessible_room_ids:
+                results.append({
+                    "room_id": to_room_id,
+                    "success": False,
+                    "error": "无权限访问此聊天室"
+                })
+                failed_forwards += 1
+                continue
+            
+            try:
+                # 为每个聊天室创建合并的转发消息
+                forward_content_parts = []
+                
+                if additional_message:
+                    forward_content_parts.append(additional_message)
+                
+                forward_content_parts.append(f"[转发了 {len(original_messages)} 条消息]")
+                
+                # 合并原消息内容
+                for i, msg in enumerate(original_messages[:10]):  # 限制显示前10条
+                    sender_name = f"用户{msg.sender_id}"  # 简化处理，实际可以查询用户名
+                    content_preview = msg.content_text[:100] if msg.content_text else "[媒体文件]"
+                    forward_content_parts.append(f"{i+1}. {sender_name}: {content_preview}")
+                
+                if len(original_messages) > 10:
+                    forward_content_parts.append(f"... 及其他 {len(original_messages) - 10} 条消息")
+                
+                forward_content = "\n".join(forward_content_parts)
+                
+                # 创建转发消息
+                forwarded_message = ChatMessage(
+                    room_id=to_room_id,
+                    sender_id=user_id,
+                    content_text=forward_content,
+                    message_type="text"  # 批量转发统一为文本类型
+                )
+                
+                db.add(forwarded_message)
+                db.flush()  # 获取消息ID但不提交
+                
+                results.append({
+                    "room_id": to_room_id,
+                    "success": True,
+                    "message_id": forwarded_message.id,
+                    "forwarded_count": len(original_messages)
+                })
+                successful_forwards += 1
+                
+            except Exception as e:
+                results.append({
+                    "room_id": to_room_id,
+                    "success": False,
+                    "error": str(e)
+                })
+                failed_forwards += 1
+        
+        if successful_forwards > 0:
+            db.commit()
+        else:
+            db.rollback()
+        
+        return {
+            "success": successful_forwards > 0,
+            "total_messages": len(original_messages),
+            "total_rooms": len(to_room_ids),
+            "successful_forwards": successful_forwards,
+            "failed_forwards": failed_forwards,
+            "results": results
+        }
+
+    @staticmethod
+    async def forward_file_to_rooms(
+        db: Session,
+        file_message_id: int,
+        from_room_id: int,
+        to_room_ids: List[int],
+        user_id: int,
+        additional_message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """转发文件到多个聊天室"""
+        # 检查原文件消息
+        original_message = db.query(ChatMessage).filter(
+            ChatMessage.id == file_message_id,
+            ChatMessage.room_id == from_room_id,
+            ChatMessage.media_url.isnot(None)
+        ).first()
+        
+        if not original_message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="原文件消息不存在"
+            )
+        
+        results = []
+        successful_forwards = 0
+        failed_forwards = 0
+        
+        # 验证用户对所有目标聊天室的访问权限
+        accessible_rooms = db.query(ChatRoomMember.room_id).filter(
+            ChatRoomMember.room_id.in_(to_room_ids),
+            ChatRoomMember.user_id == user_id,
+            ChatRoomMember.status == "active"
+        ).all()
+        
+        accessible_room_ids = [room.room_id for room in accessible_rooms]
+        
+        for to_room_id in to_room_ids:
+            if to_room_id not in accessible_room_ids:
+                results.append({
+                    "room_id": to_room_id,
+                    "success": False,
+                    "error": "无权限访问此聊天室"
+                })
+                failed_forwards += 1
+                continue
+            
+            try:
+                # 构建转发内容
+                forward_content = f"[转发文件] {original_message.original_filename or '文件'}"
+                if additional_message:
+                    forward_content = f"{additional_message}\n\n{forward_content}"
+                
+                # 创建转发消息，复制文件信息
+                forwarded_message = ChatMessage(
+                    room_id=to_room_id,
+                    sender_id=user_id,
+                    content_text=forward_content,
+                    message_type=original_message.message_type,
+                    media_url=original_message.media_url,  # 复用同一个文件URL
+                    original_filename=original_message.original_filename,
+                    file_size_bytes=original_message.file_size_bytes,
+                    audio_duration=original_message.audio_duration
+                )
+                
+                db.add(forwarded_message)
+                db.flush()
+                
+                results.append({
+                    "room_id": to_room_id,
+                    "success": True,
+                    "message_id": forwarded_message.id,
+                    "file_name": original_message.original_filename
+                })
+                successful_forwards += 1
+                
+            except Exception as e:
+                results.append({
+                    "room_id": to_room_id,
+                    "success": False,
+                    "error": str(e)
+                })
+                failed_forwards += 1
+        
+        if successful_forwards > 0:
+            db.commit()
+        else:
+            db.rollback()
+        
+        return {
+            "success": successful_forwards > 0,
+            "file_name": original_message.original_filename,
+            "total_rooms": len(to_room_ids),
+            "successful_forwards": successful_forwards,
+            "failed_forwards": failed_forwards,
+            "results": results
+        }
+
+    @staticmethod
+    async def get_selectable_messages(
+        db: Session,
+        room_id: int,
+        user_id: int,
+        start_message_id: Optional[int] = None,
+        end_message_id: Optional[int] = None,
+        message_ids: Optional[List[int]] = None,
+        include_media: bool = True,
+        max_messages: int = 50
+    ) -> List[ChatMessage]:
+        """获取可选择转发的消息列表"""
+        # 检查用户权限
+        member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.room_id == room_id,
+            ChatRoomMember.user_id == user_id,
+            ChatRoomMember.status == "active"
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您不是此聊天室的成员"
+            )
+        
+        query = db.query(ChatMessage).filter(
+            ChatMessage.room_id == room_id,
+            ChatMessage.deleted_at.is_(None)
+        )
+        
+        # 根据不同的选择方式构建查询
+        if message_ids:
+            # 指定消息ID列表
+            query = query.filter(ChatMessage.id.in_(message_ids))
+        elif start_message_id and end_message_id:
+            # 消息ID范围
+            query = query.filter(
+                ChatMessage.id >= start_message_id,
+                ChatMessage.id <= end_message_id
+            )
+        elif start_message_id:
+            # 从指定消息开始
+            query = query.filter(ChatMessage.id >= start_message_id)
+        
+        # 是否包含媒体文件
+        if not include_media:
+            query = query.filter(ChatMessage.message_type == "text")
+        
+        # 排序和限制数量
+        messages = query.order_by(ChatMessage.id.asc()).limit(max_messages).all()
+        
+        return messages
 
     @staticmethod
     async def get_media_messages(

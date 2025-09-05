@@ -94,6 +94,9 @@ class User(Base, TimestampMixin):
     behaviors = relationship("UserBehavior", back_populates="user", cascade="all, delete-orphan")
     recommendation_logs = relationship("RecommendationLog", back_populates="user", cascade="all, delete-orphan")
 
+    # 分享系统相关关系
+    shared_contents = relationship("SharedContent", back_populates="owner", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', username='{self.username}')>"
 

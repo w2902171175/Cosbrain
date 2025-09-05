@@ -75,6 +75,11 @@ from .recommendation import (
     UserBehavior, RecommendationLog, KnowledgeItem, ForumPost
 )
 
+# ===== 分享相关模型 =====
+from .sharing import (
+    SharedContent, ShareLog, ShareTemplate
+)
+
 # ===== 导出所有模型 =====
 __all__ = [
     # 用户认证
@@ -117,4 +122,7 @@ __all__ = [
     
     # 推荐系统
     'UserBehavior', 'RecommendationLog', 'KnowledgeItem', 'ForumPost',
+    
+    # 分享系统
+    'SharedContent', 'ShareLog', 'ShareTemplate',
 ]

@@ -20,6 +20,7 @@ from .llm import router as llm
 from .mcp import router as mcp
 from .projects import router as projects
 from .quick_notes import router as quick_notes
+from .sharing import router as sharing
 from .recommend import router as recommend
 from .search_engine import router as search_engine
 from .tts import router as tts
@@ -28,6 +29,6 @@ from .tts import router as tts
 __all__ = [
     "admin", "ai", "ai_admin_router", "ai_monitoring_router", "achievement_points", "auth", "chatrooms", 
     "course_notes", "courses", "dashboard", "forum", "knowledge",
-    "llm", "mcp", "projects", "quick_notes", "recommend", 
+    "llm", "mcp", "projects", "quick_notes", "sharing", "recommend", 
     "search_engine", "tts"
 ]

@@ -57,7 +57,7 @@ load_dotenv()
 # 路由模块
 from project.routers import (
     admin, projects, dashboard, course_notes, quick_notes, auth, achievement_points, 
-    tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, ai, recommend,
+    tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, sharing, ai, recommend,
     ai_admin_router, ai_monitoring_router
 )
 # 导入收藏系统模块
@@ -104,9 +104,10 @@ app.include_router(courses)
 app.include_router(knowledge)
 app.include_router(forum)
 app.include_router(chatrooms)
+app.include_router(sharing)  # 新增分享功能路由
 # 收藏系统 - 基于文件夹的新架构（统一路由）
 app.include_router(collections_router)  # 新一代收藏管理系统
-app.include_router(program_collections_router)  # 类似GitHub星标的收藏功能
+app.include_router(program_collections_router)  # 统一收藏功能
 app.include_router(ai)
 app.include_router(ai_admin_router)  # AI管理路由
 app.include_router(ai_monitoring_router)  # AI监控路由

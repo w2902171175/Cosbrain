@@ -90,13 +90,13 @@ from .collections_decorators import log_operation
 logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/program-collections",
-    tags=["统一收藏和发现（类似GitHub星标）"],
+    tags=["统一收藏和发现"],
     responses={404: {"description": "Not found"}},
 )
 
 # ==================== 核心收藏功能 ====================
 
-@router.post("/{item_type}/{item_id}/star", summary="收藏项目、课程、知识库或笔记文件夹（类似GitHub星标）")
+@router.post("/{item_type}/{item_id}/star", summary="收藏项目、课程、知识库或笔记文件夹")
 @optimized_route("收藏项目或课程")
 @handle_database_errors
 async def star_item(
@@ -106,7 +106,7 @@ async def star_item(
     db: Session = Depends(get_db)
 ):
     """
-    收藏一个项目、课程、知识库或笔记文件夹，类似GitHub的星标功能 - 优化版本
+    收藏一个项目、课程、知识库或笔记文件夹 - 优化版本
     - 支持项目、课程、知识库、笔记文件夹的统一收藏接口
     - 如果已收藏，返回409冲突错误
     - 收藏成功后会在用户的默认收藏文件夹中创建收藏记录

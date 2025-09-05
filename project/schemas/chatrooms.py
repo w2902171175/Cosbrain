@@ -170,6 +170,46 @@ class ProcessJoinRequestAction(BaseModel):
 class ForwardMessageRequest(BaseModel):
     """转发消息请求模型"""
     to_room_id: int = Field(..., description="目标聊天室ID")
+    message: Optional[str] = Field(None, max_length=500, description="转发时的附加消息")
+
+
+# --- 批量转发消息请求 ---
+class BatchForwardMessageRequest(BaseModel):
+    """批量转发消息请求模型"""
+    message_ids: List[int] = Field(..., min_items=1, max_items=50, description="要转发的消息ID列表")
+    to_room_ids: List[int] = Field(..., min_items=1, max_items=20, description="目标聊天室ID列表")
+    message: Optional[str] = Field(None, max_length=500, description="转发时的附加消息")
+
+
+# --- 文件转发请求 ---
+class ForwardFileRequest(BaseModel):
+    """文件转发请求模型"""
+    file_message_id: int = Field(..., description="包含文件的消息ID")
+    to_room_ids: List[int] = Field(..., min_items=1, max_items=20, description="目标聊天室ID列表")
+    message: Optional[str] = Field(None, max_length=500, description="转发时的附加消息")
+
+
+# --- 转发操作响应 ---
+class ForwardOperationResponse(BaseModel):
+    """转发操作响应模型"""
+    success: bool
+    message: str
+    total_messages: int = Field(0, description="总消息数")
+    total_rooms: int = Field(0, description="总聊天室数")
+    successful_forwards: int = Field(0, description="成功转发数")
+    failed_forwards: int = Field(0, description="失败转发数")
+    results: List[Dict[str, Any]] = Field(default_factory=list, description="详细结果列表")
+
+
+# --- 消息选择请求 ---
+class MessageSelectionRequest(BaseModel):
+    """消息选择请求模型（用于多选转发）"""
+    room_id: int = Field(..., description="聊天室ID")
+    start_message_id: Optional[int] = Field(None, description="起始消息ID")
+    end_message_id: Optional[int] = Field(None, description="结束消息ID")
+    message_ids: Optional[List[int]] = Field(None, description="具体消息ID列表")
+    include_media: bool = Field(True, description="是否包含媒体文件")
+    max_messages: int = Field(50, ge=1, le=100, description="最大消息数量限制")
 
 
 # --- 收藏相关模型 ---
