@@ -58,7 +58,7 @@ load_dotenv()
 from project.routers import (
     admin, projects, dashboard, course_notes, quick_notes, auth, achievement_points, 
     tts, llm, mcp, search_engine, courses, knowledge, forum, chatrooms, sharing, ai, recommend,
-    ai_admin_router, ai_monitoring_router
+    ai_admin_router, ai_monitoring
 )
 # 导入收藏系统模块
 from project.routers.collections import router as collections_router
@@ -110,7 +110,7 @@ app.include_router(collections_router)  # 新一代收藏管理系统
 app.include_router(program_collections_router)  # 统一收藏功能
 app.include_router(ai)
 app.include_router(ai_admin_router)  # AI管理路由
-app.include_router(ai_monitoring_router)  # AI监控路由
+app.include_router(ai_monitoring)  # AI监控路由
 app.include_router(recommend)
 
 # === 认证配置 ===

@@ -27,6 +27,13 @@ from project.services.llm_service import (
 from project.utils.optimization.production_utils import cache_manager
 from project.utils import get_current_user_id
 
+# 监控和缓存导入
+from project.utils.async_cache.llm_cache_service import get_llm_cache_service
+from project.utils.async_cache.llm_distributed_cache import get_llm_cache
+from project.utils.monitoring.llm_prometheus_monitor import get_prometheus_monitor
+from project.utils.monitoring.llm_alert_manager import get_alert_manager
+from project.utils.monitoring.llm_baseline_comparator import get_baseline_comparator
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/llm", tags=["LLM大语言模型"])
 

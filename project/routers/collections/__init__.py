@@ -25,14 +25,14 @@
 from .collections import router
 
 # 导出优化工具，供其他模块使用
-from .collections_decorators import (
+from project.utils.core.decorators import (
     handle_database_errors,
     validate_folder_access,
     validate_content_access,
     log_operation
 )
 
-from .collections_batch import (
+from project.services.collections_batch_service import (
     OptimizedBatchOperations
 )
 

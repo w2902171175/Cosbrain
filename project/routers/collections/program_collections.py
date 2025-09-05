@@ -56,7 +56,7 @@ from project.utils import get_current_user_id
 import project.schemas as schemas
 
 # 业务工具函数
-from .collections_utils import (
+from project.utils.core.collections_utils import (
     get_or_create_collection_folder,
     check_item_exists,
     check_already_collected,
@@ -65,10 +65,10 @@ from .collections_utils import (
     get_collection_status,
     unstar_item,
     format_star_response,
-    COLLECTION_CONFIGS,
     CollectionManager
 )
-from .collections_batch import OptimizedBatchOperations
+from project.config.collections_config import COLLECTION_CONFIGS
+from project.services.collections_batch_service import OptimizedBatchOperations
 
 # 业务服务层
 from project.services.collections_service import (
@@ -84,7 +84,7 @@ from project.utils.async_cache.async_tasks import submit_background_task, TaskPr
 from project.utils.optimization.production_utils import cache_manager
 
 # 装饰器
-from .collections_decorators import log_operation
+from project.utils.core.decorators import log_operation
 
 # 配置日志和路由器
 logger = logging.getLogger(__name__)

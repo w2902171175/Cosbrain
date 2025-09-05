@@ -22,7 +22,7 @@ import project.schemas as schemas
 # 工具导入
 from project.utils.optimization.production_utils import cache_manager
 from project.services.forum_service import ForumService
-from project.routers.chatrooms.base_service import ChatRoomBaseService
+from project.services.chatroom_base_service import ChatRoomBaseService
 
 logger = logging.getLogger(__name__)
 

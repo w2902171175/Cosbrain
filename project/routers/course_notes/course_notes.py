@@ -46,8 +46,8 @@ from project.utils.optimization.router_optimization import optimized_route, rout
 from project.utils.async_cache.async_tasks import submit_background_task, TaskPriority
 from project.utils.optimization.production_utils import cache_manager
 
-# 保留部分原有工具函数
-from .utils import (
+# 导入工具函数
+from project.utils.core.course_notes_utils import (
     parse_note_data_from_request, validate_folder_access,
     validate_batch_operation_limit, log_operation
 )

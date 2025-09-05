@@ -29,7 +29,7 @@ from project.utils.optimization.production_utils import cache_manager
 
 # 导入AI配置
 try:
-    from project.routers.ai.ai_config import EnterpriseAIRouterConfig
+    from project.ai_providers.ai_config import EnterpriseAIRouterConfig
     config = EnterpriseAIRouterConfig()
 except ImportError:
     config = None

@@ -14,11 +14,11 @@ import secrets
 from project.models import User, UserCourse, UserAchievement
 from project.utils import pwd_context, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from project.utils import cache_manager
-from project.routers.auth.auth_utils import (
+from project.utils.auth.auth_utils import (
     generate_unique_username, validate_registration_data, validate_update_data,
     find_user_by_credential, normalize_skills_data, build_combined_text
 )
-from project.routers.auth.embedding_manager import EmbeddingManager
+from project.services.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +110,11 @@ class AuthService:
         db.flush()
         db.refresh(user)
         
-        # 生成AI嵌入向量（异步）
+        # 生成AI嵌入向量（异步任务，暂时使用占位符）
         try:
-            combined_text = build_combined_text(user)
-            embedding_manager = EmbeddingManager()
-            user.user_vector = embedding_manager.generate_embedding(combined_text)
+            # 暂时使用零向量作为占位符，实际的嵌入向量生成可以通过后台任务处理
+            from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+            user.user_vector = GLOBAL_PLACEHOLDER_ZERO_VECTOR
             db.flush()
         except Exception as e:
             logger.warning(f"生成用户嵌入向量失败: {str(e)}")
@@ -195,9 +195,9 @@ class AuthService:
         profile_fields = ["real_name", "major", "skills", "self_introduction"]
         if any(field in update_data for field in profile_fields):
             try:
-                combined_text = build_combined_text(user)
-                embedding_manager = EmbeddingManager()
-                user.user_vector = embedding_manager.generate_embedding(combined_text)
+                # 暂时使用零向量作为占位符，实际的嵌入向量生成可以通过后台任务处理
+                from project.ai_providers.ai_config import GLOBAL_PLACEHOLDER_ZERO_VECTOR
+                user.user_vector = GLOBAL_PLACEHOLDER_ZERO_VECTOR
                 db.flush()
             except Exception as e:
                 logger.warning(f"更新用户嵌入向量失败: {str(e)}")

@@ -33,6 +33,18 @@ from .user_auth import (
     require_admin_user,
 )
 
+# 认证工具函数
+from .auth_utils import (
+    generate_unique_username,
+    check_field_uniqueness,
+    build_combined_text,
+    normalize_skills_data,
+    find_user_by_credential,
+    prepare_user_data_for_registration,
+    validate_registration_data,
+    validate_update_data,
+)
+
 # 分页相关
 from .pagination import get_pagination_params
 
@@ -67,6 +79,16 @@ __all__ = [
     "get_current_user_id_optional",
     "is_admin_user",
     "require_admin_user",
+    
+    # 认证工具函数
+    "generate_unique_username",
+    "check_field_uniqueness", 
+    "build_combined_text",
+    "normalize_skills_data",
+    "find_user_by_credential",
+    "prepare_user_data_for_registration",
+    "validate_registration_data",
+    "validate_update_data",
     
     # 分页
     "get_pagination_params",

@@ -26,7 +26,6 @@ ai_router = ai_core_router  # 主要AI路由指向核心功能
 # 导出所有路由器
 __all__ = [
     "ai_core_router",           # 核心AI功能路由
-    "conversations_router",     # 对话管理路由
     "file_upload_router",       # 文件处理路由
     "ai_admin_router",          # AI管理路由
     "ai_monitoring_router",     # AI监控路由

@@ -13,7 +13,7 @@ from project.services.message_service import MessageService
 from project.utils.security.permissions import check_room_access
 from project.utils.async_cache.cache import cache
 from project.utils import _award_points, _check_and_award_achievements
-from .base_service import ChatRoomBaseService
+from project.services.chatroom_base_service import ChatRoomBaseService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

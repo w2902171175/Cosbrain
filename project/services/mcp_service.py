@@ -21,14 +21,14 @@ from project.utils.optimization.production_utils import cache_manager
 
 # MCP专用模块导入
 try:
-    from project.routers.mcp.config import mcp_config, get_provider_headers
-    from project.routers.mcp.cache_manager import cache_manager as mcp_cache_manager
-    from project.routers.mcp.performance_monitor import performance_monitor
+    from project.config.mcp_config import mcp_config, get_provider_headers
+    from project.utils.async_cache.mcp_cache_manager import mcp_cache_manager
+    from project.utils.monitoring.mcp_performance_monitor import mcp_performance_monitor
 except ImportError:
     # 如果模块不存在，使用默认值
     mcp_config = None
     mcp_cache_manager = cache_manager
-    performance_monitor = None
+    mcp_performance_monitor = None
 
 logger = logging.getLogger(__name__)
 
@@ -267,8 +267,8 @@ class MCPConnectionService:
                         response_time = time.time() - start_time
                         
                         # 记录性能指标
-                        if performance_monitor:
-                            performance_monitor.record_request(
+                        if mcp_performance_monitor:
+                            mcp_performance_monitor.record_request(
                                 config_id=config_id,
                                 response_time=response_time,
                                 status_code=response.status_code,

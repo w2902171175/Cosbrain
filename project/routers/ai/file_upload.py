@@ -15,13 +15,13 @@ from project.database import get_db, SessionLocal
 from project.utils import get_current_user_id
 from project.models import AIConversationTemporaryFile
 import project.oss_utils as oss_utils
-from .utils import (
+from project.utils.ai import (
     process_ai_temp_file_in_background,
     validate_file_type,
     sanitize_filename,
     get_file_size_mb
 )
-from .ai_config import EnterpriseAIRouterConfig
+from project.ai_providers.ai_config import EnterpriseAIRouterConfig
 
 # 企业级日志
 try:
