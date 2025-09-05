@@ -32,8 +32,6 @@ router = APIRouter(prefix="/sharing", tags=["分享功能"])
 # ===== 分享内容管理路由 =====
 
 @router.post("/create", response_model=schemas.ShareContentResponse, summary="创建分享")
-@optimized_route("创建分享")
-@handle_database_errors
 async def create_share(
     share_request: schemas.ShareContentRequest,
     background_tasks: BackgroundTasks,
@@ -51,8 +49,6 @@ async def create_share(
 
 
 @router.post("/forum", response_model=schemas.ShareToForumResponse, summary="分享到论坛")
-@optimized_route("分享到论坛")
-@handle_database_errors
 async def share_to_forum(
     share_request: schemas.ShareToForumRequest,
     background_tasks: BackgroundTasks,
@@ -67,8 +63,6 @@ async def share_to_forum(
 
 
 @router.post("/chatroom", response_model=schemas.ShareToChatroomResponse, summary="分享到聊天室")
-@optimized_route("分享到聊天室")
-@handle_database_errors
 async def share_to_chatroom(
     share_request: schemas.ShareToChatroomRequest,
     background_tasks: BackgroundTasks,
@@ -83,8 +77,6 @@ async def share_to_chatroom(
 
 
 @router.post("/link", response_model=schemas.ShareLinkResponse, summary="生成分享链接")
-@optimized_route("生成分享链接")
-@handle_database_errors
 async def generate_share_link(
     content_type: str = Query(..., description="内容类型"),
     content_id: int = Query(..., description="内容ID"),
@@ -99,8 +91,6 @@ async def generate_share_link(
 
 
 @router.post("/quick", response_model=schemas.QuickShareResponse, summary="快速分享到多个平台")
-@optimized_route("快速分享")
-@handle_database_errors
 async def quick_share(
     quick_share_request: schemas.QuickShareRequest,
     background_tasks: BackgroundTasks,
@@ -117,8 +107,6 @@ async def quick_share(
 # ===== 分享记录查询路由 =====
 
 @router.get("/my-shares", response_model=List[schemas.ShareContentResponse], summary="获取我的分享列表")
-@optimized_route("获取我的分享列表")
-@handle_database_errors
 async def get_my_shares(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=100, description="返回条数"),
@@ -135,8 +123,6 @@ async def get_my_shares(
 
 
 @router.get("/stats", response_model=schemas.ShareStatsResponse, summary="获取分享统计")
-@optimized_route("获取分享统计")
-@handle_database_errors
 async def get_share_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -147,8 +133,6 @@ async def get_share_stats(
 
 
 @router.get("/{share_id}", response_model=schemas.ShareContentResponse, summary="获取分享详情")
-@optimized_route("获取分享详情")
-@handle_database_errors
 async def get_share_detail(
     share_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -180,8 +164,6 @@ async def get_share_detail(
 # ===== 分享内容预览路由 =====
 
 @router.get("/preview/{content_type}/{content_id}", response_model=schemas.ShareableContentPreview, summary="获取内容分享预览")
-@optimized_route("获取内容分享预览")
-@handle_database_errors
 async def get_share_preview(
     content_type: str,
     content_id: int,
@@ -215,8 +197,6 @@ async def get_share_preview(
 # ===== 分享操作路由 =====
 
 @router.post("/{share_id}/click", summary="记录分享点击")
-@optimized_route("记录分享点击")
-@handle_database_errors
 async def record_share_click(
     share_id: int,
     current_user_id: Optional[int] = Depends(get_current_user_id),
@@ -245,8 +225,6 @@ async def record_share_click(
 
 
 @router.delete("/{share_id}", summary="删除分享")
-@optimized_route("删除分享")
-@handle_database_errors
 async def delete_share(
     share_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -273,8 +251,6 @@ async def delete_share(
 # ===== 管理员路由 =====
 
 @router.get("/admin/all", response_model=List[schemas.ShareContentResponse], summary="管理员获取所有分享", dependencies=[])
-@optimized_route("管理员获取所有分享")
-@handle_database_errors
 async def admin_get_all_shares(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=100, description="返回条数"),
@@ -305,8 +281,6 @@ async def admin_get_all_shares(
 
 
 @router.put("/admin/{share_id}/status", summary="管理员更新分享状态")
-@optimized_route("管理员更新分享状态")
-@handle_database_errors
 async def admin_update_share_status(
     share_id: int,
     status: str = Query(..., regex="^(active|expired|deleted)$", description="新状态"),
@@ -333,8 +307,6 @@ async def admin_update_share_status(
 # ===== 新增：论坛话题转发路由 =====
 
 @router.post("/forum-topic/repost", response_model=schemas.ForumTopicRepostResponse, summary="论坛话题转发")
-@optimized_route("论坛话题转发")
-@handle_database_errors
 async def repost_forum_topic(
     repost_request: schemas.ForumTopicRepostRequest,
     background_tasks: BackgroundTasks,
@@ -351,8 +323,6 @@ async def repost_forum_topic(
 # ===== 新增：社交平台分享路由 =====
 
 @router.post("/social", response_model=schemas.SocialShareResponse, summary="社交平台分享")
-@optimized_route("社交平台分享")
-@handle_database_errors
 async def create_social_share(
     social_request: schemas.SocialShareRequest,
     background_tasks: BackgroundTasks,
@@ -369,8 +339,6 @@ async def create_social_share(
 # ===== 新增：复制链接分享路由 =====
 
 @router.post("/copy-link", response_model=schemas.CopyLinkResponse, summary="复制链接分享")
-@optimized_route("复制链接分享")
-@handle_database_errors
 async def create_copy_link_share(
     copy_request: schemas.CopyLinkRequest,
     background_tasks: BackgroundTasks,
