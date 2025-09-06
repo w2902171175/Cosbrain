@@ -186,4 +186,4 @@ config.ini
 settings.json
 
 # 上传文件
-uploads/
+# uploads/
