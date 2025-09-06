@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
 """
-YARA File Security Scan        # 初始化生产环境配置
-        if production_config:
-            initialize_yara_for_production()
-        
-        # 加载配置文件（如果存在）
-        if os.path.exists(config_file):
-            load_dotenv(config_file)
-        
-        self.enabled = os.getenv('ENABLE_YARA_SCAN', 'false').lower() == 'true'
-        
-        # 使用智能路径检测，确保在任何环境下都能正确工作
-        self.rules_path = os.getenv('YARA_RULES_PATH')
-        if not self.rules_path or not os.path.exists(self.rules_path):
-            # 如果环境变量中的路径不存在，使用相对路径
-            fallback_rules = Path.cwd() / 'yara' / 'rules' / 'rules.yar'
-            self.rules_path = str(fallback_rules)
-        
-        self.output_dir = os.getenv('YARA_OUTPUT_DIR')
-        if not self.output_dir:
-            # 如果环境变量中没有输出目录，使用相对路径
-            fallback_output = Path.cwd() / 'yara' / 'output'
-            self.output_dir = str(fallback_output)
-        
-        self.log_level = os.getenv('YARA_LOG_LEVEL', 'INFO')
-        self.scan_timeout = int(os.getenv('YARA_SCAN_TIMEOUT', '30'))
-        self.max_file_size = int(os.getenv('YARA_MAX_FILE_SIZE', '100')) * 1024 * 1024  # 转换为字节，集成到现有项目中
+YARA File Security Scanner
+YARA文件安全扫描器，集成到现有项目中
 """
 
 import os
@@ -67,7 +43,7 @@ class ScanResult:
 class YARAFileScanner:
     """YARA文件安全扫描器"""
     
-    def __init__(self, config_file: str = "yara/config/.env.yara"):
+    def __init__(self, config_file: str = "yara_security/config/.env.yara"):
         """
         初始化扫描器
         
@@ -88,13 +64,13 @@ class YARAFileScanner:
         self.rules_path = os.getenv('YARA_RULES_PATH')
         if not self.rules_path or not os.path.exists(self.rules_path):
             # 如果环境变量中的路径不存在，使用相对路径
-            fallback_rules = Path.cwd() / 'yara' / 'rules' / 'rules.yar'
+            fallback_rules = Path.cwd() / 'yara_security' / 'rules' / 'rules.yar'
             self.rules_path = str(fallback_rules)
         
         self.output_dir = os.getenv('YARA_OUTPUT_DIR')
         if not self.output_dir:
             # 如果环境变量中没有输出目录，使用相对路径
-            fallback_output = Path.cwd() / 'yara' / 'output'
+            fallback_output = Path.cwd() / 'yara_security' / 'output'
             self.output_dir = str(fallback_output)
             
         self.log_level = os.getenv('YARA_LOG_LEVEL', 'INFO')
@@ -118,6 +94,56 @@ class YARAFileScanner:
         
         if self.enabled:
             self.load_rules()
+    
+    def _setup_logger(self) -> logging.Logger:
+        """设置日志记录器"""
+        logger = logging.getLogger('YARAFileScanner')
+        
+        # 设置日志级别
+        level = getattr(logging, self.log_level.upper(), logging.INFO)
+        logger.setLevel(level)
+        
+        # 创建文件处理器
+        log_file = os.path.join(self.output_dir, 'yara_scan.log')
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(level)
+        
+        # 创建控制台处理器
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        
+        # 创建格式化器
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        # 添加处理器
+        if not logger.handlers:
+            logger.addHandler(file_handler)
+            logger.addHandler(console_handler)
+            
+        return logger
+    
+    def load_rules(self) -> bool:
+        """加载YARA规则"""
+        if not self.enabled:
+            self.logger.info("YARA扫描已禁用")
+            return False
+            
+        try:
+            if not os.path.exists(self.rules_path):
+                self.logger.error(f"YARA规则文件不存在: {self.rules_path}")
+                return False
+                
+            self.rules = yara.compile(filepath=self.rules_path)
+            self.logger.info(f"成功加载YARA规则: {self.rules_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"加载YARA规则失败: {e}")
+            return False
     
     def _setup_logger(self) -> logging.Logger:
         """设置日志记录器"""

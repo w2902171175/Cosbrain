@@ -100,14 +100,14 @@ class ProductionYaraConfig:
         if self.is_production:
             # 生产环境：使用相对于应用根目录的路径
             config.update({
-                'YARA_RULES_PATH': str(self.base_path / 'yara' / 'rules' / 'rules.yar'),
-                'YARA_OUTPUT_DIR': str(self.base_path / 'yara' / 'output'),
+                'YARA_RULES_PATH': str(self.base_path / 'yara_security' / 'rules' / 'rules.yar'),
+                'YARA_OUTPUT_DIR': str(self.base_path / 'yara_security' / 'output'),
             })
         else:
             # 开发环境：使用现有配置或相对路径
             config.update({
-                'YARA_RULES_PATH': os.getenv('YARA_RULES_PATH', str(self.base_path / 'yara' / 'rules' / 'rules.yar')),
-                'YARA_OUTPUT_DIR': os.getenv('YARA_OUTPUT_DIR', str(self.base_path / 'yara' / 'output')),
+                'YARA_RULES_PATH': os.getenv('YARA_RULES_PATH', str(self.base_path / 'yara_security' / 'rules' / 'rules.yar')),
+                'YARA_OUTPUT_DIR': os.getenv('YARA_OUTPUT_DIR', str(self.base_path / 'yara_security' / 'output')),
             })
         
         return config

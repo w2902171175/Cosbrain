@@ -49,8 +49,8 @@ def initialize_yara():
         return True
         
     try:
-        # 添加yara脚本目录到路径
-        yara_scripts_path = os.path.join(project_root, 'yara', 'scripts')
+        # 添加yara_security脚本目录到路径
+        yara_scripts_path = os.path.join(project_root, 'yara_security', 'scripts')
         if yara_scripts_path not in sys.path:
             sys.path.insert(0, yara_scripts_path)
         
