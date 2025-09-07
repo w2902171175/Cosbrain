@@ -43,7 +43,6 @@ def health_check():
 
 @router.post("/register", response_model=schemas.StudentResponse, summary="用户注册")
 @optimized_route("用户注册")
-@handle_database_errors
 async def register_user(
     user_data: schemas.StudentCreate,
     background_tasks: BackgroundTasks,
@@ -110,7 +109,6 @@ async def register_user(
 
 @router.post("/token", response_model=schemas.Token, summary="用户登录")
 @optimized_route("用户登录")
-@handle_database_errors
 async def login_user(
     background_tasks: BackgroundTasks,
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -165,7 +163,6 @@ async def login_user(
 
 @router.get("/users/me", response_model=schemas.StudentResponse, summary="获取当前用户信息")
 @optimized_route("获取用户信息")
-@handle_database_errors
 async def get_current_user(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -181,7 +178,6 @@ async def get_current_user(
 
 @router.put("/users/me", response_model=schemas.StudentResponse, summary="更新当前用户信息")
 @optimized_route("更新用户信息")
-@handle_database_errors
 async def update_current_user(
     user_update: schemas.StudentUpdate,
     background_tasks: BackgroundTasks,
@@ -246,7 +242,6 @@ async def update_current_user(
 
 @router.post("/change-password", summary="修改密码")
 @optimized_route("修改密码")
-@handle_database_errors
 async def change_password(
     current_password: str,
     new_password: str,
@@ -301,7 +296,6 @@ async def change_password(
 
 @router.post("/deactivate", summary="停用账户")
 @optimized_route("停用账户")
-@handle_database_errors
 async def deactivate_account(
     password: str,
     background_tasks: BackgroundTasks,
@@ -347,7 +341,6 @@ async def deactivate_account(
 
 @router.get("/users/me/stats", summary="获取用户统计信息")
 @optimized_route("用户统计信息")
-@handle_database_errors
 async def get_user_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
