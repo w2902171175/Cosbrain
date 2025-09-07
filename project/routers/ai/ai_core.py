@@ -82,7 +82,6 @@ class SemanticSearchRequest(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse, summary="AI智能对话")
 @optimized_route("AI聊天")
-@handle_database_errors
 async def chat_with_ai(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
@@ -144,7 +143,6 @@ async def chat_with_ai(
 
 @router.post("/chat/stream", summary="流式AI对话")
 @optimized_route("流式AI聊天")
-@handle_database_errors
 async def stream_chat_with_ai(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
@@ -166,7 +164,6 @@ async def stream_chat_with_ai(
 
 @router.get("/conversations", response_model=List[schemas.AIConversationResponse], summary="获取对话列表")
 @optimized_route("获取对话列表")
-@handle_database_errors
 async def get_conversations(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -183,7 +180,6 @@ async def get_conversations(
 
 @router.post("/conversations", response_model=schemas.AIConversationResponse, summary="创建新对话")
 @optimized_route("创建对话")
-@handle_database_errors
 async def create_conversation(
     title: Optional[str] = Form(None),
     initial_message: Optional[str] = Form(None),
@@ -202,7 +198,6 @@ async def create_conversation(
 
 @router.get("/conversations/{conversation_id}", response_model=schemas.AIConversationResponse, summary="获取对话详情")
 @optimized_route("获取对话详情")
-@handle_database_errors
 async def get_conversation(
     conversation_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -218,7 +213,6 @@ async def get_conversation(
 
 @router.put("/conversations/{conversation_id}", response_model=schemas.AIConversationResponse, summary="更新对话")
 @optimized_route("更新对话")
-@handle_database_errors
 async def update_conversation(
     conversation_id: int,
     title: str = Form(...),
@@ -237,7 +231,6 @@ async def update_conversation(
 
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除对话")
 @optimized_route("删除对话")
-@handle_database_errors
 async def delete_conversation(
     conversation_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -256,7 +249,6 @@ async def delete_conversation(
 
 @router.get("/conversations/{conversation_id}/messages", response_model=List[schemas.AIConversationMessageResponse], summary="获取对话消息")
 @optimized_route("获取对话消息")
-@handle_database_errors
 async def get_conversation_messages(
     conversation_id: int,
     limit: int = Query(50, ge=1, le=100),
@@ -274,7 +266,6 @@ async def get_conversation_messages(
 
 @router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除消息")
 @optimized_route("删除消息")
-@handle_database_errors
 async def delete_message(
     message_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -291,7 +282,6 @@ async def delete_message(
 
 @router.post("/semantic-search", response_model=List[Dict[str, Any]], summary="语义搜索")
 @optimized_route("语义搜索")
-@handle_database_errors
 async def semantic_search(
     request: SemanticSearchRequest,
     background_tasks: BackgroundTasks,
@@ -324,7 +314,6 @@ async def semantic_search(
 
 @router.get("/config", summary="获取AI配置")
 @optimized_route("获取AI配置")
-@handle_database_errors
 async def get_ai_config(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -351,7 +340,6 @@ async def get_ai_config(
 
 @router.get("/stats", summary="获取AI使用统计")
 @optimized_route("AI使用统计")
-@handle_database_errors
 async def get_ai_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -363,7 +351,6 @@ async def get_ai_stats(
 
 @router.get("/health", summary="AI服务健康检查")
 @optimized_route("AI健康检查")
-@handle_database_errors
 async def health_check():
     """AI服务健康检查 - 优化版本"""
     
@@ -393,7 +380,6 @@ async def health_check():
 
 @router.post("/conversations/batch-delete", summary="批量删除对话")
 @optimized_route("批量删除对话")
-@handle_database_errors
 async def batch_delete_conversations(
     background_tasks: BackgroundTasks,
     current_user_id: int = Depends(get_current_user_id),
@@ -451,7 +437,6 @@ async def batch_delete_conversations(
 
 @router.post("/summarize", summary="智能摘要")
 @optimized_route("智能摘要")
-@handle_database_errors
 async def generate_summary(
     background_tasks: BackgroundTasks,
     current_user_id: int = Depends(get_current_user_id),

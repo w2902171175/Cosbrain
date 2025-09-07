@@ -33,7 +33,6 @@ router = APIRouter(prefix="/admin", tags=["系统管理"])
 
 @router.get("/users", response_model=List[schemas.StudentResponse], summary="获取用户列表")
 @optimized_route("用户列表管理")
-@handle_database_errors
 async def get_users_list(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -78,7 +77,6 @@ async def get_users_list(
 
 @router.get("/users/{user_id}", response_model=schemas.StudentResponse, summary="获取用户详情")
 @optimized_route("用户详情管理")
-@handle_database_errors
 async def get_user_detail(
     user_id: int,
     current_admin: User = Depends(is_admin_user),
@@ -110,7 +108,6 @@ async def get_user_detail(
 
 @router.put("/users/{user_id}/set-admin", response_model=schemas.StudentResponse, summary="设置管理员权限")
 @optimized_route("设置管理员权限")
-@handle_database_errors
 async def set_user_admin_status(
     user_id: int,
     admin_status: schemas.UserAdminStatusUpdate,
@@ -143,7 +140,6 @@ async def set_user_admin_status(
 
 @router.post("/users/{user_id}/suspend", summary="暂停用户账户")
 @optimized_route("暂停用户账户")
-@handle_database_errors
 async def suspend_user_account(
     user_id: int,
     background_tasks: BackgroundTasks,
@@ -195,7 +191,6 @@ async def suspend_user_account(
 
 @router.get("/achievements", response_model=List[schemas.AchievementResponse], summary="获取成就列表")
 @optimized_route("成就列表管理")
-@handle_database_errors
 async def get_achievements_list(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
@@ -220,7 +215,6 @@ async def get_achievements_list(
 
 @router.post("/achievements", response_model=schemas.AchievementResponse, summary="创建成就")
 @optimized_route("创建成就")
-@handle_database_errors
 async def create_achievement_definition(
     achievement_data: schemas.AchievementCreate,
     background_tasks: BackgroundTasks,
@@ -252,7 +246,6 @@ async def create_achievement_definition(
 
 @router.put("/achievements/{achievement_id}", response_model=schemas.AchievementResponse, summary="更新成就")
 @optimized_route("更新成就")
-@handle_database_errors
 async def update_achievement_definition(
     achievement_id: int,
     achievement_data: schemas.AchievementUpdate,
@@ -271,7 +264,6 @@ async def update_achievement_definition(
 
 @router.delete("/achievements/{achievement_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除成就")
 @optimized_route("删除成就")
-@handle_database_errors
 async def delete_achievement_definition(
     achievement_id: int,
     current_admin: User = Depends(is_admin_user),
@@ -288,7 +280,6 @@ async def delete_achievement_definition(
 
 @router.post("/points/reward", response_model=schemas.PointTransactionResponse, summary="调整用户积分")
 @optimized_route("积分管理")
-@handle_database_errors
 async def admin_reward_or_deduct_points(
     reward_request: schemas.PointsRewardRequest,
     background_tasks: BackgroundTasks,
@@ -324,7 +315,6 @@ async def admin_reward_or_deduct_points(
 
 @router.get("/points/transactions", summary="获取积分交易记录")
 @optimized_route("积分交易记录")
-@handle_database_errors
 async def get_points_transactions(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
@@ -357,7 +347,6 @@ async def get_points_transactions(
 
 @router.get("/system/status", summary="系统状态监控")
 @optimized_route("系统状态监控")
-@handle_database_errors
 async def get_system_status(
     current_admin: User = Depends(is_admin_user),
     db: Session = Depends(get_db)
@@ -408,7 +397,6 @@ async def get_system_status(
 
 @router.get("/rag/status", summary="RAG功能状态检查")
 @optimized_route("RAG状态检查")
-@handle_database_errors
 async def get_rag_status(
     current_admin: User = Depends(is_admin_user),
     db: Session = Depends(get_db)
@@ -424,7 +412,6 @@ async def get_rag_status(
 
 @router.post("/data/backup", summary="创建数据备份")
 @optimized_route("数据备份")
-@handle_database_errors
 async def create_data_backup(
     background_tasks: BackgroundTasks,
     current_admin: User = Depends(is_admin_user),
@@ -458,7 +445,6 @@ async def create_data_backup(
 
 @router.get("/logs", summary="获取系统日志")
 @optimized_route("系统日志")
-@handle_database_errors
 async def get_system_logs(
     log_level: str = Query("INFO", regex="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"),
     limit: int = Query(100, ge=1, le=1000),
