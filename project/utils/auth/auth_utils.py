@@ -86,8 +86,17 @@ def check_field_uniqueness(
                 detail=error_message
             )
     else:
-        # 对于注册操作，使用原有函数
-        check_unique_field(db, model_class, field_name, field_value, error_message)
+        # 对于注册操作，直接检查唯一性
+        query = db.query(model_class).filter(getattr(model_class, field_name) == field_value)
+        if query.first():
+            logger.warning("字段唯一性检查失败", extra={
+                "field_name": field_name, 
+                "field_value": field_value
+            })
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, 
+                detail=error_message
+            )
 
 
 def build_combined_text(user_data: Dict[str, Any]) -> str:
@@ -219,41 +228,45 @@ def prepare_user_data_for_registration(user_data, final_username: str) -> Dict[s
     return user_dict
 
 
-def validate_registration_data(user_data, db: Session) -> None:
+def validate_registration_data(db: Session, user_data) -> None:
     """验证用户注册数据
     
     Args:
-        user_data: 用户注册数据
         db: 数据库会话
+        user_data: 用户注册数据（字典格式）
         
     Raises:
         HTTPException: 验证失败时抛出
     """
     # 检查邮箱唯一性
-    if user_data.email:
-        check_field_uniqueness(db, User, "email", user_data.email)
+    if user_data.get("email"):
+        check_field_uniqueness(db, User, "email", user_data["email"])
     
     # 检查手机号唯一性
-    if user_data.phone_number:
-        check_field_uniqueness(db, User, "phone_number", user_data.phone_number)
+    if user_data.get("phone_number"):
+        check_field_uniqueness(db, User, "phone_number", user_data["phone_number"])
     
     # 检查用户名唯一性（如果提供了）
-    if user_data.username:
-        check_field_uniqueness(db, User, "username", user_data.username)
+    if user_data.get("username"):
+        check_field_uniqueness(db, User, "username", user_data["username"])
 
 
 def validate_update_data(user_update_data, current_user_id: int, db: Session) -> None:
     """验证用户更新数据
     
     Args:
-        user_update_data: 用户更新数据
+        user_update_data: 用户更新数据（dict或Pydantic模型）
         current_user_id: 当前用户ID
         db: 数据库会话
         
     Raises:
         HTTPException: 验证失败时抛出
     """
-    update_data = user_update_data.dict(exclude_unset=True)
+    # 兼容dict和Pydantic模型
+    if hasattr(user_update_data, 'dict'):
+        update_data = user_update_data.dict(exclude_unset=True)
+    else:
+        update_data = user_update_data if isinstance(user_update_data, dict) else {}
     
     # 检查用户名唯一性
     if "username" in update_data and update_data["username"] is not None:

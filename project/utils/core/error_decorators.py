@@ -34,10 +34,10 @@ def handle_database_errors(operation_name: str):
                 db = kwargs.get('db')
                 if db:
                     db.rollback()
-                logger.error(f"{operation_name}失败: {e}")
+                logger.error(f"{operation_name}失败: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                    detail=f"{operation_name}失败"
+                    detail=f"{operation_name}失败: {str(e)[:200]}"  # 显示详细错误信息用于调试
                 )
         
         @wraps(func)
@@ -59,10 +59,10 @@ def handle_database_errors(operation_name: str):
                 db = kwargs.get('db')
                 if db:
                     db.rollback()
-                logger.error(f"{operation_name}失败: {e}")
+                logger.error(f"{operation_name}失败: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                    detail=f"{operation_name}失败"
+                    detail=f"{operation_name}失败: {str(e)[:200]}"  # 显示详细错误信息用于调试
                 )
         
         # 检查函数是否是异步的

@@ -492,6 +492,7 @@ async def get_performance_metrics(
 
 @router.get("/tasks/{task_id}/status", summary="获取任务状态")
 @optimized_route("任务状态")
+@handle_database_errors
 async def get_task_status(
     task_id: str,
     current_user_id: int = Depends(get_current_user_id)

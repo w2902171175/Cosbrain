@@ -1,4 +1,8 @@
-# project/routers/courses/courses.py
+ # project/routers/courses/courses.py
+"""
+课程管理模块 - 统一优化版本
+使用@optimized_route装饰器提供统一的错误处理和性能优化
+"""
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Response, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -15,6 +19,9 @@ from project.utils import (get_resource_or_404, debug_operation, _award_points, 
 # 导入新的服务层和错误处理
 from project.services.course_service import CourseService, CourseUtils, MaterialUtils
 from project.utils.core.error_decorators import handle_database_errors, database_transaction, safe_db_operation
+
+# 导入优化装饰器
+from project.utils.optimization.router_optimization import optimized_route
 
 # 创建路由器
 router = APIRouter(
@@ -55,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 # --- 课程路由 ---
 @router.post("/", response_model=schemas.CourseResponse, summary="创建新课程")
-@handle_database_errors("创建课程")
+@optimized_route("创建课程")
 async def create_course(
         course_data: schemas.CourseBase,
         current_admin_user: User = Depends(is_admin_user),
@@ -119,7 +126,7 @@ def get_course_by_id(
     return course
 
 @router.put("/{course_id}", response_model=schemas.CourseResponse, summary="更新指定课程")
-@handle_database_errors("更新课程")
+@optimized_route("更新课程")
 async def update_course(
     course_id: int,
     course_data: schemas.CourseUpdate,
@@ -147,7 +154,7 @@ async def update_course(
     return db_course
 
 @router.post("/{course_id}/enroll", response_model=schemas.UserCourseResponse, summary="用户报名课程")
-@handle_database_errors("课程报名")
+@optimized_route("课程报名")
 def enroll_course(
     course_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -173,7 +180,7 @@ def enroll_course(
 
 @router.post("/{course_id}/materials/", response_model=schemas.CourseMaterialResponse,
              summary="为指定课程上传新材料")
-@handle_database_errors("创建课程材料")
+@optimized_route("创建课程材料")
 async def create_course_material(
     course_id: int,
     file: Optional[UploadFile] = File(None),
@@ -288,7 +295,7 @@ def get_course_material_detail(
 
 @router.put("/{course_id}/materials/{material_id}", response_model=schemas.CourseMaterialResponse,
             summary="更新指定课程材料")
-@handle_database_errors("更新课程材料")
+@optimized_route("更新课程材料")
 async def update_course_material(
     course_id: int,
     material_id: int,
@@ -404,7 +411,7 @@ async def delete_course_material(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @router.post("/{course_id}/like", response_model=schemas.CourseLikeResponse, summary="点赞指定课程")
-@handle_database_errors("课程点赞")
+@optimized_route("课程点赞")
 def like_course_item(
     course_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -429,7 +436,7 @@ def like_course_item(
     return result["like"]
 
 @router.delete("/{course_id}/unlike", status_code=status.HTTP_204_NO_CONTENT, summary="取消点赞课程")
-@handle_database_errors("取消点赞")
+@optimized_route("取消点赞")
 def unlike_course_item(
     course_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -453,6 +460,7 @@ def unlike_course_item(
 
 @router.put("/{course_id}/progress", response_model=schemas.UserCourseResponse,
             summary="更新当前用户课程学习进度和状态")
+@optimized_route("更新课程进度")
 async def update_user_course_progress(
     course_id: int,
     update_data: Dict[str, Any],

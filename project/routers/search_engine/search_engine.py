@@ -1,7 +1,7 @@
-# project/routers/search_engine/search_engine_optimized.py
+# project/routers/search_engine/search_engine.py
 """
-搜索引擎模块优化版本 - 应用统一优化模式
-基于courses、forum和auth模块的成功优化经验
+搜索引擎路由模块 - 统一优化版本
+提供搜索引擎配置管理和搜索功能
 """
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
@@ -195,4 +195,4 @@ async def search_internal_content(
 #     "monitoring": True
 # })
 
-logger.info("🔍 Search Engine - 搜索引擎已加载")
+logger.info("🔍 Search Engine - 搜索引擎路由已加载")

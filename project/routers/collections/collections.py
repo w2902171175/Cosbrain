@@ -32,7 +32,6 @@ router = APIRouter(prefix="/collections", tags=["收藏管理"])
 
 @router.get("/folders", response_model=List[schemas.FolderResponseNew], summary="获取用户的文件夹树结构")
 @optimized_route("获取文件夹树")
-@handle_database_errors
 async def get_user_folders(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -44,7 +43,6 @@ async def get_user_folders(
 
 @router.post("/folders", response_model=schemas.FolderResponseNew, summary="创建新文件夹")
 @optimized_route("创建文件夹")
-@handle_database_errors
 async def create_folder(
     background_tasks: BackgroundTasks,
     name: str = Form(...),
@@ -83,7 +81,6 @@ async def create_folder(
 
 @router.get("/folders/{folder_id}", response_model=schemas.FolderResponseNew, summary="获取文件夹详情")
 @optimized_route("获取文件夹详情")
-@handle_database_errors
 async def get_folder_detail(
     folder_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -96,7 +93,6 @@ async def get_folder_detail(
 
 @router.put("/folders/{folder_id}", response_model=schemas.FolderResponseNew, summary="更新文件夹信息")
 @optimized_route("更新文件夹")
-@handle_database_errors
 async def update_folder(
     folder_id: int,
     name: Optional[str] = Form(None),
@@ -140,7 +136,6 @@ async def update_folder(
 
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除文件夹")
 @optimized_route("删除文件夹")
-@handle_database_errors
 async def delete_folder(
     folder_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -155,7 +150,6 @@ async def delete_folder(
 
 @router.get("/folders/{folder_id}/contents", response_model=List[schemas.CollectedContentResponseNew], summary="获取文件夹内容")
 @optimized_route("获取文件夹内容")
-@handle_database_errors
 async def get_folder_contents(
     folder_id: int,
     skip: int = Query(0, ge=0),
@@ -177,7 +171,6 @@ async def get_folder_contents(
 
 @router.post("/folders/{folder_id}/collect", response_model=schemas.CollectedContentResponseNew, summary="向文件夹添加收藏")
 @optimized_route("添加收藏")
-@handle_database_errors
 async def collect_to_folder(
     folder_id: int,
     background_tasks: BackgroundTasks,
@@ -233,7 +226,6 @@ async def collect_to_folder(
 
 @router.post("/quick-collect", response_model=schemas.CollectedContentResponseNew, summary="快速收藏")
 @optimized_route("快速收藏")
-@handle_database_errors
 async def quick_collect(
     background_tasks: BackgroundTasks,
     title: str = Form(...),
@@ -284,7 +276,6 @@ async def quick_collect(
 
 @router.get("/contents/{content_id}", response_model=schemas.CollectedContentResponseNew, summary="获取收藏内容详情")
 @optimized_route("获取收藏详情")
-@handle_database_errors
 async def get_collected_content(
     content_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -297,7 +288,6 @@ async def get_collected_content(
 
 @router.put("/contents/{content_id}", response_model=schemas.CollectedContentResponseNew, summary="更新收藏内容")
 @optimized_route("更新收藏内容")
-@handle_database_errors
 async def update_collected_content(
     content_id: int,
     title: Optional[str] = Form(None),
@@ -334,7 +324,6 @@ async def update_collected_content(
 
 @router.delete("/contents/{content_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除收藏内容")
 @optimized_route("删除收藏内容")
-@handle_database_errors
 async def delete_collected_content(
     content_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -351,7 +340,6 @@ async def delete_collected_content(
 
 @router.get("/search", response_model=List[schemas.CollectedContentResponseNew], summary="搜索收藏内容")
 @optimized_route("搜索收藏")
-@handle_database_errors
 async def search_collected_content(
     background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=2, description="搜索关键词"),
@@ -388,7 +376,6 @@ async def search_collected_content(
 
 @router.get("/stats", response_model=schemas.FolderStatsResponse, summary="获取收藏统计信息")
 @optimized_route("收藏统计")
-@handle_database_errors
 async def get_collection_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -402,7 +389,6 @@ async def get_collection_stats(
 
 @router.post("/batch-move", summary="批量移动收藏内容")
 @optimized_route("批量移动")
-@handle_database_errors
 async def batch_move_contents(
     background_tasks: BackgroundTasks,
     content_ids: List[int] = Form(...),
@@ -455,7 +441,6 @@ async def batch_move_contents(
 
 @router.post("/collect-chat-message/{message_id}", response_model=schemas.CollectedContentResponseNew, summary="收藏聊天消息")
 @optimized_route("收藏聊天消息")
-@handle_database_errors
 async def collect_chat_message(
     message_id: int,
     background_tasks: BackgroundTasks,
@@ -518,7 +503,6 @@ async def collect_chat_message(
 
 @router.post("/collect-forum-topic/{topic_id}", response_model=schemas.CollectedContentResponseNew, summary="收藏论坛话题")
 @optimized_route("收藏论坛话题")
-@handle_database_errors
 async def collect_forum_topic(
     topic_id: int,
     background_tasks: BackgroundTasks,

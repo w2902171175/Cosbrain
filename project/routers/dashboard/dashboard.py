@@ -2,6 +2,12 @@
 """
 仪表板模块优化版本 - 数据聚合和实时缓存优化
 基于成功优化模式，优化dashboard模块的数据聚合功能
+
+统一优化特性：
+- 使用@optimized_route装饰器（已包含错误处理）
+- 统一的数据缓存和异步任务处理
+- 专业服务层和工具函数
+- 优化数据库查询，减少N+1问题
 """
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
@@ -36,7 +42,6 @@ VALID_TIME_RANGES = ["7d", "30d", "90d", "1y"]
 
 @router.get("/summary", response_model=schemas.DashboardSummaryResponse, summary="获取仪表板概览")
 @optimized_route("仪表板概览")
-@handle_database_errors
 async def get_dashboard_summary(
     background_tasks: BackgroundTasks,
     current_user_id: int = Depends(get_current_user_id),
@@ -96,7 +101,6 @@ async def get_dashboard_summary(
 
 @router.get("/analytics", response_model=Dict[str, Any], summary="获取用户分析数据")
 @optimized_route("用户分析")
-@handle_database_errors
 async def get_user_analytics(
     time_range: str = Query("30d", regex="^(7d|30d|90d|1y)$"),
     current_user_id: int = Depends(get_current_user_id),
@@ -118,7 +122,6 @@ async def get_user_analytics(
 
 @router.get("/productivity", response_model=Dict[str, Any], summary="获取生产力指标")
 @optimized_route("生产力指标")
-@handle_database_errors
 async def get_productivity_metrics(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -136,7 +139,6 @@ async def get_productivity_metrics(
 
 @router.get("/projects", response_model=List[schemas.DashboardProjectCard], summary="获取项目仪表板")
 @optimized_route("项目仪表板")
-@handle_database_errors
 async def get_dashboard_projects(
     status_filter: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
@@ -189,7 +191,6 @@ async def get_dashboard_projects(
 
 @router.get("/projects/stats", response_model=Dict[str, Any], summary="获取项目统计信息")
 @optimized_route("项目统计")
-@handle_database_errors
 async def get_project_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -207,7 +208,6 @@ async def get_project_stats(
 
 @router.get("/courses", response_model=List[schemas.DashboardCourseCard], summary="获取课程仪表板")
 @optimized_route("课程仪表板")
-@handle_database_errors
 async def get_dashboard_courses(
     status_filter: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
@@ -260,7 +260,6 @@ async def get_dashboard_courses(
 
 @router.get("/courses/stats", response_model=Dict[str, Any], summary="获取课程统计信息")
 @optimized_route("课程统计")
-@handle_database_errors
 async def get_course_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -278,7 +277,6 @@ async def get_course_stats(
 
 @router.get("/real-time", response_model=Dict[str, Any], summary="获取实时数据")
 @optimized_route("实时数据")
-@handle_database_errors
 async def get_real_time_data(
     background_tasks: BackgroundTasks,
     current_user_id: int = Depends(get_current_user_id),
@@ -325,7 +323,6 @@ async def get_real_time_data(
 
 @router.get("/recommendations", response_model=Dict[str, Any], summary="获取个性化推荐")
 @optimized_route("个性化推荐")
-@handle_database_errors
 async def get_personalized_recommendations(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -384,7 +381,6 @@ async def get_personalized_recommendations(
 
 @router.get("/export", summary="导出仪表板数据")
 @optimized_route("数据导出")
-@handle_database_errors
 async def export_dashboard_data(
     background_tasks: BackgroundTasks,
     current_user_id: int = Depends(get_current_user_id),

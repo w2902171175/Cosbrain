@@ -23,7 +23,7 @@ from project.services.projects_service import (
     ProjectService, ProjectApplicationService, ProjectMemberService, 
     ProjectFileService, ProjectLikeService, ProjectUtils
 )
-from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.core.error_decorators import database_transaction
 from project.utils.optimization.router_optimization import optimized_route, router_optimizer
 from project.utils.async_cache.async_tasks import submit_background_task, TaskPriority
 from project.utils.optimization.production_utils import cache_manager
@@ -35,7 +35,6 @@ router = APIRouter(prefix="/projects", tags=["项目管理"])
 
 @router.get("", response_model=List[schemas.ProjectResponse], summary="获取所有项目")
 @optimized_route("获取项目列表")
-@handle_database_errors
 async def get_all_projects(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
@@ -63,7 +62,6 @@ async def get_all_projects(
 
 @router.get("/{project_id}", response_model=schemas.ProjectResponse, summary="获取项目详情")
 @optimized_route("获取项目详情")
-@handle_database_errors
 async def get_project_by_id(
     project_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -76,7 +74,6 @@ async def get_project_by_id(
 
 @router.post("", response_model=schemas.ProjectResponse, summary="创建新项目")
 @optimized_route("创建项目")
-@handle_database_errors
 async def create_project(
     background_tasks: BackgroundTasks,
     title: str = Form(...),
@@ -157,7 +154,6 @@ async def create_project(
 
 @router.put("/{project_id}", response_model=schemas.ProjectResponse, summary="更新项目信息")
 @optimized_route("更新项目")
-@handle_database_errors
 async def update_project(
     project_id: int,
     title: Optional[str] = Form(None),
@@ -243,7 +239,6 @@ async def update_project(
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除项目")
 @optimized_route("删除项目")
-@handle_database_errors
 async def delete_project(
     project_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -260,7 +255,6 @@ async def delete_project(
 
 @router.post("/{project_id}/apply", response_model=schemas.ProjectApplicationResponse, summary="申请加入项目")
 @optimized_route("申请加入项目")
-@handle_database_errors
 async def apply_to_project(
     project_id: int,
     background_tasks: BackgroundTasks,
@@ -310,7 +304,6 @@ async def apply_to_project(
 
 @router.get("/{project_id}/applications", response_model=List[schemas.ProjectApplicationResponse], summary="获取项目申请列表")
 @optimized_route("获取项目申请")
-@handle_database_errors
 async def get_project_applications(
     project_id: int,
     status_filter: Optional[str] = Query(None),
@@ -329,7 +322,6 @@ async def get_project_applications(
 
 @router.put("/applications/{application_id}/{action}", response_model=schemas.ProjectApplicationResponse, summary="处理项目申请")
 @optimized_route("处理项目申请")
-@handle_database_errors
 async def process_project_application(
     application_id: int,
     action: Literal["accept", "reject"],
@@ -364,7 +356,6 @@ async def process_project_application(
 
 @router.get("/{project_id}/members", response_model=List[schemas.ProjectMemberResponse], summary="获取项目成员列表")
 @optimized_route("获取项目成员")
-@handle_database_errors
 async def get_project_members(
     project_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -380,7 +371,6 @@ async def get_project_members(
 
 @router.delete("/{project_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT, summary="移除项目成员")
 @optimized_route("移除项目成员")
-@handle_database_errors
 async def remove_project_member(
     project_id: int,
     member_id: int,
@@ -413,7 +403,6 @@ async def remove_project_member(
 
 @router.post("/{project_id}/files", response_model=schemas.ProjectFileResponse, summary="上传项目文件")
 @optimized_route("上传项目文件")
-@handle_database_errors
 async def upload_project_file(
     project_id: int,
     background_tasks: BackgroundTasks,
@@ -488,7 +477,6 @@ async def upload_project_file(
 
 @router.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除项目文件")
 @optimized_route("删除项目文件")
-@handle_database_errors
 async def delete_project_file(
     file_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -507,7 +495,6 @@ async def delete_project_file(
 
 @router.post("/{project_id}/like", response_model=schemas.ProjectLikeResponse, summary="点赞项目")
 @optimized_route("点赞项目")
-@handle_database_errors
 async def like_project(
     project_id: int,
     background_tasks: BackgroundTasks,
@@ -537,7 +524,6 @@ async def like_project(
 
 @router.delete("/{project_id}/unlike", status_code=status.HTTP_204_NO_CONTENT, summary="取消点赞项目")
 @optimized_route("取消点赞项目")
-@handle_database_errors
 async def unlike_project(
     project_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -556,7 +542,6 @@ async def unlike_project(
 
 @router.get("/search", response_model=List[schemas.ProjectResponse], summary="搜索项目")
 @optimized_route("搜索项目")
-@handle_database_errors
 async def search_projects(
     background_tasks: BackgroundTasks,
     q: str = Query(..., min_length=2, description="搜索关键词"),
@@ -603,7 +588,6 @@ async def search_projects(
 
 @router.get("/stats", response_model=schemas.ProjectStatsResponse, summary="获取项目统计信息")
 @optimized_route("项目统计")
-@handle_database_errors
 async def get_project_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)

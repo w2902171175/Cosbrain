@@ -20,7 +20,7 @@ import project.schemas as schemas
 from project.services.quick_notes_service import (
     QuickNotesService, QuickNotesUtils, QuickNotesEmbeddingService
 )
-from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.core.error_decorators import database_transaction
 from project.utils.optimization.router_optimization import optimized_route, router_optimizer
 from project.utils.async_cache.async_tasks import submit_background_task, TaskPriority
 from project.utils.optimization.production_utils import cache_manager
@@ -71,7 +71,6 @@ async def _build_combined_text_and_embedding_optimized(
 
 @router.post("/", response_model=schemas.DailyRecordResponse, summary="创建新随手记录")
 @optimized_route("创建随手记录")
-@handle_database_errors
 async def create_daily_record(
     background_tasks: BackgroundTasks,
     record_data: schemas.DailyRecordBase,
@@ -112,7 +111,6 @@ async def create_daily_record(
 
 @router.get("/", response_model=List[schemas.DailyRecordResponse], summary="获取当前用户所有随手记录")
 @optimized_route("获取随手记录列表")
-@handle_database_errors
 async def get_all_daily_records(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -156,7 +154,6 @@ async def get_all_daily_records(
 
 @router.get("/{record_id}", response_model=schemas.DailyRecordResponse, summary="获取指定随手记录详情")
 @optimized_route("获取随手记录详情")
-@handle_database_errors
 async def get_daily_record_by_id(
     record_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -175,7 +172,6 @@ async def get_daily_record_by_id(
 
 @router.put("/{record_id}", response_model=schemas.DailyRecordResponse, summary="更新指定随手记录")
 @optimized_route("更新随手记录")
-@handle_database_errors
 async def update_daily_record(
     record_id: int,
     background_tasks: BackgroundTasks,
@@ -225,7 +221,6 @@ async def update_daily_record(
 
 @router.delete("/{record_id}", summary="删除指定随手记录")
 @optimized_route("删除随手记录")
-@handle_database_errors
 async def delete_daily_record(
     record_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -249,7 +244,6 @@ async def delete_daily_record(
 
 @router.get("/analytics/summary", summary="获取随手记录分析摘要")
 @optimized_route("获取记录分析")
-@handle_database_errors
 async def get_records_analytics(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -270,7 +264,6 @@ async def get_records_analytics(
 
 @router.post("/search", summary="搜索随手记录")
 @optimized_route("搜索随手记录")
-@handle_database_errors
 async def search_daily_records(
     query: str = Query(..., description="搜索关键词"),
     current_user_id: int = Depends(get_current_user_id),
@@ -305,7 +298,6 @@ async def search_daily_records(
 
 @router.get("/export", summary="导出随手记录")
 @optimized_route("导出随手记录")
-@handle_database_errors
 async def export_daily_records(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),

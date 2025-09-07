@@ -14,7 +14,7 @@
 6. 完整的批量操作和高级搜索功能
 
 统一优化特性：
-- 使用@optimized_route和@handle_database_errors装饰器
+- 使用@optimized_route装饰器（已包含错误处理）
 - 统一的database_transaction事务管理
 - 异步任务处理和缓存优化
 - 专业服务类和工具函数
@@ -64,7 +64,6 @@ router = APIRouter(
 
 @router.post("/", response_model=schemas.FolderResponseNew, summary="创建文件夹")
 @optimized_route("创建课程笔记文件夹")
-@handle_database_errors
 async def create_folder(
     background_tasks: BackgroundTasks,
     folder_data: schemas.FolderCreateNew,
@@ -105,7 +104,6 @@ async def create_folder(
 
 @router.get("/", response_model=List[schemas.FolderResponseNew], summary="获取用户的文件夹树")
 @optimized_route("获取课程笔记文件夹树")
-@handle_database_errors
 async def get_user_folders(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -119,7 +117,6 @@ async def get_user_folders(
 
 @router.get("/{folder_id}", response_model=schemas.FolderResponseNew, summary="获取文件夹详情")
 @optimized_route("获取课程笔记文件夹详情")
-@handle_database_errors
 async def get_folder_detail(
     folder_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -134,7 +131,6 @@ async def get_folder_detail(
 
 @router.put("/{folder_id}", response_model=schemas.FolderResponseNew, summary="更新文件夹")
 @optimized_route("更新课程笔记文件夹")
-@handle_database_errors
 async def update_folder(
     folder_id: int,
     folder_data: schemas.FolderUpdate,
@@ -163,7 +159,6 @@ async def update_folder(
 
 @router.delete("/{folder_id}", summary="删除文件夹")
 @optimized_route("删除课程笔记文件夹")
-@handle_database_errors
 async def delete_folder(
     folder_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -186,7 +181,6 @@ async def delete_folder(
 
 @router.post("/{folder_id}/notes", response_model=schemas.NoteResponse, summary="在指定文件夹中创建笔记")
 @optimized_route("创建课程笔记")
-@handle_database_errors
 async def create_note_in_folder(
     folder_id: int,
     background_tasks: BackgroundTasks,
@@ -248,7 +242,6 @@ async def create_note_in_folder(
 
 @router.get("/{folder_id}/notes", response_model=List[schemas.NoteResponse], summary="获取文件夹中的笔记")
 @optimized_route("获取文件夹笔记列表")
-@handle_database_errors
 async def get_folder_notes(
     folder_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -292,7 +285,6 @@ async def get_folder_notes(
 
 @router.get("/notes/{note_id}", response_model=schemas.NoteResponse, summary="获取指定笔记详情")
 @optimized_route("获取课程笔记详情")
-@handle_database_errors
 async def get_note_detail(
     note_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -307,7 +299,6 @@ async def get_note_detail(
 
 @router.get("/notes", response_model=List[schemas.NoteResponse], summary="获取用户所有笔记")
 @optimized_route("获取用户所有课程笔记")
-@handle_database_errors
 async def get_user_notes(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -361,7 +352,6 @@ async def get_user_notes(
 
 @router.put("/notes/{note_id}", response_model=schemas.NoteResponse, summary="更新笔记")
 @optimized_route("更新课程笔记")
-@handle_database_errors
 async def update_note(
     note_id: int,
     background_tasks: BackgroundTasks,
@@ -413,7 +403,6 @@ async def update_note(
 
 @router.delete("/notes/{note_id}", summary="删除笔记")
 @optimized_route("删除课程笔记")
-@handle_database_errors
 async def delete_note(
     note_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -434,7 +423,6 @@ async def delete_note(
 
 @router.post("/notes/{note_id}/move", response_model=schemas.NoteResponse, summary="移动笔记到其他文件夹")
 @optimized_route("移动课程笔记")
-@handle_database_errors
 async def move_note(
     note_id: int,
     target_folder_id: int = Form(...),
@@ -459,7 +447,6 @@ async def move_note(
 
 @router.post("/notes/batch-move", summary="批量移动笔记")
 @optimized_route("批量移动课程笔记")
-@handle_database_errors
 async def batch_move_notes(
     note_ids: List[int] = Form(...),
     target_folder_id: int = Form(...),
@@ -485,7 +472,6 @@ async def batch_move_notes(
 
 @router.delete("/notes/batch-delete", summary="批量删除笔记")
 @optimized_route("批量删除课程笔记")
-@handle_database_errors
 async def batch_delete_notes(
     note_ids: List[int] = Form(...),
     current_user_id: int = Depends(get_current_user_id),
@@ -512,7 +498,6 @@ async def batch_delete_notes(
 
 @router.get("/search", response_model=List[schemas.NoteResponse], summary="搜索笔记")
 @optimized_route("搜索课程笔记")
-@handle_database_errors
 async def search_notes(
     query: str = Query(..., description="搜索关键词"),
     current_user_id: int = Depends(get_current_user_id),
@@ -543,7 +528,6 @@ async def search_notes(
 
 @router.get("/stats", response_model=schemas.FolderStatsResponse, summary="获取统计信息")
 @optimized_route("获取课程笔记统计")
-@handle_database_errors
 async def get_notes_statistics(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -570,7 +554,6 @@ async def get_notes_statistics(
 
 @router.get("/export", summary="导出笔记")
 @optimized_route("导出课程笔记")
-@handle_database_errors
 async def export_notes(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -619,7 +602,6 @@ async def export_notes(
 
 @router.patch("/{folder_id}/visibility", response_model=schemas.FolderResponseNew, summary="切换文件夹公开状态")
 @optimized_route("切换文件夹公开状态")
-@handle_database_errors
 async def toggle_folder_visibility(
     folder_id: int,
     visibility_data: schemas.FolderVisibilityUpdate,

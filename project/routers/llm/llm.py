@@ -100,7 +100,6 @@ async def get_llm_providers(
 @router.post("/providers", response_model=schemas.Response)
 @optimized_route
 @handle_database_errors
-@database_transaction
 async def create_llm_provider(
     provider_data: Dict[str, Any] = Body(..., description="LLM提供商数据"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -113,10 +112,11 @@ async def create_llm_provider(
     - **provider_data**: LLM提供商数据，包含名称、类型、API地址等
     """
     try:
-        # 创建提供商
-        new_provider = LLMProviderService.create_llm_provider_optimized(
-            db, provider_data
-        )
+        # 使用事务创建提供商
+        with database_transaction(db):
+            new_provider = LLMProviderService.create_llm_provider_optimized(
+                db, provider_data
+            )
         
         # 后台任务：清理相关缓存
         background_tasks.add_task(
@@ -199,7 +199,6 @@ async def get_user_llm_configs(
 @router.post("/configs", response_model=schemas.Response)
 @optimized_route
 @handle_database_errors
-@database_transaction
 async def create_llm_config(
     config_data: Dict[str, Any] = Body(..., description="LLM配置数据"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -212,10 +211,11 @@ async def create_llm_config(
     - **config_data**: LLM配置数据，包含提供商ID、配置名称、模型参数等
     """
     try:
-        # 创建配置
-        new_config = LLMConfigService.create_llm_config_optimized(
-            db, current_user_id, config_data
-        )
+        # 使用事务创建配置
+        with database_transaction(db):
+            new_config = LLMConfigService.create_llm_config_optimized(
+                db, current_user_id, config_data
+            )
         
         # 后台任务：清理相关缓存
         background_tasks.add_task(
@@ -311,7 +311,6 @@ async def get_user_conversations(
 @router.post("/conversations", response_model=schemas.Response)
 @optimized_route
 @handle_database_errors
-@database_transaction
 async def create_conversation(
     conversation_data: Dict[str, Any] = Body(..., description="对话数据"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -324,10 +323,11 @@ async def create_conversation(
     - **conversation_data**: 对话数据，包含标题、模型名称、系统提示等
     """
     try:
-        # 创建对话
-        new_conversation = LLMConversationService.create_conversation_optimized(
-            db, current_user_id, conversation_data
-        )
+        # 使用事务创建对话
+        with database_transaction(db):
+            new_conversation = LLMConversationService.create_conversation_optimized(
+                db, current_user_id, conversation_data
+            )
         
         # 后台任务：清理相关缓存
         background_tasks.add_task(

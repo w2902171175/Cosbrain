@@ -23,8 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tts", tags=["TTS语音合成"])
 
 @router.get("/configs", response_model=schemas.PaginatedResponse)
-@optimized_route
-@handle_database_errors
+@optimized_route("获取TTS配置列表")
 async def get_tts_configs(
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(50, ge=1, le=100, description="返回的记录数"),
@@ -69,8 +68,7 @@ async def get_tts_configs(
         raise HTTPException(status_code=500, detail="获取TTS配置列表失败")
 
 @router.post("/configs", response_model=schemas.Response)
-@optimized_route
-@handle_database_errors
+@optimized_route("创建TTS配置")
 @database_transaction
 async def create_tts_config(
     config_data: Dict[str, Any] = Body(..., description="TTS配置数据"),
@@ -111,8 +109,7 @@ async def create_tts_config(
         raise HTTPException(status_code=500, detail="创建TTS配置失败")
 
 @router.get("/configs/{config_id}", response_model=schemas.Response)
-@optimized_route
-@handle_database_errors
+@optimized_route("获取TTS配置详情")
 async def get_tts_config(
     config_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -154,8 +151,7 @@ async def get_tts_config(
         raise HTTPException(status_code=500, detail="获取TTS配置失败")
 
 @router.put("/configs/{config_id}", response_model=schemas.Response)
-@optimized_route
-@handle_database_errors
+@optimized_route("更新TTS配置")
 @database_transaction
 async def update_tts_config(
     config_id: int,
@@ -206,8 +202,7 @@ async def update_tts_config(
         raise HTTPException(status_code=500, detail="更新TTS配置失败")
 
 @router.delete("/configs/{config_id}", response_model=schemas.Response)
-@optimized_route
-@handle_database_errors
+@optimized_route("删除TTS配置")
 @database_transaction
 async def delete_tts_config(
     config_id: int,
@@ -248,8 +243,7 @@ async def delete_tts_config(
         raise HTTPException(status_code=500, detail="删除TTS配置失败")
 
 @router.post("/synthesize", response_model=schemas.Response)
-@optimized_route
-@handle_database_errors
+@optimized_route("文本转语音合成")
 async def synthesize_text(
     synthesis_request: Dict[str, Any] = Body(
         ..., 
@@ -304,7 +298,7 @@ async def synthesize_text(
         raise HTTPException(status_code=500, detail="语音合成服务错误")
 
 @router.get("/providers", response_model=schemas.Response)
-@optimized_route
+@optimized_route("获取TTS提供商列表")
 async def get_tts_providers():
     """
     获取支持的TTS提供商列表
@@ -356,7 +350,7 @@ async def get_tts_providers():
         raise HTTPException(status_code=500, detail="获取提供商列表失败")
 
 @router.get("/health", response_model=schemas.Response)
-@optimized_route
+@optimized_route("TTS健康检查")
 async def tts_health_check():
     """TTS模块健康检查"""
     try:

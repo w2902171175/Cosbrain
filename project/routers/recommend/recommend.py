@@ -12,7 +12,7 @@ from datetime import datetime
 
 # 核心导入
 from project.database import get_db
-from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.core.error_decorators import handle_database_errors
 from project.utils.optimization.router_optimization import optimized_route
 import project.schemas as schemas
 from project.services.recommend_service import (
@@ -316,7 +316,6 @@ async def get_user_profile(
 @router.post("/feedback", response_model=schemas.Response)
 @optimized_route
 @handle_database_errors
-@database_transaction
 async def submit_recommendation_feedback(
     feedback_data: Dict[str, Any] = Body(
         ...,

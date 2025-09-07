@@ -98,7 +98,6 @@ router = APIRouter(
 
 @router.post("/{item_type}/{item_id}/star", summary="收藏项目、课程、知识库或笔记文件夹")
 @optimized_route("收藏项目或课程")
-@handle_database_errors
 async def star_item(
     item_type: Literal["project", "course", "knowledge_base", "note_folder"],
     item_id: int,
@@ -147,7 +146,6 @@ async def star_item(
 
 @router.delete("/{item_type}/{item_id}/unstar", status_code=status.HTTP_204_NO_CONTENT, summary="取消收藏项目、课程、知识库或笔记文件夹")
 @optimized_route("取消收藏项目或课程")
-@handle_database_errors
 async def unstar_item_endpoint(
     item_type: Literal["project", "course", "knowledge_base", "note_folder"],
     item_id: int,
@@ -168,7 +166,6 @@ async def unstar_item_endpoint(
 
 @router.get("/{item_type}/{item_id}/star-status", summary="检查项目、课程、知识库或笔记文件夹收藏状态")
 @optimized_route("检查收藏状态")
-@handle_database_errors
 async def check_star_status(
     item_type: Literal["project", "course", "knowledge_base", "note_folder"],
     item_id: int,
@@ -206,7 +203,6 @@ async def check_star_status(
 
 @router.get("/my-starred/{item_type}", summary="获取我收藏的项目、课程、知识库或笔记文件夹列表")
 @optimized_route("获取收藏列表")
-@handle_database_errors
 async def get_my_starred_items(
     item_type: Literal["project", "course", "knowledge_base", "note_folder"],
     current_user_id: int = Depends(get_current_user_id),
@@ -367,7 +363,6 @@ async def get_my_starred_items(
 
 @router.get("/statistics", summary="获取收藏统计信息")
 @optimized_route("获取收藏统计")
-@handle_database_errors
 async def get_collection_statistics(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -438,7 +433,6 @@ async def get_collection_statistics(
 
 @router.get("/popular/{item_type}", summary="获取热门收藏项目、课程、知识库或笔记文件夹")
 @optimized_route("获取热门收藏")
-@handle_database_errors
 async def get_popular_starred_items(
     item_type: Literal["project", "course", "knowledge_base", "note_folder"],
     db: Session = Depends(get_db),
@@ -516,7 +510,6 @@ async def get_popular_starred_items(
 
 @router.post("/batch-star", summary="批量收藏项目、课程、知识库和笔记文件夹")
 @optimized_route("批量收藏")
-@handle_database_errors
 @log_operation("批量收藏")
 async def batch_star_items(
     items: List[Dict[str, Any]],  # [{"type": "project", "id": 1}, {"type": "course", "id": 2}, {"type": "knowledge_base", "id": 3}, {"type": "note_folder", "id": 4}]
@@ -549,7 +542,6 @@ async def batch_star_items(
 
 @router.delete("/batch-unstar", summary="批量取消收藏")
 @optimized_route("批量取消收藏")
-@handle_database_errors
 @log_operation("批量取消收藏")
 async def batch_unstar_items(
     items: List[Dict[str, Any]],  # [{"type": "project", "id": 1}, {"type": "course", "id": 2}, {"type": "knowledge_base", "id": 3}, {"type": "note_folder", "id": 4}]
@@ -619,7 +611,6 @@ async def batch_unstar_items(
 
 @router.get("/discover/knowledge-bases", summary="发现公开的知识库")
 @optimized_route("发现公开知识库")
-@handle_database_errors
 async def discover_public_knowledge_bases(
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1, description="页码"),
@@ -697,7 +688,6 @@ async def discover_public_knowledge_bases(
 
 @router.get("/discover/note-folders", summary="发现公开的课程笔记文件夹")
 @optimized_route("发现公开笔记文件夹")
-@handle_database_errors
 async def discover_public_note_folders(
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1, description="页码"),

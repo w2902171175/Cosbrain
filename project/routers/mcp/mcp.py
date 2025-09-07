@@ -22,7 +22,7 @@ from project.services.mcp_service import (
 )
 
 # 优化工具导入
-from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.core.error_decorators import database_transaction
 from project.utils.optimization.router_optimization import optimized_route, router_optimizer
 from project.utils.async_cache.async_tasks import submit_background_task, TaskPriority
 from project.utils.optimization.production_utils import cache_manager
@@ -36,7 +36,6 @@ router = APIRouter(prefix="/mcp", tags=["MCP模型上下文协议"])
 
 @router.get("/configs", response_model=List[schemas.UserMcpConfigResponse], summary="获取MCP配置列表")
 @optimized_route("获取MCP配置列表")
-@handle_database_errors
 async def get_user_mcp_configs(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -68,7 +67,6 @@ async def get_user_mcp_configs(
 
 @router.post("/configs", response_model=schemas.UserMcpConfigResponse, summary="创建MCP配置")
 @optimized_route("创建MCP配置")
-@handle_database_errors
 async def create_mcp_config(
     config_data: schemas.UserMcpConfigCreate,
     background_tasks: BackgroundTasks,
@@ -97,7 +95,6 @@ async def create_mcp_config(
 
 @router.get("/configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="获取MCP配置详情")
 @optimized_route("获取MCP配置详情")
-@handle_database_errors
 async def get_mcp_config(
     config_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -128,7 +125,6 @@ async def get_mcp_config(
 
 @router.put("/configs/{config_id}", response_model=schemas.UserMcpConfigResponse, summary="更新MCP配置")
 @optimized_route("更新MCP配置")
-@handle_database_errors
 async def update_mcp_config(
     config_id: int,
     update_data: schemas.UserMcpConfigCreate,
@@ -164,7 +160,6 @@ async def update_mcp_config(
 
 @router.delete("/configs/{config_id}", summary="删除MCP配置")
 @optimized_route("删除MCP配置")
-@handle_database_errors
 async def delete_mcp_config(
     config_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -188,7 +183,6 @@ async def delete_mcp_config(
 
 @router.post("/configs/{config_id}/test", response_model=schemas.McpStatusResponse, summary="测试MCP连接")
 @optimized_route("测试MCP连接")
-@handle_database_errors
 async def test_mcp_connection(
     config_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -213,7 +207,6 @@ async def test_mcp_connection(
 
 @router.get("/configs/{config_id}/status", response_model=schemas.McpStatusResponse, summary="获取MCP连接状态")
 @optimized_route("获取MCP连接状态")
-@handle_database_errors
 async def get_mcp_status(
     config_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -245,7 +238,6 @@ async def get_mcp_status(
 
 @router.get("/configs/{config_id}/tools", response_model=List[schemas.McpToolDefinition], summary="获取MCP工具列表")
 @optimized_route("获取MCP工具列表")
-@handle_database_errors
 async def get_mcp_tools(
     config_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -274,7 +266,6 @@ async def get_mcp_tools(
 
 @router.post("/configs/batch-test", summary="批量测试MCP连接")
 @optimized_route("批量测试MCP连接")
-@handle_database_errors
 async def batch_test_mcp_connections(
     background_tasks: BackgroundTasks,
     current_user_id: int = Depends(get_current_user_id),
@@ -315,7 +306,6 @@ async def batch_test_mcp_connections(
 
 @router.get("/stats", summary="获取MCP统计信息")
 @optimized_route("获取MCP统计信息")
-@handle_database_errors
 async def get_mcp_stats(
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)

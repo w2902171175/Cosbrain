@@ -21,7 +21,7 @@ import project.schemas as schemas
 from project.services.forum_service import (
     ForumService, ForumCommentService, ForumLikeService, ForumUtils
 )
-from project.utils.core.error_decorators import handle_database_errors, database_transaction
+from project.utils.core.error_decorators import database_transaction
 from project.utils.optimization.router_optimization import optimized_route, router_optimizer
 from project.utils.async_cache.async_tasks import submit_background_task, TaskPriority
 from project.utils.optimization.production_utils import cache_manager
@@ -33,7 +33,6 @@ router = APIRouter(prefix="/forum", tags=["forum"])
 
 @router.post("/topics", status_code=status.HTTP_201_CREATED, summary="发布话题")
 @optimized_route("发布话题")
-@handle_database_errors
 async def create_topic(
     background_tasks: BackgroundTasks,
     title: str = Form(...),
@@ -78,7 +77,6 @@ async def create_topic(
 
 @router.get("/topics", summary="获取话题列表")
 @optimized_route("获取话题列表")
-@handle_database_errors
 async def get_topics(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=100, description="返回条数"),
@@ -102,7 +100,6 @@ async def get_topics(
 
 @router.get("/topics/{topic_id}", summary="获取话题详情")
 @optimized_route("获取话题详情")
-@handle_database_errors
 async def get_topic_detail(
     topic_id: int,
     background_tasks: BackgroundTasks,
@@ -125,7 +122,6 @@ async def get_topic_detail(
 
 @router.put("/topics/{topic_id}", summary="更新话题")
 @optimized_route("更新话题")
-@handle_database_errors
 async def update_topic(
     topic_id: int,
     title: Optional[str] = Form(None),
@@ -164,7 +160,6 @@ async def update_topic(
 
 @router.delete("/topics/{topic_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除话题")
 @optimized_route("删除话题")
-@handle_database_errors
 async def delete_topic(
     topic_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -181,7 +176,6 @@ async def delete_topic(
 
 @router.get("/topics/{topic_id}/comments", summary="获取话题评论")
 @optimized_route("获取评论列表")
-@handle_database_errors
 async def get_comments(
     topic_id: int,
     skip: int = Query(0, ge=0),
@@ -201,7 +195,6 @@ async def get_comments(
 
 @router.post("/topics/{topic_id}/comments", status_code=status.HTTP_201_CREATED, summary="发布评论")
 @optimized_route("发布评论")
-@handle_database_errors
 async def create_comment(
     topic_id: int,
     background_tasks: BackgroundTasks,
@@ -239,7 +232,6 @@ async def create_comment(
 
 @router.put("/comments/{comment_id}", summary="更新评论")
 @optimized_route("更新评论")
-@handle_database_errors
 async def update_comment(
     comment_id: int,
     content: str = Form(...),
@@ -281,7 +273,6 @@ async def update_comment(
 
 @router.delete("/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除评论")
 @optimized_route("删除评论")
-@handle_database_errors
 async def delete_comment(
     comment_id: int,
     current_user_id: int = Depends(get_current_user_id),
@@ -326,7 +317,6 @@ async def delete_comment(
 
 @router.post("/like", summary="点赞/取消点赞")
 @optimized_route("点赞操作")
-@handle_database_errors
 async def toggle_like(
     target_type: str = Form(..., regex="^(topic|comment)$"),
     target_id: int = Form(...),
@@ -345,7 +335,6 @@ async def toggle_like(
 
 @router.post("/follow", summary="关注/取消关注用户")
 @optimized_route("关注操作")
-@handle_database_errors
 async def toggle_follow(
     target_user_id: int = Form(...),
     current_user_id: int = Depends(get_current_user_id),
@@ -401,7 +390,6 @@ async def toggle_follow(
 
 @router.get("/search", summary="智能搜索")
 @optimized_route("论坛搜索")
-@handle_database_errors
 async def search_topics(
     q: str = Query(..., min_length=2, description="搜索关键词"),
     skip: int = Query(0, ge=0),
@@ -435,7 +423,6 @@ async def search_topics(
 
 @router.get("/trending", summary="获取趋势话题")
 @optimized_route("趋势话题")
-@handle_database_errors
 async def get_trending_topics(
     limit: int = Query(10, ge=1, le=50),
     days: int = Query(7, ge=1, le=30, description="时间范围（天）"),
@@ -473,7 +460,6 @@ async def get_trending_topics(
 
 @router.post("/upload/single", summary="单文件上传")
 @optimized_route("单文件上传")
-@handle_database_errors
 async def upload_single_file(
     file: UploadFile = File(...),
     current_user_id: int = Depends(get_current_user_id)
