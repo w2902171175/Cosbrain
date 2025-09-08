@@ -1,0 +1,102 @@
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: cosbrain-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cosbrain}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: cosbrain-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # One-off database initialization (creates tables; DROPS existing ones!).
+  # Run manually when needed; not started by default.
+  db-init:
+    profiles: ["init"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: cosbrain-db-init
+    env_file:
+      - ../.env.docker
+    environment:
+      # Compose will expand env vars from .env.docker for the connection string
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-cosbrain}
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["python", "-c", "import project.database as d; d.init_db()"]
+    restart: "no"
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: cosbrain-app
+    env_file:
+      - ../.env.docker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../logs:/app/logs
+      - ../uploaded_files:/app/uploaded_files
+      - ../yara/output:/app/yara/output
+    restart: unless-stopped
+
+  # Optional local S3-compatible storage for development
+  minio:
+    image: minio/minio:latest
+    container_name: cosbrain-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address :9001
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console UI
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh -c
+    command: >-
+      "mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
+       mc mb -p local/${S3_BUCKET_NAME:-cosbrain} || true &&
+       mc anonymous set download local/${S3_BUCKET_NAME:-cosbrain} || true"
+    restart: "no"
+
+volumes:
+  pgdata:
+  minio-data:

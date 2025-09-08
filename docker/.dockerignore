@@ -1,0 +1,39 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# VCS
+.git
+.gitignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Local data
+logs/
+temp_audio/
+uploaded_files/
+yara/output/
+.env
+
+# Cache
+.pytest_cache/
+.mypy_cache/
+__pypackages__/
+
+# Node
+node_modules/

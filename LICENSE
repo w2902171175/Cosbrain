@@ -1,90 +1,81 @@
-鸿庆书云创新协作平台开源许可证 v1.0
+**许可协议 (Licensing)**
 
-版权所有 (c) 2025 鸿庆书云创新协作平台
+本项目采用**区分用户的双重许可 (User-Segmented Dual Licensing)** 模式。
 
-本许可证适用于本软件及其相关文档文件（以下称"软件"）。
+**核心原则：**
 
-许可条件：
+* **个人用户:** 默认适用 **GNU Affero 通用公共许可证 v3.0 (AGPLv3)**。  
+* **任何企业/组织:** **必须** 获取 **商业许可证 (Commercial License)**。
 
-1. 使用权限：
-   - 允许个人、教育机构和非营利组织免费使用、复制、修改和分发本软件
-   - 禁止任何形式的商业使用，包括但不限于：
-     * 直接销售本软件
-     * 将本软件集成到商业产品中
-     * 使用本软件提供付费服务
-     * 基于本软件进行盈利性活动
 
-2. 开源要求：
-   - 任何基于本软件的衍生作品必须以相同或兼容的开源许可证发布
-   - 衍生作品的源代码必须公开可获取
-   - 不得将衍生作品转为闭源或专有软件
 
-3. 署名要求：
-   - 在软件的所有副本或重要部分中保留本版权声明
-   - 在衍生作品中明确标注原始来源为"鸿庆书云创新协作平台"
-   - 提供指向原始项目的链接或引用
+**1. 开源许可证 (Open Source License): AGPLv3 - 适用于个人用户**
 
-4. 分发条件：
-   - 分发时必须包含完整的许可证文本
-   - 不得移除或修改版权声明和许可证信息
-   - 必须以相同条件分发衍生作品
+* 如果您是个人用户，您可以在 **AGPLv3** 的条款下自由使用、修改和分发 cosbrain。AGPLv3 的完整文本可以访问 [https://www.gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html) 获取。  
+* **核心义务：** AGPLv3 的一个关键要求是，如果您修改了 cosbrain 并通过网络提供服务，或者分发了修改后的版本，您必须以 AGPLv3 许可证向接收者提供相应的**完整源代码**。如果您希望避免此源代码公开义务，您也需要考虑获取商业许可证（见下文）。  
+* 使用前请务必仔细阅读并理解 AGPLv3 的所有条款。
 
-5. 免责声明：
-   本软件按"原样"提供，不提供任何明示或暗示的保证，包括但不限于适销性、
-   特定用途适用性和非侵权性的保证。在任何情况下，作者或版权持有者均不对
-   任何索赔、损害或其他责任负责，无论这些追责来自合同、侵权或其他行为中，
-   还是产生于、源于或有关于本软件以及本软件的使用或其他处置。
+**2. 商业许可证 (Commercial License) - 适用于所有企业/组织，或希望规避 AGPLv3 义务的个人用户**
 
-6. 终止条款：
-   如违反本许可证的任何条款，您的使用权将自动终止。
+* **强制要求：** 如果您代表任何规模的企业或组织（包括公司、非营利组织、政府机构、教育机构等）使用本软件，您**必须**联系我们获取并签署一份商业许可证才能使用 cosbrain。  
+* **个人用户选择：** 即使您是个人用户，但如果您的使用场景**无法满足 AGPLv3 的条款要求**（特别是关于**源代码公开**的义务），或者您需要 AGPLv3 **未提供**的特定商业条款（如保证、赔偿、无 Copyleft 限制等），您也**必须**联系我们获取并签署一份商业许可证。  
+* **需要商业许可证的常见情况包括（但不限于）：**  
+  * 您是企业/组织用户。
+  * （个人用户）您希望分发修改过的 cosbrain 版本，但**不希望**根据 AGPLv3 公开您修改部分的源代码。  
+  * （个人用户）您希望基于修改过的 cosbrain 提供网络服务（SaaS），但**不希望**根据 AGPLv3 向服务使用者提供修改后的源代码。  
+  * （个人用户）您的公司政策、客户合同或项目要求不允许使用 AGPLv3 许可的软件，或要求闭源分发及保密。  
+* 商业许可证将为您提供豁免 AGPLv3 义务（如源代码公开）的权利，并可能包含额外的商业保障条款。  
+* **获取商业许可：** 请通过邮箱 **mail@675222.xyz** 联系 cosbrain 开发团队洽谈商业授权事宜。
 
-联系方式：
-如需商业使用许可，请联系版权持有者协商商业授权协议。
+**3. 贡献 (Contributions)**
+
+* 我们欢迎社区对 cosbrain 的贡献。所有向本项目提交的贡献都将被视为在 **AGPLv3** 许可证下提供。  
+* 通过向本项目提交贡献（例如通过 Pull Request），即表示您同意您的代码以 AGPLv3 许可证授权给本项目及所有后续使用者（无论这些使用者最终遵循 AGPLv3 还是商业许可）。  
+* 您也理解并同意，您的贡献可能会被包含在根据商业许可证分发的 cosbrain 版本中。
+
+**4. 其他条款 (Other Terms)**
+
+* 关于商业许可证的具体条款和条件，以双方签署的正式商业许可协议为准。  
+* 项目维护者保留根据需要更新本许可政策（包括用户规模定义和阈值）的权利。相关更新将通过项目官方渠道（如代码仓库、官方网站）进行通知。
 
 ---
 
-Hongqing Shuyun Innovation Collaboration Platform Open Source License v1.0
+**Licensing**
 
-Copyright (c) 2025 Hongqing Shuyun Innovation Collaboration Platform
+This project employs a **User-Segmented Dual Licensing** model.
 
-This license applies to this software and its associated documentation files (the "Software").
+**Core Principle:**
 
-License Terms:
+* **Individual Users:** Governed by default under the **GNU Affero General Public License v3.0 (AGPLv3)**.  
+* **Any Organization/Enterprise:** **Must** obtain a **Commercial License**.
 
-1. Usage Rights:
-   - Free use, copying, modification, and distribution for individuals, educational institutions, and non-profit organizations
-   - Commercial use is strictly prohibited, including but not limited to:
-     * Direct sale of the Software
-     * Integration into commercial products
-     * Providing paid services using the Software
-     * Any profit-making activities based on the Software
 
-2. Open Source Requirements:
-   - Any derivative works must be released under the same or compatible open source license
-   - Source code of derivative works must be publicly available
-   - Derivative works cannot be converted to closed source or proprietary software
 
-3. Attribution Requirements:
-   - Retain this copyright notice in all copies or substantial portions of the Software
-   - Clearly indicate the original source as "Hongqing Shuyun Innovation Collaboration Platform" in derivative works
-   - Provide a link or reference to the original project
+**1. Open Source License: AGPLv3 - For Individuals and Organizations of 10 or Fewer**
 
-4. Distribution Terms:
-   - Must include the complete license text when distributing
-   - Cannot remove or modify copyright notices and license information
-   - Must distribute derivative works under the same terms
+* If you are an individual user, or if your organization meets the "10 or Fewer Individuals" definition above, you are free to use, modify, and distribute Cherry Studio under the terms of the **AGPLv3**. The full text of the AGPLv3 can be found in the LICENSE file at [https://www.gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html).  
+* **Core Obligation:** A key requirement of the AGPLv3 is that if you modify Cherry Studio and make it available over a network, or distribute the modified version, you must provide the **complete corresponding source code** under the AGPLv3 license to the recipients. Even if you qualify under the "10 or Fewer Individuals" rule, if you wish to avoid this source code disclosure obligation, you will need to obtain a Commercial License (see below).  
+* Please read and understand the full terms of the AGPLv3 carefully before use.
 
-5. Disclaimer:
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-   SOFTWARE.
+**2. Commercial License - For Organizations with More Than 10 Individuals, or Users Needing to Avoid AGPLv3 Obligations**
 
-6. Termination:
-   Your rights under this license terminate automatically if you violate any of its terms.
+* **Mandatory Requirement:** If your organization does **not** meet the "10 or Fewer Individuals" definition above (i.e., 11 or more individuals can access, use, or benefit from the software), you **must** contact us to obtain and execute a Commercial License to use Cherry Studio.  
+* **Voluntary Option:** Even if your organization meets the "10 or Fewer Individuals" condition, if your intended use case **cannot comply with the terms of the AGPLv3** (particularly the obligations regarding **source code disclosure**), or if you require specific commercial terms **not offered** by the AGPLv3 (such as warranties, indemnities, or freedom from copyleft restrictions), you also **must** contact us to obtain and execute a Commercial License.  
+* **Common scenarios requiring a Commercial License include (but are not limited to):**  
+  * Your organization has more than 10 individuals who can access, use, or benefit from the software.  
+  * (Regardless of organization size) You wish to distribute a modified version of Cherry Studio but **do not want** to disclose the source code of your modifications under AGPLv3.  
+  * (Regardless of organization size) You wish to provide a network service (SaaS) based on a modified version of Cherry Studio but **do not want** to provide the modified source code to users of the service under AGPLv3.  
+  * (Regardless of organization size) Your corporate policies, client contracts, or project requirements prohibit the use of AGPLv3-licensed software or mandate closed-source distribution and confidentiality.  
+* The Commercial License grants you rights exempting you from AGPLv3 obligations (like source code disclosure) and may include additional commercial assurances.  
+* **Obtaining a Commercial License:** Please contact the Cherry Studio development team via email at **mail@675222.xyz** to discuss commercial licensing options.
 
-Contact:
-For commercial licensing, please contact the copyright holder to negotiate a commercial license agreement.
+**3. Contributions**
+
+* We welcome community contributions to Cherry Studio. All contributions submitted to this project are considered to be offered under the **AGPLv3** license.  
+* By submitting a contribution to this project (e.g., via a Pull Request), you agree to license your code under the AGPLv3 to the project and all its downstream users (regardless of whether those users ultimately operate under AGPLv3 or a Commercial License).  
+* You also understand and agree that your contribution may be included in distributions of Cherry Studio offered under our commercial license.
+
+**4. Other Terms**
+
+* The specific terms and conditions of the Commercial License are governed by the formal commercial license agreement signed by both parties.  
+* The project maintainers reserve the right to update this licensing policy (including the definition and threshold for user count) as needed. Updates will be communicated through official project channels (e.g., code repository, official website).

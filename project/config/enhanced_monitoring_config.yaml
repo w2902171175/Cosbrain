@@ -1,0 +1,305 @@
+# 监控告警系统配置文件
+# 配置各种阈值、通知渠道、自动修复规则和健康检查
+
+# 指标阈值配置
+thresholds:
+  # 系统CPU使用率
+  system.cpu.usage:
+    warning: 70.0
+    error: 85.0
+    critical: 95.0
+    comparison: gt
+    duration: 60
+    enabled: true
+    
+  # 系统内存使用率
+  system.memory.usage:
+    warning: 80.0
+    error: 90.0
+    critical: 95.0
+    comparison: gt
+    duration: 60
+    enabled: true
+    
+  # 系统磁盘使用率
+  system.disk.usage:
+    warning: 80.0
+    error: 90.0
+    critical: 95.0
+    comparison: gt
+    duration: 60
+    enabled: true
+    
+  # Redis连接数
+  app.redis.connected_clients:
+    warning: 50
+    error: 80
+    critical: 100
+    comparison: gt
+    duration: 60
+    enabled: true
+    
+  # 任务队列长度
+  app.queue.pending_tasks:
+    warning: 50
+    error: 100
+    critical: 200
+    comparison: gt
+    duration: 60
+    enabled: true
+    
+  # 缓存命中率
+  app.cache.hit_rate:
+    warning: 70.0
+    error: 50.0
+    critical: 30.0
+    comparison: lt
+    duration: 300
+    enabled: true
+    
+  # 系统负载
+  system.load.1min:
+    warning: 2.0
+    error: 4.0
+    critical: 8.0
+    comparison: gt
+    duration: 60
+    enabled: true
+    
+  # 可用内存
+  system.memory.available:
+    warning: 2.0  # GB
+    error: 1.0    # GB
+    critical: 0.5 # GB
+    comparison: lt
+    duration: 60
+    enabled: true
+    
+  # 磁盘剩余空间
+  system.disk.free:
+    warning: 10.0  # GB
+    error: 5.0     # GB
+    critical: 2.0  # GB
+    comparison: lt
+    duration: 60
+    enabled: true
+
+# 通知渠道配置
+notifications:
+  # 邮件通知
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    username: "your-email@gmail.com"
+    password: "your-app-password"
+    recipients:
+      - "admin@company.com"
+      - "devops@company.com"
+      - "sre@company.com"
+      
+  # Webhook通知（Slack、钉钉、企业微信等）
+  webhook:
+    url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer your-token"
+
+# 自动修复规则配置
+healing:
+  # 内存使用率过高时释放内存
+  "system.memory.usage": "free_memory"
+  
+  # 缓存相关问题时清理缓存
+  "app.cache.*": "clear_cache"
+  
+  # 磁盘空间不足时清理临时文件
+  "system.disk.*": "cleanup_temp_files"
+
+# 健康检查配置
+health_checks:
+  # Redis连接检查
+  redis_connection:
+    function: "check_redis_connection"
+    interval: 60
+    
+  # 磁盘空间检查
+  disk_space:
+    function: "check_disk_space"
+    interval: 300
+    
+  # 内存使用检查
+  memory_usage:
+    function: "check_memory_usage"
+    interval: 120
+    
+  # 数据库连接检查
+  database_connection:
+    function: "check_database_connection"
+    interval: 180
+
+# 监控系统配置
+monitoring:
+  # 指标采集间隔（秒）
+  collect_interval: 30
+  
+  # 告警检查间隔（秒）
+  alert_check_interval: 30
+  
+  # 指标数据保留时间（小时）
+  metric_retention_hours: 48
+  
+  # 告警抑制规则
+  suppression_rules:
+    - pattern: "system.*"
+      duration: 300  # 5分钟内不重复发送相同告警
+      
+  # 告警升级规则
+  escalation_rules:
+    - level: "warning"
+      escalate_after: 1800  # 30分钟后升级
+      escalate_to: "error"
+    - level: "error"
+      escalate_after: 3600  # 1小时后升级
+      escalate_to: "critical"
+
+# 分布式系统配置
+distributed:
+  # 默认节点配置
+  default_node:
+    role: "hybrid"
+    capabilities:
+      - "document_processing"
+      - "batch_vectorization"
+      - "thumbnail_generation"
+      - "format_conversion"
+      - "security_scanning"
+      
+  # 任务配置
+  task_config:
+    default_timeout: 3600  # 1小时
+    max_retries: 3
+    retry_delay: 60  # 重试延迟（秒）
+    
+  # 负载均衡配置
+  load_balancer:
+    algorithm: "least_connections"  # round_robin, least_connections, weighted
+    health_check_interval: 30
+    
+# 安全扫描配置
+security:
+  # 病毒扫描配置
+  virus_scanner:
+    enable_clamav: true
+    enable_yara: true
+    quarantine_dir: "/tmp/quarantine"
+    scan_timeout: 300
+    
+  # 内容扫描配置
+  content_scanner:
+    enable_sensitive_content: true
+    enable_privacy_detection: true
+    enable_url_scanning: true
+    confidence_threshold: 0.7
+    
+  # 图像扫描配置
+  image_scanner:
+    enable_nsfw_detection: false  # 需要额外模型
+    enable_steganography_detection: true
+    enable_metadata_analysis: true
+
+# 智能推荐配置
+recommendation:
+  # 用户行为分析配置
+  behavior_analysis:
+    retention_days: 90
+    interest_decay_factor: 30  # 兴趣衰减因子（天）
+    min_interactions: 5  # 最少交互次数
+    
+  # 内容分析配置
+  content_analysis:
+    max_features: 1000
+    ngram_range: [1, 2]
+    similarity_threshold: 0.3
+    
+  # 推荐算法配置
+  algorithms:
+    content_based_weight: 0.5
+    behavior_based_weight: 0.3
+    trending_weight: 0.2
+    
+  # 标签建议配置
+  tag_suggestion:
+    max_suggestions: 10
+    min_confidence: 0.5
+    enable_entity_extraction: true
+
+# 缓存配置
+cache:
+  redis_url: "redis://localhost:6379/1"
+  default_ttl: 3600  # 1小时
+  key_prefix: "knowledge_cache"
+  
+  # 缓存策略
+  strategies:
+    user_profile: 1800      # 用户画像缓存30分钟
+    recommendations: 600    # 推荐结果缓存10分钟
+    search_results: 300     # 搜索结果缓存5分钟
+    document_stats: 600     # 文档统计缓存10分钟
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # 日志文件配置
+  handlers:
+    file:
+      filename: "logs/enhanced_system.log"
+      max_bytes: 10485760  # 10MB
+      backup_count: 5
+      
+    console:
+      enabled: true
+      
+  # 特定模块日志级别
+  loggers:
+    "security_scanner": "WARNING"
+    "distributed_processing": "INFO"
+    "monitoring_alerting": "INFO"
+    "intelligent_recommendation": "INFO"
+
+# 性能优化配置
+performance:
+  # 异步任务配置
+  async_tasks:
+    max_workers: 4
+    queue_size: 1000
+    
+  # 数据库连接池配置
+  database:
+    pool_size: 20
+    max_overflow: 30
+    pool_timeout: 30
+    
+  # 文件处理配置
+  file_processing:
+    chunk_size: 8192
+    max_file_size: 104857600  # 100MB
+    temp_dir: "/tmp/file_processing"
+
+# 安全配置
+security_config:
+  # 文件上传安全
+  file_upload:
+    allowed_extensions: [".pdf", ".doc", ".docx", ".txt", ".md", ".jpg", ".png", ".mp4"]
+    blocked_extensions: [".exe", ".bat", ".cmd", ".scr", ".vbs"]
+    max_file_size: 104857600  # 100MB
+    scan_on_upload: true
+    
+  # API安全
+  api_security:
+    rate_limiting:
+      requests_per_minute: 60
+      burst_limit: 10
+    require_authentication: true
+    log_security_events: true

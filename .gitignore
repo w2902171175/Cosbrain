@@ -4,10 +4,20 @@
 .env.development
 .env.test
 .env.production
+.env.docker
 
 # 数据文件夹
 data/
 data/*
+
+# 日志文件
+*.log
+logs/
+logs/*
+
+# YARA测试文件夹（自动生成）
+test_files/
+test_files/*
 
 # 数据库迁移文件夹
 alembic/
@@ -176,4 +186,4 @@ config.ini
 settings.json
 
 # 上传文件
-uploads/
+# uploads/

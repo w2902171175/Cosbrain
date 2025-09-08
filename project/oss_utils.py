@@ -20,6 +20,9 @@ S3_BASE_URL = os.getenv("S3_BASE_URL") or os.getenv("OSS_BASE_URL")
 if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL, S3_BUCKET_NAME, S3_BASE_URL]):
     raise ValueError("Missing one or more S3/OSS environment variables.")
 
+S3_ADDRESSING_STYLE = os.getenv("S3_ADDRESSING_STYLE", "path")  # 'path' or 'virtual'
+S3_VERIFY_SSL = os.getenv("S3_VERIFY_SSL", "true").lower() == "true"
+
 _s3_client = None
 
 def get_s3_client():
@@ -35,9 +38,10 @@ def get_s3_client():
                 aws_secret_access_key=S3_SECRET_ACCESS_KEY,
                 endpoint_url=S3_ENDPOINT_URL,
                 region_name=S3_REGION,
+                verify=S3_VERIFY_SSL,
                 config=boto3.session.Config(
                     signature_version='s3v4',
-                    s3={'addressing_style': 'virtual'}
+                    s3={'addressing_style': S3_ADDRESSING_STYLE}
                 )
             )
             print(f"DEBUG_S3: S3客户端初始化成功，连接到 {S3_ENDPOINT_URL}")

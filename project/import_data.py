@@ -7,530 +7,446 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta
 from database import SessionLocal, engine, init_db, Base
-from models import Student, Project, Achievement
+from models import User, Project
 
-# --- 1. 配置数据文件路径 ---
-STUDENTS_CSV_PATH = 'data/export/students.csv'
-PROJECTS_CSV_PATH = 'data/export/projects.csv'
+# --- 1. 配置常量 ---
+# 获取脚本所在目录，然后构建正确的数据文件路径
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STUDENTS_CSV_PATH = os.path.join(SCRIPT_DIR, 'data', 'students.csv')
+PROJECTS_CSV_PATH = os.path.join(SCRIPT_DIR, 'data', 'projects.csv')
 
-DEFAULT_ACHIEVEMENTS = [
-    {
-        "name": "初次见面",
-        "description": "首次登录平台，踏上创新协作之旅！",
-        "criteria_type": "LOGIN_COUNT",
-        "criteria_value": 1.0,
-        "badge_url": "/static/badges/welcome.png",
-        "reward_points": 10,
-        "is_active": True
-    },
-    {
-        "name": "每日坚持",
-        "description": "连续登录 7 天，养成每日学习与协作的习惯！",
-        "criteria_type": "DAILY_LOGIN_STREAK", # 假定有机制统计 streak
-        "criteria_value": 7.0,
-        "badge_url": "/static/badges/daily_streak.png",
-        "reward_points": 50,
-        "is_active": True
-    },
-    {
-        "name": "项目新手",
-        "description": "你的第一个项目已成功完成，在实践中探索AI应用！",
-        "criteria_type": "PROJECT_COMPLETED_COUNT",
-        "criteria_value": 1.0,
-        "badge_url": "/static/badges/project_novice.png",
-        "reward_points": 100,
-        "is_active": True
-    },
-    {
-        "name": "项目骨干",
-        "description": "累计完成 3 个项目，你已是项目协作的得力助手！",
-        "criteria_type": "PROJECT_COMPLETED_COUNT",
-        "criteria_value": 3.0,
-        "badge_url": "/static/badges/project_backbone.png",
-        "reward_points": 200,
-        "is_active": True
-    },
-    {
-        "name": "学习起步",
-        "description": "成功完成 1 门课程，点亮个人知识树！",
-        "criteria_type": "COURSE_COMPLETED_COUNT",
-        "criteria_value": 1.0,
-        "badge_url": "/static/badges/course_starter.png",
-        "reward_points": 20,
-        "is_active": True
-    },
-    {
-        "name": "课程达人",
-        "description": "累计完成 3 门课程，你是名副其实的知识探索者！",
-        "criteria_type": "COURSE_COMPLETED_COUNT",
-        "criteria_value": 3.0,
-        "badge_url": "/static/badges/course_expert.png",
-        "reward_points": 80,
-        "is_active": True
-    },
-    {
-        "name": "初试啼声",
-        "description": "首次在论坛发布话题或评论，与社区积极互动！",
-        "criteria_type": "FORUM_POSTS_COUNT",
-        "criteria_value": 1.0,
-        "badge_url": "/static/badges/forum_post_novice.png",
-        "reward_points": 5,
-        "is_active": True
-    },
-    {
-        "name": "社区参与者",
-        "description": "在论坛发布累计 10 个话题或评论，积极分享你的见解！",
-        "criteria_type": "FORUM_POSTS_COUNT",
-        "criteria_value": 10.0,
-        "badge_url": "/static/badges/forum_participant.png",
-        "reward_points": 30,
-        "is_active": True
-    },
-    {
-        "name": "小有名气",
-        "description": "你的话题或评论获得了 5 次点赞，内容已被认可！",
-        "criteria_type": "FORUM_LIKES_RECEIVED",
-        "criteria_value": 5.0,
-        "badge_url": "/static/badges/likes_5.png",
-        "reward_points": 25,
-        "is_active": True
-    },
-    {
-        "name": "人气之星",
-        "description": "你的话题或评论获得了 20 次点赞，在社区中声名鹊起！",
-        "criteria_type": "FORUM_LIKES_RECEIVED",
-        "criteria_value": 20.0,
-        "badge_url": "/static/badges/likes_stars.png",
-        "reward_points": 100,
-        "is_active": True
-    },
-     {
-        "name": "沟通达人",
-        "description": "累计发送 50 条聊天消息，你活跃在团队协作的前线！",
-        "criteria_type": "CHAT_MESSAGES_SENT_COUNT",
-        "criteria_value": 50.0,
-        "badge_url": "/static/badges/chat_master.png",
-        "reward_points": 20,
-        "is_active": True
-    }
-]
+# 配置常量
+DEFAULT_EMBEDDING_DIM = 1024
+DEFAULT_SKILL_LEVEL = "初窥门径"
+VALID_SKILL_LEVELS = ["初窥门径", "登堂入室", "融会贯通", "炉火纯青"]
 
 
-# --- 3. 数据预处理函数 ---
+# --- 3. 通用工具函数 ---
+def get_string_value(val):
+    """统一的字符串值处理函数"""
+    if pd.isna(val) or val is None or (isinstance(val, str) and val.strip() == ""):
+        return ''
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return val.strftime("%Y-%m-%d")
+    if isinstance(val, (int, float)):
+        return f"{int(val)}小时" if val == int(val) else f"{val}小时"
+    return str(val).strip()
+
+
+def parse_json_field(raw_data, field_name="field", default_value=None):
+    """统一的JSON字段解析函数"""
+    if default_value is None:
+        default_value = []
+        
+    if pd.isna(raw_data) or not str(raw_data).strip():
+        return default_value
+        
+    try:
+        return json.loads(str(raw_data))
+    except json.JSONDecodeError:
+        print(f"Warning: Failed to parse JSON for {field_name}, treating as string")
+        return str(raw_data).strip()
+    except Exception as e:
+        print(f"Error processing {field_name}: {e}")
+        return default_value
+
+
+def process_skills_data(raw_data, record_id=None):
+    """统一的技能数据处理函数"""
+    processed_skills = []
+    
+    if pd.isna(raw_data) or not str(raw_data).strip():
+        return processed_skills
+        
+    try:
+        parsed_content = json.loads(str(raw_data))
+        
+        if isinstance(parsed_content, list):
+            for item in parsed_content:
+                if isinstance(item, dict) and "name" in item:
+                    level = item.get("level", DEFAULT_SKILL_LEVEL)
+                    processed_skills.append({
+                        "name": item["name"],
+                        "level": level if level in VALID_SKILL_LEVELS else DEFAULT_SKILL_LEVEL
+                    })
+                elif isinstance(item, str) and item.strip():
+                    processed_skills.append({
+                        "name": item.strip(), 
+                        "level": DEFAULT_SKILL_LEVEL
+                    })
+        elif isinstance(parsed_content, dict) and "name" in parsed_content:
+            level = parsed_content.get("level", DEFAULT_SKILL_LEVEL)
+            processed_skills.append({
+                "name": parsed_content["name"],
+                "level": level if level in VALID_SKILL_LEVELS else DEFAULT_SKILL_LEVEL
+            })
+        else:
+            # 如果解析的内容不是预期格式，按逗号分割处理
+            skill_names = [s.strip() for s in str(raw_data).split(',') if s.strip()]
+            processed_skills.extend([
+                {"name": name, "level": DEFAULT_SKILL_LEVEL} for name in skill_names
+            ])
+    except json.JSONDecodeError:
+        # JSON解析失败，按逗号分割处理
+        skill_names = [s.strip() for s in str(raw_data).split(',') if s.strip()]
+        processed_skills.extend([
+            {"name": name, "level": DEFAULT_SKILL_LEVEL} for name in skill_names
+        ])
+    except Exception as e:
+        print(f"Warning: Error processing skills for record {record_id}: {e}")
+        processed_skills = []
+        
+    return processed_skills
+
+
+def process_roles_data(raw_data, record_id=None):
+    """统一的角色数据处理函数"""
+    processed_roles = []
+    
+    if pd.isna(raw_data) or not str(raw_data).strip():
+        return processed_roles
+        
+    try:
+        parsed_content = json.loads(str(raw_data))
+        if isinstance(parsed_content, list) and all(isinstance(r, str) for r in parsed_content):
+            processed_roles.extend([r.strip() for r in parsed_content if r.strip()])
+        elif isinstance(parsed_content, str) and parsed_content.strip():
+            processed_roles.append(parsed_content.strip())
+        else:
+            role_names = [r.strip() for r in str(raw_data).split(',') if r.strip()]
+            processed_roles.extend(role_names)
+    except json.JSONDecodeError:
+        role_names = [r.strip() for r in str(raw_data).split(',') if r.strip()]
+        processed_roles.extend(role_names)
+    except Exception as e:
+        print(f"Warning: Error processing roles for record {record_id}: {e}")
+        processed_roles = []
+        
+    return processed_roles
+# --- 4. 数据预处理函数 ---
 def preprocess_student_data(df: pd.DataFrame) -> pd.DataFrame:
     """为学生数据生成 combined_text，并处理 skills 字段和确保 username 唯一。"""
-
-    for col_name in ['username', 'email', 'phone_number', 'school', 'password_hash',
+    
+    # 确保所有必要的列存在
+    required_cols = ['username', 'email', 'phone_number', 'school', 'password_hash',
                      'major', 'skills', 'interests', 'bio', 'awards_competitions',
                      'academic_achievements', 'soft_skills', 'portfolio_link',
-                     'preferred_role', 'availability', 'location']:
+                     'preferred_role', 'availability', 'location']
+    
+    for col_name in required_cols:
         if col_name not in df.columns:
             df[col_name] = np.nan
 
-    default_skill_level = "初窥门径"
-    valid_skill_levels = ["初窥门径", "登堂入室", "融会贯通", "炉火纯青"]
-
-    for index, row in df.iterrows():
+    # 批量处理数据，避免使用iterrows
+    df_copy = df.copy()
+    
+    # 批量生成唯一标识符
+    user_ids = df_copy['id'].astype(int)
+    
+    # 处理邮箱字段
+    mask_email = df_copy['email'].isna() | (df_copy['email'].astype(str).str.strip() == '')
+    df_copy.loc[mask_email, 'email'] = user_ids[mask_email].apply(lambda x: f"user{x:04d}@example.com")
+    
+    # 处理手机号字段
+    mask_phone = df_copy['phone_number'].isna() | (df_copy['phone_number'].astype(str).str.strip() == '')
+    df_copy.loc[mask_phone, 'phone_number'] = user_ids[mask_phone].apply(lambda x: f"139{x:08d}")
+    
+    # 处理学校字段
+    mask_school = df_copy['school'].isna() | (df_copy['school'].astype(str).str.strip() == '')
+    df_copy.loc[mask_school, 'school'] = user_ids[mask_school].apply(lambda x: f"示例大学_{x}")
+    
+    # 处理密码哈希字段
+    mask_password = df_copy['password_hash'].isna() | (df_copy['password_hash'].astype(str).str.strip() == '')
+    df_copy.loc[mask_password, 'password_hash'] = user_ids[mask_password].apply(lambda x: f"hash_{x}_placeholder")
+    
+    # 处理用户名字段，确保唯一性
+    original_usernames = df_copy['username'].fillna("新用户").astype(str)
+    df_copy['username'] = [f"{name.strip()}_{uid}" for name, uid in zip(original_usernames, user_ids)]
+    
+    # 处理技能字段和生成combined_text
+    processed_data = []
+    for index, row in df_copy.iterrows():
         user_id = int(row['id'])
+        
+        # 处理技能数据
+        processed_skills = process_skills_data(row['skills'], user_id)
+        df_copy.at[index, 'skills'] = json.dumps(processed_skills, ensure_ascii=False)
+        
+        # 生成combined_text
+        skills_text = ", ".join([s.get("name", "") for s in processed_skills if isinstance(s, dict) and s.get("name")])
+        
+        combined_parts = [
+            get_string_value(row.get('major')),
+            skills_text,
+            get_string_value(row.get('interests')),
+            get_string_value(row.get('bio')),
+            get_string_value(row.get('awards_competitions')),
+            get_string_value(row.get('academic_achievements')),
+            get_string_value(row.get('soft_skills')),
+            get_string_value(row.get('portfolio_link')),
+            get_string_value(row.get('preferred_role')),
+            get_string_value(row.get('availability')),
+            get_string_value(row.get('location'))
+        ]
+        
+        df_copy.at[index, 'combined_text'] = ". ".join(filter(None, combined_parts)).strip()
+        if not df_copy.at[index, 'combined_text']:
+            df_copy.at[index, 'combined_text'] = ""
 
-        # 为确保唯一性，这些字段即使在 CSV 里为空，也会生成唯一值
-        # 对于 email, phone_number, school, password_hash 这些唯一或非空的字段，
-        # 如果 CSV 中为空，也生成一个唯一的占位符，避免导入时报错
-        if pd.isna(row.get('email')) or not str(row.get('email')).strip():
-            df.at[index, 'email'] = f"user{user_id:04d}@example.com" # 确保邮箱唯一且有格式
-
-        if pd.isna(row.get('phone_number')) or not str(row.get('phone_number')).strip():
-            df.at[index, 'phone_number'] = f"139{user_id:08d}" # 生成一个唯一的11位手机号
-
-        if pd.isna(row.get('school')) or not str(row.get('school')).strip():
-            df.at[index, 'school'] = f"示例大学_{user_id}"
-
-        if pd.isna(row.get('password_hash')) or not str(row.get('password_hash')).strip():
-            # 这里简单用 hash_id_placeholder，实际中应使用加密过的默认密码
-            df.at[index, 'password_hash'] = f"hash_{user_id}_placeholder"
-
-        skills_raw_data = row['skills']
-        processed_skills_for_cell = []
-
-        if pd.notna(skills_raw_data) and str(skills_raw_data).strip():
-            try:
-                parsed_content = json.loads(str(skills_raw_data))
-
-                if isinstance(parsed_content, list):
-                    for item in parsed_content:
-                        if isinstance(item, dict) and "name" in item:
-                            level = item.get("level", default_skill_level)
-                            processed_skills_for_cell.append({"name": item["name"],
-                                                              "level": level if level in valid_skill_levels else default_skill_level})
-                        elif isinstance(item, str) and item.strip():
-                            processed_skills_for_cell.append({"name": item.strip(), "level": default_skill_level})
-                elif isinstance(parsed_content, dict) and "name" in parsed_content:
-                    level = parsed_content.get("level", default_skill_level)
-                    processed_skills_for_cell.append({"name": parsed_content["name"],
-                                                      "level": level if level in valid_skill_levels else default_skill_level})
-                else:
-                    skill_names = [s.strip() for s in str(skills_raw_data).split(',') if s.strip()]
-                    processed_skills_for_cell.extend(
-                        [{"name": name, "level": default_skill_level} for name in skill_names])
-            except json.JSONDecodeError:
-                skill_names = [s.strip() for s in str(skills_raw_data).split(',') if s.strip()]
-                processed_skills_for_cell.extend([{"name": name, "level": default_skill_level} for name in skill_names])
-            except Exception as e:
-                print(f"WARNING_PREPROCESS: Error processing skills for student {row.get('id', index)}: {e}")
-                processed_skills_for_cell = []  # 异常发生时也确保是列表
-        else:
-            processed_skills_for_cell = []  # 明确为空列表，为了安全和IDE提示
-
-        df.at[index, 'skills'] = json.dumps(processed_skills_for_cell, ensure_ascii=False)
-
-        # 确保 username 在导入时绝对唯一
-        original_username = row['username'] if pd.notna(row['username']) and str(row['username']).strip() else "新用户"
-        df.at[index, 'username'] = f"{original_username}_{int(row['id'])}"
-
-        def _get_string_value(val):
-            if pd.isna(val) or val is None or (isinstance(val, str) and val.strip() == ""):
-                return ''
-            return str(val).strip()
-
-        skills_text_for_combined = ", ".join(
-            [s.get("name", "") for s in processed_skills_for_cell if isinstance(s, dict) and s.get("name")])
-
-        df.at[index, 'combined_text'] = ". ".join(filter(None, [
-            _get_string_value(row.get('major')),
-            skills_text_for_combined,
-            _get_string_value(row.get('interests')),
-            _get_string_value(row.get('bio')),
-            _get_string_value(row.get('awards_competitions')),
-            _get_string_value(row.get('academic_achievements')),
-            _get_string_value(row.get('soft_skills')),
-            _get_string_value(row.get('portfolio_link')),
-            _get_string_value(row.get('preferred_role')),
-            _get_string_value(row.get('availability')),
-            _get_string_value(row.get('location'))
-        ])).strip()
-
-        if not df.at[index, 'combined_text']:
-            df.at[index, 'combined_text'] = ""
-
-    return df
+    return df_copy
 
 
 def preprocess_project_data(df: pd.DataFrame) -> pd.DataFrame:
     """为项目数据生成 combined_text，并处理 required_skills/roles 字段。"""
-
-    for col_name in ['creator_id', 'description', 'keywords', 'project_type',
+    
+    # 确保所有必要的列存在
+    required_cols = ['creator_id', 'description', 'keywords', 'project_type',
                      'expected_deliverables', 'contact_person_info', 'learning_outcomes',
                      'team_size_preference', 'project_status', 'required_skills',
-                     'required_roles', 'start_date', 'end_date', 'estimated_weekly_hours', 'location']:
+                     'required_roles', 'start_date', 'end_date', 'estimated_weekly_hours', 'location']
+    
+    for col_name in required_cols:
         if col_name not in df.columns:
             df[col_name] = np.nan
 
-    default_skill_level = "初窥门径"
-    valid_skill_levels = ["初窥门径", "登堂入室", "融会贯通", "炉火纯青"]
+    # 创建副本避免修改原数据
+    df_copy = df.copy()
+    
+    # 批量处理每一行
+    for index, row in df_copy.iterrows():
+        project_id = int(row['id'])
+        
+        # 处理必需技能数据
+        processed_skills = process_skills_data(row['required_skills'], project_id)
+        df_copy.at[index, 'required_skills'] = json.dumps(processed_skills, ensure_ascii=False)
+        
+        # 处理必需角色数据
+        processed_roles = process_roles_data(row['required_roles'], project_id)
+        df_copy.at[index, 'required_roles'] = json.dumps(processed_roles, ensure_ascii=False)
+        
+        # 生成combined_text
+        skills_text = ", ".join([s.get("name", "") for s in processed_skills if isinstance(s, dict) and s.get("name")])
+        roles_text = ", ".join([r for r in processed_roles if isinstance(r, str) and r.strip()])
+        
+        combined_parts = [
+            get_string_value(row.get('title')),
+            get_string_value(row.get('description')),
+            skills_text,
+            roles_text,
+            get_string_value(row.get('keywords')),
+            get_string_value(row.get('project_type')),
+            get_string_value(row.get('expected_deliverables')),
+            get_string_value(row.get('contact_person_info')),
+            get_string_value(row.get('learning_outcomes')),
+            get_string_value(row.get('team_size_preference')),
+            get_string_value(row.get('project_status')),
+            get_string_value(row.get('start_date')),
+            get_string_value(row.get('end_date')),
+            get_string_value(row.get('estimated_weekly_hours')),
+            get_string_value(row.get('location'))
+        ]
+        
+        df_copy.at[index, 'combined_text'] = ". ".join(filter(None, combined_parts)).strip()
+        if not df_copy.at[index, 'combined_text']:
+            df_copy.at[index, 'combined_text'] = ""
 
-    for index, row in df.iterrows():
-        required_skills_raw_data = row['required_skills']
-        processed_required_skills_for_cell = []
-
-        if pd.notna(required_skills_raw_data) and str(required_skills_raw_data).strip():
-            try:
-                parsed_content = json.loads(str(required_skills_raw_data))
-
-                if isinstance(parsed_content, list):
-                    for item in parsed_content:
-                        if isinstance(item, dict) and "name" in item:
-                            level = item.get("level", default_skill_level)
-                            processed_required_skills_for_cell.append({"name": item["name"],
-                                                                       "level": level if level in valid_skill_levels else default_skill_level})
-                        elif isinstance(item, str) and item.strip():
-                            processed_required_skills_for_cell.append(
-                                {"name": item.strip(), "level": default_skill_level})
-                elif isinstance(parsed_content, dict) and "name" in parsed_content:
-                    level = parsed_content.get("level", default_skill_level)
-                    processed_required_skills_for_cell.append({"name": parsed_content["name"],
-                                                               "level": level if level in valid_skill_levels else default_skill_level})
-                else:
-                    skill_names = [s.strip() for s in str(required_skills_raw_data).split(',') if s.strip()]
-                    processed_required_skills_for_cell.extend(
-                        [{"name": name, "level": default_skill_level} for name in skill_names])
-            except json.JSONDecodeError:
-                skill_names = [s.strip() for s in str(required_skills_raw_data).split(',') if s.strip()]
-                processed_required_skills_for_cell.extend(
-                    [{"name": name, "level": default_skill_level} for name in skill_names])
-            except Exception as e:
-                print(f"WARNING_PREPROCESS: Error processing required_skills for project {row.get('id', index)}: {e}")
-                processed_required_skills_for_cell = []
-        else:
-            processed_required_skills_for_cell = [] # 明确为空列表，为了安全和IDE提示
-
-        df.at[index, 'required_skills'] = json.dumps(processed_required_skills_for_cell, ensure_ascii=False)
-
-        required_roles_raw_data = row['required_roles']
-        processed_required_roles_for_cell = []
-        if pd.notna(required_roles_raw_data) and str(required_roles_raw_data).strip():
-            try:
-                parsed_content = json.loads(str(required_roles_raw_data))
-                if isinstance(parsed_content, list) and all(isinstance(r, str) for r in parsed_content):
-                    processed_required_roles_for_cell.extend([r.strip() for r in parsed_content if r.strip()])
-                elif isinstance(parsed_content, str) and parsed_content.strip():
-                    processed_required_roles_for_cell.append(parsed_content.strip())
-                else:
-                    role_names = [r.strip() for r in str(required_roles_raw_data).split(',') if r.strip()]
-                    processed_required_roles_for_cell.extend(role_names)
-            except json.JSONDecodeError:  # 如果不是有效的JSON字符串，按逗号分隔
-                role_names = [r.strip() for r in str(required_roles_raw_data).split(',') if r.strip()]
-                processed_required_roles_for_cell.extend(role_names)
-            except Exception as e:
-                print(f"WARNING_PREPROCESS: Error processing required_roles for project {row.get('id', index)}: {e}")
-                processed_required_roles_for_cell = []
-        else:
-           processed_required_roles_for_cell = [] # 明确为空列表，为了安全和IDE提示
-        df.at[index, 'required_roles'] = json.dumps(processed_required_roles_for_cell, ensure_ascii=False)
+    return df_copy
 
 
-        def _get_string_value(val):
-            if pd.isna(val) or val is None or (isinstance(val, str) and val.strip() == ""):
-                return ''
-            if isinstance(val, (datetime, pd.Timestamp)):
-                return val.strftime("%Y-%m-%d")
-            if 'estimated_weekly_hours' in row and val == row['estimated_weekly_hours'] and isinstance(val,
-                                                                                                       (int, float)):
-                return f"{int(val)}小时" if val == int(val) else f"{val}小时"
-            return str(val).strip()
-
-        skills_text_for_combined = ", ".join(
-            [s.get("name", "") for s in processed_required_skills_for_cell if isinstance(s, dict) and s.get("name")])
-
-        roles_text_for_combined = ", ".join(
-            [r for r in processed_required_roles_for_cell if isinstance(r, str) and r.strip()])
-
-        df.at[index, 'combined_text'] = ". ".join(filter(None, [
-            _get_string_value(row.get('title')),
-            _get_string_value(row.get('description')),
-            skills_text_for_combined,
-            roles_text_for_combined,
-            _get_string_value(row.get('keywords')),
-            _get_string_value(row.get('project_type')),
-            _get_string_value(row.get('expected_deliverables')),
-            _get_string_value(row.get('contact_person_info')),
-            _get_string_value(row.get('learning_outcomes')),
-            _get_string_value(row.get('team_size_preference')),
-            _get_string_value(row.get('project_status')),
-            _get_string_value(row.get('start_date')),
-            _get_string_value(row.get('end_date')),
-            _get_string_value(row.get('estimated_weekly_hours')),
-            _get_string_value(row.get('location'))
-        ])).strip()
-
-        if not df.at[index, 'combined_text']:
-            df.at[index, 'combined_text'] = ""
-
-    return df
-
-
-# --- 4. 数据导入函数 ---
+# --- 5. 数据导入函数 ---
 def import_students_to_db(db: Session, students_df: pd.DataFrame):
     """将学生数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入学生数据到数据库...")
-    #  在导入脚本中，不再尝试调用外部API生成嵌入
-    # 嵌入将由用户在配置API密钥后，通过更新个人资料或在推荐时按需生成
-
-    for i, row in students_df.iterrows():
-        skills_data = row['skills']
-        if isinstance(skills_data, str):
-            try:
-                skills_data = json.loads(skills_data)
-            except json.JSONDecodeError:
+    
+    try:
+        for i, row in students_df.iterrows():
+            skills_data = row['skills']
+            if isinstance(skills_data, str):
+                try:
+                    skills_data = json.loads(skills_data)
+                except json.JSONDecodeError:
+                    skills_data = []
+            elif pd.isna(skills_data):
                 skills_data = []
-        elif pd.isna(skills_data):
-            skills_data = []
 
-        student = Student(
-            id=int(row['id']),
-            name=row['name'],
-            major=row['major'],
-            username=row['username'],
-            skills=skills_data,
-            interests=row['interests'],
-            bio=row['bio'],
-            awards_competitions=row['awards_competitions'],
-            academic_achievements=row['academic_achievements'],
-            soft_skills=row['soft_skills'],
-            portfolio_link=row['portfolio_link'],
-            preferred_role=row['preferred_role'],
-            availability=row['availability'],
-            location=row['location'],
-            email=row['email'],
-            phone_number=row['phone_number'],
-            school=row['school'],
-            password_hash=row['password_hash'],
+            student = User(
+                id=int(row['id']),
+                name=row['name'],
+                major=row['major'],
+                username=row['username'],
+                skills=skills_data,
+                interests=row['interests'],
+                bio=row['bio'],
+                awards_competitions=row['awards_competitions'],
+                academic_achievements=row['academic_achievements'],
+                soft_skills=row['soft_skills'],
+                portfolio_link=row['portfolio_link'],
+                preferred_role=row['preferred_role'],
+                availability=row['availability'],
+                location=row['location'] if pd.notna(row['location']) else None,
+                email=row['email'],
+                phone_number=row['phone_number'],
+                school=row['school'],
+                password_hash=row['password_hash'],
+                combined_text=row['combined_text'],
+                embedding=np.zeros(DEFAULT_EMBEDDING_DIM).tolist(),  # 使用常量
+                llm_api_type=None,
+                llm_api_key_encrypted=None,
+                llm_api_base_url=None,
+                llm_model_id=None
+            )
 
-            combined_text=row['combined_text'],
-            embedding=np.zeros(1024).tolist(), #  默认生成零向量
-            llm_api_type=None, # 导入时 LLM API 类型默认为 None
-            llm_api_key_encrypted=None, # 导入时 API Key 默认为 None
-            llm_api_base_url=None,
-            llm_model_id=None
-        )
-        if pd.isna(getattr(student, 'location')):
-            setattr(student, 'location', None)
-
-        db.add(student)
-        print(f"添加学生: {student.name} (用户名: {student.username})")
-    db.commit()
-    print("学生数据导入完成。")
+            db.add(student)
+            print(f"添加学生: {student.name} (用户名: {student.username})")
+        
+        db.commit()
+        print("学生数据导入完成。")
+        
+    except Exception as e:
+        db.rollback()
+        print(f"导入学生数据时发生错误: {e}")
+        raise
 
 
 def import_projects_to_db(db: Session, projects_df: pd.DataFrame):
     """将项目数据（仅数据，不生成嵌入）导入数据库。"""
     print("\n开始导入项目数据到数据库...")
-
-    for i, row in projects_df.iterrows():
-        creator_id_for_db = None
-        if pd.notna(row['creator_id']):
-            creator_id_for_db = int(row['creator_id'])
-        else:
-            existing_student_ids = db.query(Student.id).all()
-            if existing_student_ids:
-                random_creator_id = np.random.choice([s.id for s in existing_student_ids])
-                creator_id_for_db = int(random_creator_id)
+    
+    # 预先获取所有学生ID，避免重复查询
+    existing_student_ids = [s.id for s in db.query(User.id).all()]
+    
+    if not existing_student_ids:
+        raise ValueError("无法为项目分配创建者，因为数据库中没有学生记录。请先导入学生数据。")
+    
+    try:
+        for i, row in projects_df.iterrows():
+            # 处理创建者ID
+            if pd.notna(row['creator_id']):
+                creator_id_for_db = int(row['creator_id'])
             else:
-                print("警告：没有可用的学生ID来分配项目创建者，请确保学生数据已经导入。")
-                raise ValueError("无法为项目分配创建者，因为数据库中没有学生记录。请先导入学生数据或手动指定 creator_id。")
+                # 随机选择一个已存在的学生ID
+                creator_id_for_db = np.random.choice(existing_student_ids)
+                print(f"项目 {row['id']} 未指定创建者，随机分配创建者ID: {creator_id_for_db}")
 
-        start_date_val = row['start_date'] if pd.notna(row['start_date']) else None
-        end_date_val = row['end_date'] if pd.notna(row['end_date']) else None
-        estimated_weekly_hours_val = row['estimated_weekly_hours'] if pd.notna(row['estimated_weekly_hours']) else None
+            # 处理日期字段
+            start_date_val = row['start_date'] if pd.notna(row['start_date']) else None
+            end_date_val = row['end_date'] if pd.notna(row['end_date']) else None
+            estimated_weekly_hours_val = row['estimated_weekly_hours'] if pd.notna(row['estimated_weekly_hours']) else None
 
-        required_skills_data = row['required_skills']
-        if isinstance(required_skills_data, str):
-            try:
-                required_skills_data = json.loads(required_skills_data)
-            except json.JSONDecodeError:
-                required_skills_data = []
-        elif pd.isna(required_skills_data):
-            required_skills_data = []
+            # 处理技能和角色数据
+            required_skills_data = parse_json_field(row['required_skills'], "required_skills", [])
+            required_roles_data = parse_json_field(row['required_roles'], "required_roles", [])
 
-        required_roles_data = row['required_roles']
-        if isinstance(required_roles_data, str):
-            try:
-                required_roles_data = json.loads(required_roles_data)
-            except json.JSONDecodeError:
-                required_roles_data = []
-        elif pd.isna(required_roles_data):
-            required_roles_data = []
+            project = Project(
+                id=int(row['id']),
+                title=row['title'],
+                description=row['description'],
+                required_skills=required_skills_data,
+                required_roles=required_roles_data,
+                keywords=row['keywords'],
+                project_type=row['project_type'],
+                expected_deliverables=row['expected_deliverables'],
+                contact_person_info=row['contact_person_info'],
+                learning_outcomes=row['learning_outcomes'],
+                team_size_preference=row['team_size_preference'],
+                project_status=row['project_status'],
+                start_date=start_date_val,
+                end_date=end_date_val,
+                estimated_weekly_hours=estimated_weekly_hours_val,
+                location=row['location'] if pd.notna(row['location']) else None,
+                creator_id=creator_id_for_db,
+                combined_text=row['combined_text'],
+                embedding=np.zeros(DEFAULT_EMBEDDING_DIM).tolist()  # 使用常量
+            )
 
-        project = Project(
-            id=int(row['id']),
-            title=row['title'],
-            description=row['description'],
-            required_skills=required_skills_data,
-            required_roles=required_roles_data,
-            keywords=row['keywords'],
-            project_type=row['project_type'],
-            expected_deliverables=row['expected_deliverables'],
-            contact_person_info=row['contact_person_info'],
-            learning_outcomes=row['learning_outcomes'],
-            team_size_preference=row['team_size_preference'],
-            project_status=row['project_status'],
-            start_date=start_date_val,
-            end_date=end_date_val,
-            estimated_weekly_hours=estimated_weekly_hours_val,
-            location=row['location'],
-            creator_id=creator_id_for_db,
-            combined_text=row['combined_text'],
-            embedding=np.zeros(1024).tolist() # 默认生成零向量
-        )
-        if pd.isna(getattr(project, 'location')):
-            setattr(project, 'location', None)
+            db.add(project)
+            print(f"添加项目: {project.title} (创建者ID: {project.creator_id})")
+        
+        db.commit()
+        print("项目数据导入完成。")
+        
+    except Exception as e:
+        db.rollback()
+        print(f"导入项目数据时发生错误: {e}")
+        raise
 
-        db.add(project)
-        print(f"添加项目: {project.title} (创建者ID: {project.creator_id})")
-    db.commit()
-    print("项目数据导入完成。")
-
-# 插入默认成就的函数
+# 插入默认成就的函数（已废弃，成就初始化已集成到database.py中）
 def insert_default_achievements(db: Session):
     """
     插入预设的成就到数据库中，如果同名成就已存在则跳过。
+    注意：此函数已废弃，成就初始化现在由database.py的init_db()自动处理
     """
-    print("\n开始检查并插入默认成就...")
-    for achievement_data in DEFAULT_ACHIEVEMENTS:
-        existing_achievement = db.query(Achievement).filter(Achievement.name == achievement_data["name"]).first()
-        if existing_achievement:
-            print(f"DEBUG_ACHIEVEMENT_IMPORT: 成就 '{achievement_data['name']}' 已存在，跳过。")
-            continue
-
-        new_achievement = Achievement(
-            name=achievement_data["name"],
-            description=achievement_data["description"],
-            criteria_type=achievement_data["criteria_type"],
-            criteria_value=achievement_data["criteria_value"],
-            badge_url=achievement_data["badge_url"],
-            reward_points=achievement_data["reward_points"],
-            is_active=achievement_data["is_active"]
-        )
-        db.add(new_achievement)
-        print(f"DEBUG_ACHIEVEMENT_IMPORT: 插入成就: {new_achievement.name}")
-    try:
-        db.commit()
-        print("默认成就插入完成。")
-    except Exception as e:
-        db.rollback()
-        print(f"ERROR_ACHIEVEMENT_IMPORT: 插入默认成就失败: {e}")
+    print("\n⚠️  此函数已废弃：成就初始化现在由database.py自动处理")
+    print("成就会在数据库表创建后自动初始化，无需手动调用此函数。")
 
 
 # --- 主执行流程 ---
-if __name__ == "__main__":
+def main():
+    """主执行函数"""
     print("--- 开始数据导入流程 ---")
 
-    # 1. 初始化数据库表（如果尚未创建）
-    init_db()
-
-    # 2. 从CSV加载数据
     try:
+        # 1. 初始化数据库表（如果尚未创建）
+        init_db()
+
+        # 2. 从CSV加载数据
+        print(f"正在加载数据文件...")
+        print(f"学生数据: {STUDENTS_CSV_PATH}")
+        print(f"项目数据: {PROJECTS_CSV_PATH}")
+        
         students_df = pd.read_csv(STUDENTS_CSV_PATH)
         projects_df = pd.read_csv(PROJECTS_CSV_PATH)
         print("\nCSV数据加载成功！")
-    except FileNotFoundError:
-        print(f"错误：请确保 '{STUDENTS_CSV_PATH}' 和 '{PROJECTS_CSV_PATH}' 文件存在于当前目录下。")
-        exit()
+
+        # 确保ID列是整数类型
+        students_df['id'] = students_df['id'].astype(int)
+        projects_df['id'] = projects_df['id'].astype(int)
+
+        # 将日期时间列转换为 datetime 对象
+        for col in ['start_date', 'end_date']:
+            if col in projects_df.columns:
+                projects_df[col] = pd.to_datetime(projects_df[col], errors='coerce')
+
+        # 将 'location' 列转换为字符串类型，缺失值转换为None
+        for df, name in [(students_df, '学生'), (projects_df, '项目')]:
+            if 'location' in df.columns:
+                df['location'] = df['location'].astype(str).replace('nan', None)
+
+        # 3. 预处理数据
+        print("\n开始预处理数据...")
+        students_df = preprocess_student_data(students_df)
+        projects_df = preprocess_project_data(projects_df)
+        print("数据预处理完成。")
+
+        # 4. 获取数据库会话并导入数据
+        db_session = SessionLocal()
+        try:
+            import_students_to_db(db_session, students_df)
+            import_projects_to_db(db_session, projects_df)
+            
+            print("\n✅ 所有数据导入成功！")
+            print("💡 注意：默认成就已在数据库初始化时自动创建")
+        except Exception as e:
+            db_session.rollback()
+            print(f"\n❌ 数据导入过程中发生错误，事务已回滚: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            db_session.close()
+
+    except FileNotFoundError as e:
+        print(f"❌ 错误：CSV文件未找到 - {e}")
+        print(f"请确保以下文件存在：")
+        print(f"  - {STUDENTS_CSV_PATH}")
+        print(f"  - {PROJECTS_CSV_PATH}")
     except Exception as e:
-        print(f"错误：加载CSV文件或处理CSV列时发生问题: {e}. 请检查您的CSV文件内容和列名。")
-        exit()
-
-    # 确保ID列是整数类型
-    students_df['id'] = students_df['id'].astype(int)
-    projects_df['id'] = projects_df['id'].astype(int)
-
-    # 将日期时间列转换为 datetime 对象
-    for col in ['start_date', 'end_date']:
-        if col in projects_df.columns:
-            projects_df[col] = pd.to_datetime(projects_df[col], errors='coerce')
-
-    # 将新的 'location' 列转换为字符串类型，缺失值转换为None (以便后续存入数据库)
-    if 'location' in students_df.columns:
-        students_df['location'] = students_df['location'].astype(str).replace('nan', None)
-    if 'location' in projects_df.columns:
-        projects_df['location'] = projects_df['location'].astype(str).replace('nan', None)
-
-    # 3. 预处理数据
-    students_df = preprocess_student_data(students_df)
-    projects_df = preprocess_project_data(projects_df)
-
-    # 4. 获取数据库会话并导入数据
-    db_session = SessionLocal()
-    try:
-        import_students_to_db(db_session, students_df)
-        import_projects_to_db(db_session, projects_df)
-        insert_default_achievements(db_session)
-    except Exception as e:
-        db_session.rollback()
-        print(f"\n数据导入过程中发生错误，事务已回滚: {e}")
+        print(f"❌ 错误：{e}")
         import traceback
-
         traceback.print_exc()
-    finally:
-        db_session.close()
-
+    
     print("\n--- 数据导入流程结束 ---")
+
+
+if __name__ == "__main__":
+    main()
